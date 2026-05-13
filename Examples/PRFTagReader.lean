@@ -563,14 +563,43 @@ private lemma simulateQ_prfReal_authToPRFTagImpl_run
         ((authToPRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) tag).run s) =
       (authTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (fun tag nonce => prfs.evalMultiple k tag nonce) tag).run s := by
-  -- After unfolding both implementations and pushing simulateQ through the bind/map
-  -- structure, the two do-blocks agree pointwise: the lifted uniform Nonce sample
-  -- becomes `$ᵗ Nonce` via `QueryImpl.simulateQ_add_liftComp_left`, and the PRF oracle
-  -- query at `Sum.inr (tag, nonce)` reduces to `prfs.evalMultiple k tag nonce` via
-  -- `QueryImpl.add_apply_inr` applied to `prfRealQueryImpl`'s definition. The simp
-  -- normalisation gets very close but doesn't fully close to `rfl`; the remaining gap
-  -- is a Lean choreography issue with `simulateQ_bind` not firing under sum-spec do.
-  sorry
+  -- Following the proof pattern of `simulateQ_prfReal_oracleOutputs` in PRGfromPRF.lean:
+  -- prove a `change` clause to put the LHS in the standard simulateQ-of-bind shape,
+  -- then push the simulator with `rw [simulateQ_bind]`, evaluate each query via the
+  -- `simulateQ_add_*` lemmas, and conclude with bind_congr + IH on the continuation.
+  let so : QueryImpl ((TagId × Nonce) →ₒ Digest) ProbComp :=
+    fun d => pure (prfs.multiplePRFScheme.eval k d)
+  let impl : QueryImpl (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp :=
+    HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp) + so
+  have hImplEq : impl = PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k := rfl
+  have hleft : ∀ {α : Type} (oa : ProbComp α),
+      simulateQ impl (liftComp oa (unifSpec + ((TagId × Nonce) →ₒ Digest))) = oa := by
+    intro α oa
+    trans simulateQ (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) oa
+    · exact QueryImpl.simulateQ_add_liftComp_left
+        (impl₁' := HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp))
+        (impl₂' := so) oa
+    · exact simulateQ_ofLift_eq_self _
+  have hquery : ∀ (d : TagId × Nonce),
+      simulateQ impl
+        (liftM ((unifSpec + ((TagId × Nonce) →ₒ Digest)).query (Sum.inr d)) :
+          OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) _) =
+      (pure (prfs.evalMultiple k d.1 d.2) : ProbComp Digest) := by
+    intro d
+    rw [simulateQ_spec_query]
+    show impl (Sum.inr d) = _
+    simp [impl, so, QueryImpl.add_apply_inr, TagReaderPRFs.multiplePRFScheme]
+  unfold authToPRFTagImpl authTagQueryImpl authPRFQuery
+  simp only [StateT.run_bind, StateT.run_get, StateT.run_monadLift,
+    bind_pure_comp, map_pure, pure_bind]
+  rw [← hImplEq]
+  -- Force `simulateQ`'s spec to syntactically be `unifSpec + ((TagId × Nonce) →ₒ Digest)` so
+  -- that `simulateQ_bind` / `simulateQ_map` pattern-match (Lean's prior elaboration recorded
+  -- it as `PRFOracleSpec`, which is only defeq to the sum form).
+  show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+  simp only [simulateQ_bind, simulateQ_map, simulateQ_pure, monadLift_eq_self,
+    hleft, hquery]
+  rfl
 
 /-- Per-reader-query equivalence: running the reduction's reader-oracle implementation through the
 real PRF simulator produces the same distribution and final state as the real auth-game reader
