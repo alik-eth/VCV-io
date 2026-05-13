@@ -563,9 +563,13 @@ private lemma simulateQ_prfReal_authToPRFTagImpl_run
         ((authToPRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) tag).run s) =
       (authTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (fun tag nonce => prfs.evalMultiple k tag nonce) tag).run s := by
-  -- Direct unfolding produces equal `do` blocks once simulateQ is pushed through bind/map
-  -- and `prfRealQueryImpl` is unfolded to its concrete `+ so` form. The `simulateQ_add_*`
-  -- lemmas reduce the lifted nonce sample and the PRF oracle query to their concrete forms.
+  -- After unfolding both implementations and pushing simulateQ through the bind/map
+  -- structure, the two do-blocks agree pointwise: the lifted uniform Nonce sample
+  -- becomes `$ᵗ Nonce` via `QueryImpl.simulateQ_add_liftComp_left`, and the PRF oracle
+  -- query at `Sum.inr (tag, nonce)` reduces to `prfs.evalMultiple k tag nonce` via
+  -- `QueryImpl.add_apply_inr` applied to `prfRealQueryImpl`'s definition. The simp
+  -- normalisation gets very close but doesn't fully close to `rfl`; the remaining gap
+  -- is a Lean choreography issue with `simulateQ_bind` not firing under sum-spec do.
   sorry
 
 /-- Per-reader-query equivalence: running the reduction's reader-oracle implementation through the
