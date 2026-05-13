@@ -612,7 +612,84 @@ private lemma simulateQ_prfReal_authToPRFReaderImpl_run
             (TagId := TagId) (Nonce := Nonce) (Digest := Digest) transcript).run s) =
       (authReaderQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (fun tag nonce => prfs.evalMultiple k tag nonce) transcript).run s := by
-  sorry
+  let so : QueryImpl ((TagId × Nonce) →ₒ Digest) ProbComp :=
+    fun d => pure (prfs.multiplePRFScheme.eval k d)
+  let impl : QueryImpl (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp :=
+    HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp) + so
+  have hImplEq : impl = PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k := rfl
+  have hquery : ∀ (d : TagId × Nonce),
+      simulateQ impl
+        (liftM ((unifSpec + ((TagId × Nonce) →ₒ Digest)).query (Sum.inr d)) :
+          OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) _) =
+      (pure (prfs.evalMultiple k d.1 d.2) : ProbComp Digest) := by
+    intro d
+    rw [simulateQ_spec_query]
+    show impl (Sum.inr d) = _
+    simp [impl, so, QueryImpl.add_apply_inr, TagReaderPRFs.multiplePRFScheme]
+  -- Each query in the mapM reduces deterministically to `pure (tag, hash tag nonce)`.
+  have hquery_pair : ∀ (tag : TagId),
+      simulateQ impl
+        (Prod.mk tag <$> authPRFQuery (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            tag transcript.nonce :
+          OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) (TagId × Digest)) =
+        pure (tag, prfs.evalMultiple k tag transcript.nonce) := by
+    intro tag
+    have step : simulateQ impl
+        (authPRFQuery (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            tag transcript.nonce) =
+        (pure (prfs.evalMultiple k tag transcript.nonce) : ProbComp Digest) := by
+      show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+      exact hquery (tag, transcript.nonce)
+    show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+    rw [simulateQ_map, step]
+    rfl
+  -- The whole mapM reduces to `pure` of the deterministic list of pairs.
+  have hmapM :
+      simulateQ impl
+        ((Finset.univ : Finset TagId).toList.mapM
+          (m := OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)))
+          (fun tag => Prod.mk tag <$> authPRFQuery (TagId := TagId)
+            (Nonce := Nonce) (Digest := Digest) tag transcript.nonce)) =
+      pure ((Finset.univ : Finset TagId).toList.map
+        fun tag => (tag, prfs.evalMultiple k tag transcript.nonce)) := by
+    show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+    rw [simulateQ_list_mapM]
+    induction (Finset.univ : Finset TagId).toList with
+    | nil => rfl
+    | cons t ts ih =>
+      rw [List.mapM_cons, hquery_pair, pure_bind, ih, pure_bind]
+      rfl
+  -- The reader's `newForged` Finset and accept-flag agree whether computed from the
+  -- deterministic pair-list or directly via `Finset.univ.filter`.
+  have hForged :
+      ((((Finset.univ : Finset TagId).toList.map
+              fun tag => (tag, prfs.evalMultiple k tag transcript.nonce)).filter
+            fun p => decide (p.2 = transcript.auth ∧ (p.1, transcript) ∉ s.honestOutputs)).map
+          Prod.fst).toFinset =
+        (Finset.univ : Finset TagId).filter fun tag =>
+          prfs.evalMultiple k tag transcript.nonce = transcript.auth ∧
+            (tag, transcript) ∉ s.honestOutputs := by
+    ext tag
+    simp only [List.mem_toFinset, List.mem_map, List.mem_filter, decide_eq_true_eq,
+      Finset.mem_filter, Finset.mem_univ, true_and, Finset.mem_toList, Prod.exists]
+    aesop
+  have hAccept :
+      decide (∃ p ∈ (Finset.univ : Finset TagId).toList.map
+        fun tag => (tag, prfs.evalMultiple k tag transcript.nonce),
+        p.2 = transcript.auth) =
+      decide (∃ tag, prfs.evalMultiple k tag transcript.nonce = transcript.auth) := by
+    congr 1
+    simp only [List.mem_map, Finset.mem_toList, Finset.mem_univ, true_and]
+    aesop
+  unfold authToPRFReaderImpl authReaderQueryImpl
+  simp only [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
+    StateT.run_pure, bind_pure_comp, map_pure, pure_bind]
+  rw [← hImplEq]
+  show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+  simp only [simulateQ_bind, simulateQ_map, simulateQ_pure, monadLift_eq_self,
+    hmapM, pure_bind, map_pure]
+  rw [hForged, hAccept]
+  rfl
 
 /-- Inductive helper: simulating the auth-game adversary through the reduction's query
 implementation and then through the real PRF query implementation is the same, state-by-state,
