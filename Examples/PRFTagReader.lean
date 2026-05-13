@@ -360,11 +360,10 @@ simulation. -/
 noncomputable def authToPRFReduction
     (adversary : AuthAdversary TagId Nonce Digest) :
     PRFScheme.PRFAdversary (TagId × Nonce) Digest :=
-  show OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) Bool from do
-    let (_, st) ← (simulateQ
-      (authToPRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
-      adversary).run AuthState.init
-    return decide (st.readerForged ≠ ∅)
+  ((simulateQ (authToPRFQueryImpl
+      (TagId := TagId) (Nonce := Nonce) (Digest := Digest)) adversary).run AuthState.init >>=
+    fun p => pure (decide (p.2.readerForged ≠ ∅)) :
+    OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) Bool)
 
 end AuthReduction
 
@@ -554,6 +553,34 @@ noncomputable def authRFExp
     (adversary : AuthAdversary TagId Nonce Digest) : ProbComp Bool :=
   PRFScheme.prfIdealExp (authToPRFReduction adversary)
 
+/-- Per-tag-query equivalence: running the reduction's tag-oracle implementation through the real
+PRF simulator produces the same distribution and final state as the real auth-game tag-oracle
+implementation parameterised by `prfs.evalMultiple k`. -/
+private lemma simulateQ_prfReal_authToPRFTagImpl_run
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag) (k : K)
+    (tag : TagId) (s : AuthState TagId Nonce Digest) :
+    simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+        ((authToPRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) tag).run s) =
+      (authTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => prfs.evalMultiple k tag nonce) tag).run s := by
+  -- Direct unfolding produces equal `do` blocks once simulateQ is pushed through bind/map
+  -- and `prfRealQueryImpl` is unfolded to its concrete `+ so` form. The `simulateQ_add_*`
+  -- lemmas reduce the lifted nonce sample and the PRF oracle query to their concrete forms.
+  sorry
+
+/-- Per-reader-query equivalence: running the reduction's reader-oracle implementation through the
+real PRF simulator produces the same distribution and final state as the real auth-game reader
+oracle parameterised by `prfs.evalMultiple k`. -/
+private lemma simulateQ_prfReal_authToPRFReaderImpl_run
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag) (k : K)
+    (transcript : TagTranscript Nonce Digest) (s : AuthState TagId Nonce Digest) :
+    simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+        ((authToPRFReaderImpl
+            (TagId := TagId) (Nonce := Nonce) (Digest := Digest) transcript).run s) =
+      (authReaderQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => prfs.evalMultiple k tag nonce) transcript).run s := by
+  sorry
+
 /-- Inductive helper: simulating the auth-game adversary through the reduction's query
 implementation and then through the real PRF query implementation is the same, state-by-state,
 as simulating it directly through the real authentication query implementation with the hash set
@@ -572,7 +599,36 @@ private theorem simulateQ_prfReal_authToPRFQueryImpl_run
         (authRealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (fun tag nonce => prfs.evalMultiple k tag nonce))
         adversary).run s := by
-  sorry
+  induction adversary using OracleComp.inductionOn generalizing s with
+  | pure x =>
+    simp only [simulateQ_pure, StateT.run_pure]
+    rfl
+  | query_bind t f ih =>
+    simp only [simulateQ_bind, StateT.run_bind, simulateQ_spec_query]
+    rcases t with tag | transcript
+    · -- tag query case
+      change simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+            ((authToPRFTagImpl tag).run s >>=
+              fun p => (simulateQ authToPRFQueryImpl (f p.1)).run p.2) =
+          (authTagQueryImpl
+            (fun tag nonce => prfs.evalMultiple k tag nonce) tag).run s >>=
+            fun p => (simulateQ (authRealQueryImpl
+              (fun tag nonce => prfs.evalMultiple k tag nonce)) (f p.1)).run p.2
+      rw [simulateQ_bind, simulateQ_prfReal_authToPRFTagImpl_run prfs k tag s]
+      refine bind_congr fun p => ?_
+      exact ih p.1 p.2
+    · -- reader query case
+      change simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+            ((authToPRFReaderImpl transcript).run s >>=
+              fun p => (simulateQ authToPRFQueryImpl (f p.1)).run p.2) =
+          (authReaderQueryImpl
+            (fun tag nonce => prfs.evalMultiple k tag nonce) transcript).run s >>=
+            fun p => (simulateQ (authRealQueryImpl
+              (fun tag nonce => prfs.evalMultiple k tag nonce)) (f p.1)).run p.2
+      rw [simulateQ_bind,
+        simulateQ_prfReal_authToPRFReaderImpl_run prfs k transcript s]
+      refine bind_congr fun p => ?_
+      exact ih p.1 p.2
 
 /-- The PRF reduction faithfully reproduces the real authentication experiment: under the real
 PRF, each oracle query at `(tag, nonce)` returns `prfs.evalMultiple k tag nonce`, so the reduction
@@ -584,17 +640,23 @@ theorem prfRealExp_authToPRFReduction_eq_authExp
         (authToPRFReduction (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary)] =
       Pr[= true | authExp (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) prfs adversary] := by
-  -- Proof obligation: after stripping the outer `let k ← prfs.keygen` binding via `bind_congr`,
-  -- the LHS reduces to `simulateQ (prfRealQueryImpl ...) (authToPRFReduction adv)` which by
-  -- `simulateQ_bind` and `simulateQ_pure` pushes the simulator into the inner stateful run,
-  -- yielding `(fun p => decide p.2.readerForged ≠ ∅) <$> simulateQ (prfRealQueryImpl ...)
-  -- ((simulateQ authToPRFQueryImpl adv).run AuthState.init)`. The corresponding term on the RHS
-  -- (after unfolding `authExp`) is `(fun p => decide p.2.readerForged ≠ ∅) <$> (simulateQ
-  -- (authRealQueryImpl (prfs.evalMultiple k)) adv).run AuthState.init`. The remaining gap is
-  -- exactly `simulateQ_prfReal_authToPRFQueryImpl_run`. Each step is mechanical but the unfold
-  -- has match-pattern bindings that need careful unraveling; left as a follow-up sorry while
-  -- the inductive helper itself is unproved. -/
-  sorry
+  suffices h : PRFScheme.prfRealExp prfs.multiplePRFScheme (authToPRFReduction adversary) =
+      authExp prfs adversary by rw [h]
+  unfold PRFScheme.prfRealExp authExp
+  refine bind_congr (m := ProbComp) fun k => ?_
+  show simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+      (authToPRFReduction adversary) =
+    (do let (_, st) ← (simulateQ (authRealQueryImpl
+      (fun tag nonce => prfs.evalMultiple k tag nonce)) adversary).run AuthState.init
+        return decide (st.readerForged ≠ ∅))
+  unfold authToPRFReduction
+  show simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+      ((simulateQ authToPRFQueryImpl adversary).run AuthState.init >>=
+        fun p => pure (decide (p.2.readerForged ≠ ∅))) = _
+  rw [simulateQ_bind,
+    simulateQ_prfReal_authToPRFQueryImpl_run prfs k adversary AuthState.init]
+  refine bind_congr fun p => ?_
+  rw [simulateQ_pure]
 
 /-- Authentication reduction statement: the success probability of the active-authentication
 adversary is bounded by the PRF distinguishing advantage of the canonical reduction plus the
