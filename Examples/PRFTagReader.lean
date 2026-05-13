@@ -470,7 +470,31 @@ variable {TagId Nonce Digest K : Type}
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
 
 /-- Authentication reduction statement: the real game is bounded by a PRF distinguishing advantage
-plus the success probability in the ideal authentication world. -/
+plus the success probability in the ideal authentication world.
+
+**Proof outline.** Construct a PRF distinguisher `prfAdv : PRFAdversary (TagId × Nonce) Digest`
+that simulates the auth game using its `(TagId × Nonce) →ₒ Digest` oracle in place of
+`prfs.evalMultiple k`.
+
+Strategy:
+1. **Reduction construction.** Define `authToPRFReduction adversary` as a
+   `PRFAdversary (TagId × Nonce) Digest`, an OracleComp that:
+   - Simulates the auth game with `authRealQueryImpl` parameterized by a hash that calls the
+     PRF oracle via `(PRFOracleSpec ...).query (Sum.inr (tag, nonce))` instead of the
+     concrete `prfs.evalMultiple k`.
+   - Returns `decide (st.readerForged ≠ ∅)` at the end.
+   Model on `prfReduction` in `Examples/PRGfromPRF.lean:81` which does the same shape for PRG.
+2. **Two correctness lemmas:**
+   - `prfRealExp ≡ authExp` when prfAdv is built from this reduction: with the real PRF oracle,
+     the simulated game is identical to `authExp` (which uses `prfs.evalMultiple k` directly).
+   - `prfIdealExp ≡ authIdealExp`: with the lazy random oracle, the simulated game's hash is
+     `prfs`-independent and matches the `authIdealQueryImpl` exactly. Requires matching the
+     state representations — `AuthState` vs `AuthIdealState` — but their `readerForged` fields
+     should agree by induction.
+3. **Final inequality.** By `authIdealExp_eq_zero`, `Pr[authIdealExp = true] = 0`. So
+   `prfAdvantage prfs.multiplePRFScheme prfAdv = |Pr[prfRealExp = true] - Pr[prfIdealExp = true]| =
+   |Pr[authExp = true] - Pr[authIdealExp = true]| = Pr[authExp = true]`. The stated `≤` bound
+   becomes equality after adding `Pr[authIdealExp = true] = 0`. -/
 theorem authExp_le_prfAdvantage_add_authIdeal
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
     (adversary : AuthAdversary TagId Nonce Digest) :
@@ -614,7 +638,30 @@ theorem authIdealExp_eq_zero
 
 /-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
 for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
-probability from the intermediate collision world. -/
+probability from the intermediate collision world.
+
+**Proof outline.** Two-PRF hybrid: real-multi → ideal-multi → bad-event-cap → ideal-single
+→ real-single. Each adjacent pair is bounded by either a PRF advantage or the bad-event
+probability:
+
+1. **Construct `multiAdv : PRFAdversary (TagId × Nonce) Digest`** that simulates the unlink
+   game using its function oracle as `prfs.evalMultiple k`. Returns the adversary's Bool guess.
+   Then `|Pr[real-multi unlink] - Pr[ideal-multi unlink]| ≤ prfAdvantage multiplePRFScheme multiAdv`
+   by the same reasoning as #203.
+2. **Construct `singleAdv : PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest`** similarly
+   for the single-session PRF.
+3. **Bad-event bound on `|ideal-multi - ideal-single|`.** This is the heart of the proof:
+   in both worlds the hash is a lazy random function; the games differ only when a
+   session-collision event occurs (two sessions on different `(tag, nonce)` slots happen to
+   share an output digest). The `unlinkBadExp` measures exactly this collision probability.
+   Standard "identical until bad" gives the gap is bounded by `Pr[unlinkBadExp = true]`.
+4. **Triangle assembly.** `|real-multi - real-single| ≤ |real-multi - ideal-multi| +
+   |ideal-multi - ideal-single| + |ideal-single - real-single| ≤ prfAdv₁ + Pr[bad] + prfAdv₂`.
+
+The bad-event step (3) is the tricky one. Tools available:
+- `OracleComp.ProgramLogic.Relational.identical_until_bad_with_flag` (general up-to-bad lemma)
+- `tvDist_simulateQ_withCaching_withProgramming_le_probEvent_bad` (a specialized instance for
+  cached/programmed oracles, may need adapting). -/
 theorem unlinkabilityAdvantage_le_two_prf_plus_collision
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
     (adversary : UnlinkAdversary TagId Nonce Digest) :
