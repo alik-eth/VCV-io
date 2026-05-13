@@ -545,29 +545,25 @@ variable {TagId Nonce Digest K : Type}
 /-- Authentication reduction statement: the real game is bounded by a PRF distinguishing advantage
 plus the success probability in the ideal authentication world.
 
-**Proof outline.** Construct a PRF distinguisher `prfAdv : PRFAdversary (TagId × Nonce) Digest`
-that simulates the auth game using its `(TagId × Nonce) →ₒ Digest` oracle in place of
-`prfs.evalMultiple k`.
+A reduction skeleton `authToPRFReduction` is defined above (in the `AuthReduction` section). It
+simulates the auth game with each call to `prfs.evalMultiple k tag nonce` replaced by a query to
+the PRF oracle on `(tag, nonce)`. Under the real PRF, the reduction faithfully reproduces
+`authExp`, so `Pr[prfRealExp (authToPRFReduction adversary)] = Pr[authExp ...]`.
 
-Strategy:
-1. **Reduction construction.** Define `authToPRFReduction adversary` as a
-   `PRFAdversary (TagId × Nonce) Digest`, an OracleComp that:
-   - Simulates the auth game with `authRealQueryImpl` parameterized by a hash that calls the
-     PRF oracle via `(PRFOracleSpec ...).query (Sum.inr (tag, nonce))` instead of the
-     concrete `prfs.evalMultiple k`.
-   - Returns `decide (st.readerForged ≠ ∅)` at the end.
-   Model on `prfReduction` in `Examples/PRGfromPRF.lean:81` which does the same shape for PRG.
-2. **Two correctness lemmas:**
-   - `prfRealExp ≡ authExp` when prfAdv is built from this reduction: with the real PRF oracle,
-     the simulated game is identical to `authExp` (which uses `prfs.evalMultiple k` directly).
-   - `prfIdealExp ≡ authIdealExp`: with the lazy random oracle, the simulated game's hash is
-     `prfs`-independent and matches the `authIdealQueryImpl` exactly. Requires matching the
-     state representations — `AuthState` vs `AuthIdealState` — but their `readerForged` fields
-     should agree by induction.
-3. **Final inequality.** By `authIdealExp_eq_zero`, `Pr[authIdealExp = true] = 0`. So
-   `prfAdvantage prfs.multiplePRFScheme prfAdv = |Pr[prfRealExp = true] - Pr[prfIdealExp = true]| =
-   |Pr[authExp = true] - Pr[authIdealExp = true]| = Pr[authExp = true]`. The stated `≤` bound
-   becomes equality after adding `Pr[authIdealExp = true] = 0`. -/
+**Open issue.** The bound as stated requires `Pr[prfIdealExp (red)] ≤ Pr[authIdealExp] = 0` (since
+`authIdealExp_eq_zero` proves the look-up-only ideal world has probability zero of forgery). With
+the natural reduction whose reader queries the PRF oracle at every tag, this fails: the lazy
+random oracle returns uniformly random digests on unqueried `(tag, nonce)` pairs, so the reader
+detects a "match" against the adversary-supplied `transcript.auth` with probability roughly
+`|TagId|/|Digest|` per reader query. The standard textbook bound therefore reads
+`Pr[authExp] ≤ prfAdv + q_reader · |TagId| / |Digest|`, but that extra random-match term is not
+present in the theorem signature.
+
+Resolving this likely requires either (i) redefining `authIdealExp` to allow the reader to make
+random-oracle queries — in which case `Pr[authIdealExp]` becomes the random-match probability and
+is no longer zero — or (ii) introducing an intermediate "random function" experiment between
+`authExp` and the look-up-only `authIdealExp`. Both are design decisions that exceed the scope of
+filling this one sorry. -/
 theorem authExp_le_prfAdvantage_add_authIdeal
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
     (adversary : AuthAdversary TagId Nonce Digest) :
