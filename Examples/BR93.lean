@@ -209,7 +209,23 @@ def inverter (tdp : TrapdoorPermutation PK SK Rand)
 
 omit [Fintype Rand] [Fintype M] [DecidableEq M] in
 /-- Up-to-bad step: replacing the challenge hash query with a fresh uniform mask changes the
-game by at most the bad-event probability. -/
+game by at most the bad-event probability.
+
+**Proof outline.** Up-to-bad lemma between `cpaGame` (where the challenge hash is `RO(r)`,
+cached) and `game1` (where the challenge hash is fresh uniform, not cached). The two games
+diverge only when the adversary subsequently queries the RO at the hidden `r`.
+
+Strategy:
+1. Couple the RO state between the two games: identical on all entries except possibly `r`.
+2. Show that conditioned on "adversary never queries `r`", the games are perfectly coupled,
+   so their indicator functions agree.
+3. Bound the failure-of-coupling probability by `Pr[adversary queries r]`, which is
+   `badEventProb` (the bad event is defined exactly as "RO log contains an entry at `r`").
+4. Standard up-to-bad gives `|Pr[cpa] - Pr[game1]| ≤ Pr[bad]`.
+
+Tools likely needed:
+- A coupling/identical-until-bad lemma for `withLogging` / `randomOracle` (may need to add).
+- `probEvent_diff_le_probEvent_bad` style lemma at SPMF/ProbComp level. -/
 theorem cpaGame_gap_le_badEvent (adv : CPA_Adv (PK := PK) (Rand := Rand) (M := M)) :
     |(Pr[= true | cpaGame tdp adv]).toReal -
       (Pr[= true | game1 tdp adv]).toReal| ≤
@@ -218,7 +234,35 @@ theorem cpaGame_gap_le_badEvent (adv : CPA_Adv (PK := PK) (Rand := Rand) (M := M
 
 omit [Fintype Rand] [Fintype M] [DecidableEq M] in
 /-- Uniform masking step: once the challenge hash output is replaced by a fresh uniform mask,
-adding either challenge message yields the same ciphertext distribution. -/
+adding either challenge message yields the same ciphertext distribution.
+
+**Proof outline.** Distribution equality between `game1` and `game2`. Two structural
+differences:
+- `game1` samples `b ← uniform Bool` *inside* the `simulateQ` block; `game2` samples `b`
+  *outside* the simulation.
+- `game1` computes `c.2 = h + (if b then m₁ else m₂)`; `game2` computes `c.2 = h`.
+
+Strategy:
+1. **Translation invariance of uniform `M`.** Since `M` is `AddCommGroup` and `h ← $ᵗ M`,
+   for any fixed `x : M`, `h + x` has the same distribution as `h`. The relevant lemma is
+   `evalDist_add_right_uniform` (or its bind form `probOutput_bind_add_right_uniform`).
+2. **Commuting `b` out of the simulation.** `b` is independent of the RO state and only
+   used to select `if b then m₁ else m₂`. Once the addition is eliminated (step 1), `b`
+   no longer enters the inner simulation at all — only into the final `(b == b')` return.
+   By independence, we can pull `b ← $ᵗ Bool` to the outermost position.
+3. **Match game2's structure.** After steps 1-2, game1's structure becomes:
+   `do let b ← $ᵗ Bool; let b' ← (simulation without b); return (b == b')`, which is
+   exactly `game2`'s shape.
+
+Tools available in-repo:
+- `evalDist_add_right_uniform [AddGroup α] (m : α)` at `SampleableType.lean:174`.
+- `probOutput_bind_add_right_uniform` (bind form).
+- `simulateQ_bind` for pushing `simulateQ` through `do`-block binds.
+- `evalDist_ext` for pointwise equality.
+
+The challenge is that the uniform-`h` sample is *inside* a `simulateQ roQueryImpl` block,
+not a raw `ProbComp`. We need a lemma that lets us push `evalDist` through `simulateQ`
+and `.run' ∅` to apply the `ProbComp`-level translation lemma. -/
 theorem game1_eq_game2 (adv : CPA_Adv (PK := PK) (Rand := Rand) (M := M)) :
     𝒟[game1 tdp adv] = 𝒟[game2 tdp adv] := by
   sorry
@@ -241,7 +285,34 @@ theorem game2_eq_half (adv : CPA_Adv (PK := PK) (Rand := Rand) (M := M)) :
 
 omit [Fintype Rand] [Fintype M] [DecidableEq M] in
 /-- The bad event is bounded by the trapdoor-preimage advantage of the inverter
-constructed from the adversary's random-oracle transcript. -/
+constructed from the adversary's random-oracle transcript.
+
+**Proof outline.** The `inverter` runs the adversary in a game where the challenge ciphertext
+uses `y` (the TDP challenge) directly as the first component, then searches the adversary's
+RO query log for an `r'` with `tdp.forward pk r' = y`.
+
+Strategy:
+1. **Distribution alignment.** In `badEventExp`, `y := tdp.forward pk r` for uniform `r`.
+   In `tdpAdvantage`, `y := tdp.forward pk r` for uniform `r` (the TDP challenge sampler).
+   By `TrapdoorPermutation` being a bijection on `Rand`, the marginal distribution of `y`
+   is the same in both experiments.
+2. **Adversary view equivalence.** In `badEventExp`, the adversary sees a ciphertext built
+   from `y` (the trapdoor of `r`) and `h + if b then m₁ else m₂` (with `h` uniform).
+   In the `inverter`'s simulation, the adversary sees exactly the same data: `(y, h + ...)`
+   with `y` from the outside challenge and `h` uniform. So the adversaries' RO query logs
+   have identical distributions.
+3. **Bad event implies inverter success.** The bad event fires iff the RO log contains an
+   entry at `r`. Since `r` is the unique preimage of `y` under `tdp.forward pk`, the
+   inverter's `log.find?` returns this `r`, and `tdp.forward pk r = y` (the success
+   predicate of the TDP experiment).
+4. **Probability comparison.** Therefore
+   `Pr[bad event] ≤ Pr[inverter outputs an r with tdp.forward pk r = y] = tdpAdvantage`.
+
+Tools likely needed:
+- A `TrapdoorPermutation.bijective` lemma (or `forward_uniform_eq_uniform`).
+- `simulateQ_withLogging` interaction lemmas (the log shape factoring out of the simulation).
+- `List.find?` reasoning to relate "log contains entry at `r`" to "inverter outputs the
+  right preimage". -/
 theorem badEventProb_le_tdpAdvantage (adv : CPA_Adv (PK := PK) (Rand := Rand) (M := M)) :
     badEventProb tdp adv ≤
       (tdpAdvantage tdp (inverter tdp adv)).toReal := by
