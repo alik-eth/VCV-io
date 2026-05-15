@@ -2609,6 +2609,23 @@ instance pNonceDecidable (n : Nonce) :
   | inr tr => exact (inferInstance : Decidable (tr.nonce = n))
   | inl _ => exact (inferInstance : Decidable False)
 
+/-- The adversary's reader queries use pairwise-distinct nonces: every nonce `n` is carried by at
+most one reader query. This is the public hypothesis under which the random-function collision
+bound is fully proven (`authRFExp_le_collisionBound_of_distinctReaderNonces` and its uniform
+specialization); it rules out the shared-cache obstruction that keeps the unrestricted
+`authRFExp_le_collisionBound_conjecture` open. -/
+def HasDistinctReaderNonces (adversary : AuthAdversary TagId Nonce Digest) : Prop :=
+  ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1
+
+/-- `HasDistinctReaderNonces` unfolds definitionally to a per-nonce reader-query bound: it holds
+exactly when, for every nonce `n`, at most one reader query carries `n`. Use this lemma to
+discharge the hypothesis from a per-nonce `IsQueryBoundP` family, or to peel it back when a proof
+needs the underlying bound directly. -/
+lemma hasDistinctReaderNonces_iff (adversary : AuthAdversary TagId Nonce Digest) :
+    HasDistinctReaderNonces adversary ↔
+      ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1 :=
+  Iff.rfl
+
 /-- Coupled invariant carried by the random-function collision induction. A state `st` satisfies
 `forgeInv adversary st` when no forgery has been recorded yet and every cached cell at column
 `nonce` is either an honest tag output or sits in a column the residual adversary will never query
@@ -3020,8 +3037,8 @@ reader queries use pairwise-distinct nonces. For such an adversary making at mos
 queries, the probability that the random-function reader records a forged acceptance is at most
 `q * |TagId| * maxDigestProb`.
 
-The distinctness hypothesis `hdistinct` states that, for every nonce `n`, at most one reader query
-carries `n`. It rules out the shared-cache obstruction of the unrestricted
+The distinctness hypothesis `HasDistinctReaderNonces adversary` states that every nonce is carried
+by at most one reader query. It rules out the shared-cache obstruction of the unrestricted
 `authRFExp_le_collisionBound_conjecture`:
 because no two reader queries write the same cache column, every cached cell in a reader query's
 column was produced by an honest tag output, so the per-reader-step forge probability is genuinely
@@ -3030,7 +3047,7 @@ theorem authRFExp_le_collisionBound_of_distinctReaderNonces
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
-    (hdistinct : ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1)
+    (hdistinct : HasDistinctReaderNonces adversary)
     (maxDigestProb : ℝ)
     (hmax : ∀ d : Digest,
       (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
@@ -3108,7 +3125,7 @@ theorem authRFExp_le_uniformCollisionBound_of_distinctReaderNonces [Fintype Dige
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
-    (hdistinct : ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1) :
+    (hdistinct : HasDistinctReaderNonces adversary) :
     (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
       (Digest := Digest) adversary]).toReal ≤
       ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
