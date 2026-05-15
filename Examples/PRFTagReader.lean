@@ -296,6 +296,66 @@ def authIdealExp
 
 end AuthIdealGame
 
+section AuthRFGame
+
+variable {TagId Nonce Digest : Type}
+  [DecidableEq TagId] [Fintype TagId] [Nonempty TagId]
+  [DecidableEq Nonce] [SampleableType Nonce]
+  [DecidableEq Digest] [SampleableType Digest]
+
+/-- Lazy random-function lookup at `(tag, nonce)`: return the cached digest if present, otherwise
+sample a fresh uniform digest and cache it. This is the `randomOracle` step expressed directly on
+the `responses` table of `AuthIdealState`. -/
+def authRFLookup (tag : TagId) (nonce : Nonce) :
+    StateT (AuthIdealState TagId Nonce Digest) ProbComp Digest := do
+  let st ← get
+  match st.responses (tag, nonce) with
+  | some d => pure d
+  | none =>
+      let d ← ($ᵗ Digest : ProbComp Digest)
+      set ({ st with responses := st.responses.cacheQuery (tag, nonce) d } :
+        AuthIdealState TagId Nonce Digest)
+      return d
+
+/-- Reader oracle for the random-function authentication world. Unlike the look-up-only
+`authIdealReaderQueryImpl`, this reader queries the lazy random function for every tag at the
+transcript's nonce, creating fresh cache entries for uncached pairs. It accepts when some digest
+matches the submitted authenticator and records non-honest matches as forgeries. -/
+noncomputable def authRFReaderQueryImpl :
+    QueryImpl ((TagTranscript Nonce Digest) →ₒ ReaderReply)
+      (StateT (AuthIdealState TagId Nonce Digest) ProbComp) := fun transcript => do
+  let pairs ← (Finset.univ : Finset TagId).toList.mapM (fun tag => do
+    let d ← authRFLookup (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      tag transcript.nonce
+    return (tag, d))
+  let st ← get
+  let accepted : Bool := decide (∃ p ∈ pairs, p.2 = transcript.auth)
+  let newForged : Finset TagId :=
+    ((pairs.filter fun p => decide (p.2 = transcript.auth ∧
+        (p.1, transcript) ∉ st.honestOutputs)).map Prod.fst).toFinset
+  set ({ st with readerForged := st.readerForged ∪ (newForged.image (·, transcript)) } :
+    AuthIdealState TagId Nonce Digest)
+  return ReaderReply.ofBool accepted
+
+/-- Combined oracle implementation for the random-function authentication world: the honest tag
+oracle of the ideal world together with the fresh-drawing random-function reader. -/
+noncomputable def authRFQueryImpl :
+    QueryImpl (AuthOracleSpec TagId Nonce Digest)
+      (StateT (AuthIdealState TagId Nonce Digest) ProbComp) :=
+  authIdealTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) +
+    authRFReaderQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+
+/-- Direct form of the random-function authentication experiment: run the adversary against
+`authRFQueryImpl` and win when a forged reader acceptance is recorded. -/
+noncomputable def authRFDirectExp
+    (adversary : AuthAdversary TagId Nonce Digest) : ProbComp Bool := do
+  let (_, st) ← (simulateQ
+    (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
+    adversary).run AuthIdealState.init
+  return decide (st.readerForged ≠ ∅)
+
+end AuthRFGame
+
 section AuthReduction
 
 variable {TagId Nonce Digest : Type}
@@ -937,6 +997,19 @@ theorem authIdealExp_eq_zero
   intro hmem
   rw [authIdealExp, mem_support_bind_iff] at hmem
   grind
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The random-function authentication experiment coincides with its direct form: running the PRF
+reduction against a lazy random oracle (`authRFExp`) produces the same distribution as running the
+adversary against the directly-defined random-function oracle `authRFQueryImpl` (`authRFDirectExp`).
+
+The lazy random oracle answering the reduction's PRF queries at `(tag, nonce)` is exactly the
+`responses` table threaded by `authRFQueryImpl`. -/
+theorem authRFExp_eq_authRFDirectExp
+    (adversary : AuthAdversary TagId Nonce Digest) :
+    authRFExp (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary =
+      authRFDirectExp (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary := by
+  sorry
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Collision bound for the random-function authentication world: the probability that the
