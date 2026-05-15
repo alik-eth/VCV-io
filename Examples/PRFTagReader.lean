@@ -6,6 +6,7 @@ Authors: Quang Dao
 
 import VCVio.CryptoFoundations.PRF
 import VCVio.OracleComp.SimSemantics.StateT.PreservesInv
+import VCVio.OracleComp.QueryTracking.QueryBound
 
 /-!
 # PRF Tag/Reader Protocol
@@ -936,6 +937,54 @@ theorem authIdealExp_eq_zero
   intro hmem
   rw [authIdealExp, mem_support_bind_iff] at hmem
   grind
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Collision bound for the random-function authentication world: the probability that the
+random-function reader records a forged acceptance is bounded by the number of reader queries the
+adversary may make, times `|TagId|`, times the per-digest sampling probability `maxDigestProb`.
+
+A forged acceptance can only arise from a *fresh* random-oracle draw: if the reader's query at
+`(tag, transcript.nonce)` is already cached, the cached digest was produced by an honest tag
+output, so a match against `transcript.auth` lands inside `honestOutputs` and is never recorded as
+forged. Each fresh draw is a uniform `Digest`, matching the adversary-chosen `transcript.auth` with
+probability at most `maxDigestProb`; every reader query triggers at most `|TagId|` fresh draws. -/
+theorem authRFExp_le_collisionBound
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (maxDigestProb : ℝ)
+    (hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb := by
+  -- Proof outline:
+  -- 1. (task #42) Restructure `Pr[authRFExp]` so a forged acceptance coincides with a fresh
+  --    random-oracle draw at some `(tag, nonce)` returning the adversary's submitted `auth`.
+  -- 2. (task #43) Inductive per-step bound `simulateQ_authRF_prob_le`: induct over `adversary`
+  --    with a budget-carrying invariant on the lazy random-oracle cache; each reader query
+  --    contributes at most `|TagId| * maxDigestProb`, each tag query contributes `0`.
+  -- 3. Convert the resulting `ℝ≥0∞` bound to `ℝ` via `ENNReal.toReal_mono` and `hq` to discharge
+  --    the total reader-query budget `q`.
+  sorry
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound`: when `Digest` is finite and
+sampled uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound is
+`qReader * |TagId| / |Digest|`. -/
+theorem authRFExp_le_uniformCollisionBound [Fintype Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+  have hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ (Fintype.card Digest : ℝ)⁻¹ := fun d => by
+    simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
+  have h := authRFExp_le_collisionBound (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    adversary q hq ((Fintype.card Digest : ℝ)⁻¹) hmax
+  rwa [div_eq_mul_inv]
 
 /-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
 for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
