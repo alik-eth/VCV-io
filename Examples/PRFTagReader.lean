@@ -1045,7 +1045,7 @@ private lemma simulateQ_prfIdeal_authToPRFTagImpl_run
   simp only [simulateQ_bind, simulateQ_map, monadLift_eq_self, hlift, hquery]
   simp only [randomOracle.apply_eq, StateT.run_bind, StateT.run_map, StateT.run_monadLift,
     StateT.run_get, StateT.run_modifyGet, StateT.run_pure, map_bind, bind_map, map_map,
-    Function.comp, bind_pure_comp, authRFBundle]
+    Function.comp, authRFBundle]
   rfl
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
