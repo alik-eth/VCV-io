@@ -2626,6 +2626,26 @@ lemma hasDistinctReaderNonces_iff (adversary : AuthAdversary TagId Nonce Digest)
       ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1 :=
   Iff.rfl
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Every `pNonce n`-query is a reader query: `pNonce n` is false on tag (`Sum.inl`) queries and,
+on reader (`Sum.inr`) queries, refines `Sum.isRight`. -/
+lemma pNonce_imp_isRight (n : Nonce) (t : (AuthOracleSpec TagId Nonce Digest).Domain) :
+    pNonce (TagId := TagId) (Digest := Digest) n t → t.isRight := by
+  cases t with
+  | inl x => exact fun h => (h : (False : Prop)).elim
+  | inr tr => exact fun _ => rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Intro lemma: an adversary making at most one reader query has pairwise-distinct reader nonces.
+A single reader query cannot collide with itself, so the per-nonce bound holds for free; this is
+the common case where no bespoke distinctness argument is needed. Adversaries with no reader
+queries also qualify — feed `hq.mono (Nat.zero_le 1)`. -/
+theorem hasDistinctReaderNonces_of_readerBound
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) 1) :
+    HasDistinctReaderNonces adversary := fun n =>
+  OracleComp.IsQueryBoundP.of_imp (pNonce_imp_isRight n) hq
+
 /-- Coupled invariant carried by the random-function collision induction. A state `st` satisfies
 `forgeInv adversary st` when no forgery has been recorded yet and every cached cell at column
 `nonce` is either an honest tag output or sits in a column the residual adversary will never query
@@ -3136,6 +3156,22 @@ theorem authRFExp_le_uniformCollisionBound_of_distinctReaderNonces [Fintype Dige
     (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
     adversary q hq hdistinct ((Fintype.card Digest : ℝ)⁻¹) hmax
   rwa [div_eq_mul_inv]
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Worked specialization showing the proved bound in use: an adversary making at most one reader
+query satisfies the random-function collision bound with no separate distinctness hypothesis. A
+single reader query is vacuously distinct (`hasDistinctReaderNonces_of_readerBound`), so the
+forged-acceptance probability is at most `|TagId| / |Digest|`. -/
+theorem authRFExp_le_uniformCollisionBound_of_singleReaderQuery [Fintype Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) 1) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      (Fintype.card TagId : ℝ) / (Fintype.card Digest : ℝ) := by
+  have h := authRFExp_le_uniformCollisionBound_of_distinctReaderNonces
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    adversary 1 hq (hasDistinctReaderNonces_of_readerBound adversary hq)
+  simpa using h
 
 /-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
 for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
