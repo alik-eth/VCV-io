@@ -2597,7 +2597,7 @@ private lemma authRFReaderStep_forge_le
 reader query exactly when its transcript carries the nonce `n`, and never holds of a tag query.
 Bounding the number of `pNonce n`-queries by `1` for every `n` expresses that the adversary's
 reader queries use pairwise-distinct nonces. -/
-private def pNonce (n : Nonce) : (AuthOracleSpec TagId Nonce Digest).Domain → Prop :=
+def pNonce (n : Nonce) : (AuthOracleSpec TagId Nonce Digest).Domain → Prop :=
   fun i => match i with
     | Sum.inr tr => tr.nonce = n
     | Sum.inl _ => False
