@@ -3094,6 +3094,30 @@ theorem authRFExp_le_uniformCollisionBound [Fintype Digest]
     adversary q hq ((Fintype.card Digest : ℝ)⁻¹) hmax
   rwa [div_eq_mul_inv]
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound_of_distinctReaderNonces`: when
+`Digest` is finite and sampled uniformly, the per-digest probability is `1 / |Digest|`, so the
+distinct-reader-nonce collision bound reads `q * |TagId| / |Digest|`.
+
+Unlike `authRFExp_le_uniformCollisionBound`, whose derivation passes through the still-open
+`authRFExp_le_collisionBound`, this corollary is fully proven: it routes through
+`authRFExp_le_collisionBound_of_distinctReaderNonces`. -/
+theorem authRFExp_le_uniformCollisionBound_of_distinctReaderNonces [Fintype Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (hdistinct : ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+  have hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ (Fintype.card Digest : ℝ)⁻¹ := fun d => by
+    simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
+  have h := authRFExp_le_collisionBound_of_distinctReaderNonces
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    adversary q hq hdistinct ((Fintype.card Digest : ℝ)⁻¹) hmax
+  rwa [div_eq_mul_inv]
+
 /-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
 for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
 probability from the intermediate collision world. -/
