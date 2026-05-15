@@ -2986,7 +2986,7 @@ A forged acceptance can only arise from a *fresh* random-oracle draw: if the rea
 output, so a match against `transcript.auth` lands inside `honestOutputs` and is never recorded as
 forged. Each fresh draw is a uniform `Digest`, matching the adversary-chosen `transcript.auth` with
 probability at most `maxDigestProb`; every reader query triggers at most `|TagId|` fresh draws. -/
-theorem authRFExp_le_collisionBound
+theorem authRFExp_le_collisionBound_conjecture
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
@@ -3022,7 +3022,7 @@ queries, the probability that the random-function reader records a forged accept
 
 The distinctness hypothesis `hdistinct` states that, for every nonce `n`, at most one reader query
 carries `n`. It rules out the shared-cache obstruction of the unrestricted
-`authRFExp_le_collisionBound`:
+`authRFExp_le_collisionBound_conjecture`:
 because no two reader queries write the same cache column, every cached cell in a reader query's
 column was produced by an honest tag output, so the per-reader-step forge probability is genuinely
 bounded by `|TagId| * maxDigestProb`. -/
@@ -3077,10 +3077,10 @@ theorem authRFExp_le_collisionBound_of_distinctReaderNonces
   exact hconv
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
-/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound`: when `Digest` is finite and
-sampled uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound is
-`qReader * |TagId| / |Digest|`. -/
-theorem authRFExp_le_uniformCollisionBound [Fintype Digest]
+/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound_conjecture`: when `Digest` is
+finite and sampled uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound
+is `qReader * |TagId| / |Digest|`. -/
+theorem authRFExp_le_uniformCollisionBound_conjecture [Fintype Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q) :
@@ -3090,7 +3090,8 @@ theorem authRFExp_le_uniformCollisionBound [Fintype Digest]
   have hmax : ∀ d : Digest,
       (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ (Fintype.card Digest : ℝ)⁻¹ := fun d => by
     simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
-  have h := authRFExp_le_collisionBound (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+  have h := authRFExp_le_collisionBound_conjecture
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
     adversary q hq ((Fintype.card Digest : ℝ)⁻¹) hmax
   rwa [div_eq_mul_inv]
 
@@ -3099,8 +3100,9 @@ omit [Nonempty TagId] [NeZero sessionsPerTag] in
 `Digest` is finite and sampled uniformly, the per-digest probability is `1 / |Digest|`, so the
 distinct-reader-nonce collision bound reads `q * |TagId| / |Digest|`.
 
-Unlike `authRFExp_le_uniformCollisionBound`, whose derivation passes through the still-open
-`authRFExp_le_collisionBound`, this corollary is fully proven: it routes through
+Unlike `authRFExp_le_uniformCollisionBound_conjecture`, whose derivation passes through the
+still-open `authRFExp_le_collisionBound_conjecture`, this corollary is fully proven: it routes
+through
 `authRFExp_le_collisionBound_of_distinctReaderNonces`. -/
 theorem authRFExp_le_uniformCollisionBound_of_distinctReaderNonces [Fintype Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
