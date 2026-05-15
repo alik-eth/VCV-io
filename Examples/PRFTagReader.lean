@@ -3173,6 +3173,76 @@ theorem authRFExp_le_uniformCollisionBound_of_singleReaderQuery [Fintype Digest]
     adversary 1 hq (hasDistinctReaderNonces_of_readerBound adversary hq)
   simpa using h
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- End-to-end authentication bound, distinct-reader-nonce regime. Composing the PRF reduction
+`authExp_le_prfAdvantage_add_authRF` with the proved collision bound
+`authRFExp_le_collisionBound_of_distinctReaderNonces`, the active-authentication adversary's
+forgery probability is bounded by a single quantity: the PRF distinguishing advantage of the
+canonical reduction plus the collision term `q * |TagId| * maxDigestProb`.
+
+This is the result downstream users should cite — it folds the two-step reduction (PRF hop, then
+collision analysis) into one inequality, so there is no need to stitch the intermediate
+`authRFExp` world in by hand. -/
+theorem authExp_le_prfAdvantage_add_collisionBound
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (hdistinct : HasDistinctReaderNonces adversary)
+    (maxDigestProb : ℝ)
+    (hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
+    (Pr[= true | authExp (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) prfs adversary]).toReal ≤
+      PRFScheme.prfAdvantage prfs.multiplePRFScheme
+        (authToPRFReduction (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary) +
+      ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb := by
+  refine le_trans (authExp_le_prfAdvantage_add_authRF prfs adversary) ?_
+  gcongr
+  exact authRFExp_le_collisionBound_of_distinctReaderNonces adversary q hq hdistinct
+    maxDigestProb hmax
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Existential form of `authExp_le_prfAdvantage_add_collisionBound`: there is a PRF adversary
+whose distinguishing advantage, added to the distinct-reader-nonce collision term, bounds the
+authentication adversary's forgery probability. The witness is `authToPRFReduction adversary`. -/
+theorem exists_prfAdv_authExp_le_prfAdvantage_add_collisionBound
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (hdistinct : HasDistinctReaderNonces adversary)
+    (maxDigestProb : ℝ)
+    (hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
+    ∃ prfAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
+      (Pr[= true | authExp (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) prfs adversary]).toReal ≤
+        PRFScheme.prfAdvantage prfs.multiplePRFScheme prfAdv +
+        ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb :=
+  ⟨authToPRFReduction adversary,
+    authExp_le_prfAdvantage_add_collisionBound prfs adversary q hq hdistinct maxDigestProb hmax⟩
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Uniform-`Digest` specialization of `authExp_le_prfAdvantage_add_collisionBound`: when `Digest`
+is finite and sampled uniformly, the collision term reads `q * |TagId| / |Digest|`, so the
+authentication adversary's forgery probability is bounded by the PRF advantage plus
+`q * |TagId| / |Digest|`. -/
+theorem authExp_le_prfAdvantage_add_uniformCollisionBound [Fintype Digest]
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (hdistinct : HasDistinctReaderNonces adversary) :
+    (Pr[= true | authExp (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) prfs adversary]).toReal ≤
+      PRFScheme.prfAdvantage prfs.multiplePRFScheme
+        (authToPRFReduction (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary) +
+      ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+  refine le_trans (authExp_le_prfAdvantage_add_authRF prfs adversary) ?_
+  gcongr
+  exact authRFExp_le_uniformCollisionBound_of_distinctReaderNonces adversary q hq hdistinct
+
 /-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
 for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
 probability from the intermediate collision world. -/
