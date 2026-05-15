@@ -998,6 +998,30 @@ theorem authIdealExp_eq_zero
   rw [authIdealExp, mem_support_bind_iff] at hmem
   grind
 
+/-- Bundle a reduction state `AuthState × QueryCache` into the corresponding `AuthIdealState`:
+the lazy random-oracle cache becomes the `responses` table, and the observable logs carry
+through unchanged. -/
+private def authRFBundle
+    (p : AuthState TagId Nonce Digest × ((TagId × Nonce) →ₒ Digest).QueryCache) :
+    AuthIdealState TagId Nonce Digest where
+  responses := p.2
+  honestOutputs := p.1.honestOutputs
+  readerForged := p.1.readerForged
+
+omit [Fintype TagId] [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Per-tag-query equivalence (ideal side): simulating the reduction's tag oracle through the lazy
+random oracle, threaded through the cache, matches the ideal auth-game tag oracle. -/
+private lemma simulateQ_prfIdeal_authToPRFTagImpl_run
+    (tag : TagId) (s : AuthState TagId Nonce Digest)
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache) :
+    (fun p => (p.1.1, authRFBundle (p.1.2, p.2))) <$>
+        ((simulateQ (PRFScheme.prfIdealQueryImpl (D := TagId × Nonce) (R := Digest))
+          ((authToPRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) tag).run
+            s)).run c) =
+      (authIdealTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest) tag).run
+        (authRFBundle (s, c)) := by
+  sorry
+
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- The random-function authentication experiment coincides with its direct form: running the PRF
 reduction against a lazy random oracle (`authRFExp`) produces the same distribution as running the
