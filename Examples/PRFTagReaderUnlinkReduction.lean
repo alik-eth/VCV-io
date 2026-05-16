@@ -166,6 +166,171 @@ The three lemmas below are the analytic content of the reduction. The first two 
 faithfulness lemmas (each provable by the same simulation-collapse argument as the auth-side
 `prfRealExp_authToPRFReduction_eq_authExp`); the third is the identical-until-bad coupling. -/
 
+omit [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce] [DecidableEq Digest]
+  [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- Per-tag-query equivalence, multiple-session world: running the reduction's tag-oracle
+implementation through the real PRF simulator produces the same distribution and final state as
+the real multiple-session unlinkability tag oracle parameterised by `prfs.evalMultiple k`. -/
+private lemma simulateQ_prfReal_unlinkToMultiplePRFTagImpl_run
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag) (k : K)
+    (tag : TagId) (s : UnlinkState TagId) :
+    simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+        ((unlinkToMultiplePRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) tag).run s) =
+      (unlinkTagQueryImpl (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => prfs.evalMultiple k tag nonce)
+        (multiplePattern (TagId := TagId) sessionsPerTag) tag).run s := by
+  let so : QueryImpl ((TagId × Nonce) →ₒ Digest) ProbComp :=
+    fun d => pure (prfs.multiplePRFScheme.eval k d)
+  let impl : QueryImpl (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp :=
+    HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp) + so
+  have hImplEq : impl = PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k := rfl
+  have hleft : ∀ {α : Type} (oa : ProbComp α),
+      simulateQ impl (liftComp oa (unifSpec + ((TagId × Nonce) →ₒ Digest))) = oa := by
+    intro α oa
+    trans simulateQ (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) oa
+    · exact QueryImpl.simulateQ_add_liftComp_left
+        (impl₁' := HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp))
+        (impl₂' := so) oa
+    · exact simulateQ_ofLift_eq_self _
+  have hquery : ∀ (d : TagId × Nonce),
+      simulateQ impl
+        (liftM ((unifSpec + ((TagId × Nonce) →ₒ Digest)).query (Sum.inr d)) :
+          OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) _) =
+      (pure (prfs.evalMultiple k d.1 d.2) : ProbComp Digest) := by
+    intro d
+    rw [simulateQ_spec_query]
+    show impl (Sum.inr d) = _
+    simp [impl, so, QueryImpl.add_apply_inr, TagReaderPRFs.multiplePRFScheme]
+  unfold unlinkToMultiplePRFTagImpl unlinkTagQueryImpl
+  rw [← hImplEq]
+  by_cases hs : s.sessionsUsed tag < sessionsPerTag
+  · simp only [StateT.run_bind, StateT.run_get, StateT.run_monadLift,
+      bind_pure_comp, pure_bind, dif_pos hs]
+    change @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+    simp only [simulateQ_bind, simulateQ_map, monadLift_eq_self, hleft]
+    refine bind_congr fun nonce => ?_
+    erw [hquery (tag, nonce.1)]
+    rfl
+  · simp only [StateT.run_bind, StateT.run_get,
+      bind_pure_comp, pure_bind, dif_neg hs]
+    change @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+    simp only [StateT.run_pure, simulateQ_pure]
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- Per-reader-query equivalence, multiple-session world: running the reduction's reader-oracle
+implementation through the real PRF simulator produces the same distribution and final state as
+the real multiple-session unlinkability reader oracle parameterised by `prfs.evalMultiple k`. -/
+private lemma simulateQ_prfReal_unlinkToMultiplePRFReaderImpl_run
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag) (k : K)
+    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+        ((unlinkToMultiplePRFReaderImpl
+            (TagId := TagId) (Nonce := Nonce) (Digest := Digest) transcript).run s) =
+      (unlinkReaderQueryImpl (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => prfs.evalMultiple k tag nonce)
+        (multiplePattern (TagId := TagId) sessionsPerTag) transcript).run s := by
+  let so : QueryImpl ((TagId × Nonce) →ₒ Digest) ProbComp :=
+    fun d => pure (prfs.multiplePRFScheme.eval k d)
+  let impl : QueryImpl (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp :=
+    HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp) + so
+  have hImplEq : impl = PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k := rfl
+  have hquery : ∀ (d : TagId × Nonce),
+      simulateQ impl
+        (liftM ((unifSpec + ((TagId × Nonce) →ₒ Digest)).query (Sum.inr d)) :
+          OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) _) =
+      (pure (prfs.evalMultiple k d.1 d.2) : ProbComp Digest) := by
+    intro d
+    rw [simulateQ_spec_query]
+    show impl (Sum.inr d) = _
+    simp [impl, so, QueryImpl.add_apply_inr, TagReaderPRFs.multiplePRFScheme]
+  have hmapM :
+      simulateQ impl
+        ((Finset.univ : Finset TagId).toList.mapM
+          (m := OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)))
+          (fun tag => ((unifSpec + ((TagId × Nonce) →ₒ Digest)).query
+            (Sum.inr (tag, transcript.nonce)) :
+            OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest)) Digest))) =
+      pure ((Finset.univ : Finset TagId).toList.map
+        fun tag => prfs.evalMultiple k tag transcript.nonce) := by
+    show @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+    rw [simulateQ_list_mapM]
+    induction (Finset.univ : Finset TagId).toList with
+    | nil => rfl
+    | cons t ts ih =>
+      rw [List.mapM_cons]
+      erw [hquery (t, transcript.nonce)]
+      rw [pure_bind, ih, pure_bind]
+      rfl
+  have hAccept :
+      decide (∃ d ∈ (Finset.univ : Finset TagId).toList.map
+        fun tag => prfs.evalMultiple k tag transcript.nonce, d = transcript.auth) =
+      unlinkReaderAccepts (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => prfs.evalMultiple k tag nonce)
+        (multiplePattern (TagId := TagId) sessionsPerTag) transcript := by
+    unfold unlinkReaderAccepts tagAccepts
+    simp only [List.mem_map, Finset.mem_toList, Finset.mem_univ, true_and, multiplePattern,
+      decide_eq_decide, decide_eq_true_eq]
+    constructor
+    · rintro ⟨d, ⟨tag, rfl⟩, hd⟩
+      exact ⟨tag, ⟨⟨0, Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)⟩, hd⟩⟩
+    · rintro ⟨tag, _, hd⟩
+      exact ⟨_, ⟨tag, rfl⟩, hd⟩
+  unfold unlinkToMultiplePRFReaderImpl unlinkReaderQueryImpl
+  simp only [bind_pure_comp]
+  rw [← hImplEq]
+  change @simulateQ _ (unifSpec + ((TagId × Nonce) →ₒ Digest)) ProbComp _ impl _ _ = _
+  simp only [StateT.run_map, StateT.run_monadLift, simulateQ_bind, simulateQ_map,
+    monadLift_eq_self, hmapM, pure_bind, simulateQ_pure, map_pure]
+  rw [hAccept]
+  rfl
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] in
+/-- Inductive helper, multiple-session world: simulating the unlinkability adversary through the
+reduction's query implementation and then through the real PRF query implementation is the same,
+state-by-state, as simulating it directly through the real multiple-session query implementation
+with the hash set to `prfs.evalMultiple k`. -/
+private theorem simulateQ_prfReal_unlinkToMultiplePRFQueryImpl_run
+    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag) (k : K)
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId) :
+    simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+        ((simulateQ
+          (unlinkToMultiplePRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag))
+          adversary).run s) =
+      (simulateQ
+        (unlinkMultipleQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          prfs k)
+        adversary).run s := by
+  induction adversary using OracleComp.inductionOn generalizing s with
+  | pure x =>
+    simp only [simulateQ_pure, StateT.run_pure]
+    rfl
+  | query_bind t f ih =>
+    simp only [simulateQ_bind, StateT.run_bind, simulateQ_spec_query]
+    rcases t with tag | transcript
+    · change simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+            ((unlinkToMultiplePRFTagImpl tag).run s >>=
+              fun p => (simulateQ unlinkToMultiplePRFQueryImpl (f p.1)).run p.2) =
+          (unlinkTagQueryImpl (fun tag nonce => prfs.evalMultiple k tag nonce)
+            (multiplePattern sessionsPerTag) tag).run s >>=
+            fun p => (simulateQ (unlinkMultipleQueryImpl prfs k) (f p.1)).run p.2
+      rw [simulateQ_bind, simulateQ_prfReal_unlinkToMultiplePRFTagImpl_run prfs k tag s]
+      refine bind_congr fun p => ?_
+      exact ih p.1 p.2
+    · change simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+            ((unlinkToMultiplePRFReaderImpl transcript).run s >>=
+              fun p => (simulateQ unlinkToMultiplePRFQueryImpl (f p.1)).run p.2) =
+          (unlinkReaderQueryImpl (fun tag nonce => prfs.evalMultiple k tag nonce)
+            (multiplePattern sessionsPerTag) transcript).run s >>=
+            fun p => (simulateQ (unlinkMultipleQueryImpl prfs k) (f p.1)).run p.2
+      rw [simulateQ_bind,
+        simulateQ_prfReal_unlinkToMultiplePRFReaderImpl_run prfs k transcript s]
+      refine bind_congr fun p => ?_
+      exact ih p.1 p.2
+
 /-- PRF-real faithfulness, multiple-session world: under the real PRF, each oracle query at
 `(tag, nonce)` returns `prfs.evalMultiple k tag nonce`, so the reduction runs exactly the
 multiple-session unlinkability game. -/
@@ -177,7 +342,20 @@ theorem prfRealExp_unlinkToMultiplePRFReduction_eq_unlinkMultipleExp
           (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary)] =
       Pr[= true | unlinkMultipleExp (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) (sessionsPerTag := sessionsPerTag) prfs adversary] := by
-  sorry
+  suffices h : PRFScheme.prfRealExp prfs.multiplePRFScheme
+      (unlinkToMultiplePRFReduction adversary) = unlinkMultipleExp prfs adversary by rw [h]
+  unfold PRFScheme.prfRealExp unlinkMultipleExp
+  refine bind_congr (m := ProbComp) fun k => ?_
+  show simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+      (unlinkToMultiplePRFReduction adversary) =
+    (simulateQ (unlinkMultipleQueryImpl prfs k) adversary).run' UnlinkState.init
+  unfold unlinkToMultiplePRFReduction
+  change simulateQ (PRFScheme.prfRealQueryImpl prfs.multiplePRFScheme k)
+      ((simulateQ unlinkToMultiplePRFQueryImpl adversary).run UnlinkState.init >>=
+        fun p => pure p.1) = _
+  rw [simulateQ_bind,
+    simulateQ_prfReal_unlinkToMultiplePRFQueryImpl_run prfs k adversary UnlinkState.init]
+  rfl
 
 /-- PRF-real faithfulness, single-session world: under the real PRF, each oracle query at
 `((tag, sid), nonce)` returns `prfs.evalSingle k tag sid nonce`, so the reduction runs exactly the
