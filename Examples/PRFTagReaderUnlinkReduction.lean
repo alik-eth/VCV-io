@@ -1125,40 +1125,24 @@ private lemma singleIdealQueryImpl_reader_run
   refine bind_congr fun rs => ?_
   rw [pure_bind]
 
-/-! ### Coupling invariant for the multiple-ideal / bad-event worlds
-
-`MBInv` is the coupling invariant relating the multiple-session ideal handler's state
-(`UnlinkState × QueryCache` over `TagId × Nonce`) and the bad-event world's state
-(`UnlinkBadState`). Two states are coupled when their session counters agree and their caches
-touch exactly the same `(tag, nonce)` cells. Under this invariant the two handlers step
-identically on every fresh cell and diverge only on a re-hit cell — exactly where the bad-event
-world sets its `bad` flag — so it is the right invariant for the identical-until-bad argument. -/
-
-/-- Coupling invariant between a multiple-ideal state and a bad-event state: equal session
-counters, and the two caches have the same set of touched `(tag, nonce)` cells. -/
-private def MBInv (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
-    (sB : UnlinkBadState TagId Nonce Digest) : Prop :=
-  sM.1.sessionsUsed = sB.sessionsUsed ∧
-    ∀ k : TagId × Nonce, (sM.2 k).isSome = (sB.responses k).isSome
-
-omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce] [DecidableEq Digest]
-  [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
-/-- The initial multiple-ideal state `(UnlinkState.init, ∅)` is coupled with the initial
-bad-event state `UnlinkBadState.init`. -/
-private lemma MBInv_init :
-    MBInv (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-      (UnlinkState.init, ∅) UnlinkBadState.init := by
-  refine ⟨rfl, fun k => ?_⟩
-  rfl
-
 /-- Core identical-until-bad coupling, stated directly on the composed ideal handlers and the
 bad-event world: the success probability of the multiple-session ideal world is bounded by that of
 the single-session ideal world plus the probability that the bad flag fires in `unlinkBadQueryImpl`.
 
-This is the analytic heart of `unlinkPRFIdeal_gap_le_unlinkBad`; once it is proven (by a coupling
-induction on the adversary, relating the two lazy-random-oracle caches and the bad-event cache),
-the top-level theorem follows by the `prfIdealExp_*_eq_run'` bridges and `ENNReal.toReal`
-monotonicity. -/
+This is the analytic heart of `unlinkPRFIdeal_gap_le_unlinkBad` and the one open obligation of the
+unlinkability reduction.
+
+Proof architecture (the genuine identical-until-bad pair is *multiple vs single*, not multiple vs
+bad). Both the multiple- and single-session ideal handlers are lazy-random-oracle worlds whose
+tag *and* reader oracles write the cache; they differ only in the oracle domain — `TagId × Nonce`
+for the multiple world, `(TagId × Fin sessionsPerTag) × Nonce` for the single world. They run
+identically until two sessions of one tag draw the same nonce: in the multiple world those two
+sessions collapse onto the single cache cell `(tag, nonce)` (the second reuses the first's digest),
+whereas in the single world they use the distinct slots `(tag, sid)` and stay independent. The
+bad-event world `unlinkBadQueryImpl` is a *measuring device* for exactly that nonce-collision
+event — it is not an intermediate world of an identical-until-bad chain. So the bound decomposes as
+`Pr[multiple] ≤ Pr[single] + Pr[nonce collision in the run]` (a cell-wise coupling of the two
+caches over the differing domains) together with `Pr[nonce collision] ≤ Pr[bad flag]`. -/
 private lemma multipleIdeal_le_singleIdeal_add_bad
     (adversary : UnlinkAdversary TagId Nonce Digest) :
     Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
