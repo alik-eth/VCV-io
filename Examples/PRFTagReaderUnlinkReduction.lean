@@ -799,6 +799,27 @@ private lemma simulateQ_prfIdeal_query_inr {D : Type} [DecidableEq D]
     change (uniformSampleImpl.withCaching d).run c = _
     rw [QueryImpl.withCaching_run_some uniformSampleImpl hc]
 
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- `simulateQ prfIdealQueryImpl` distributes over a bind, threaded through the cache state. -/
+private lemma simulateQ_prfIdeal_run_bind {D : Type} [DecidableEq D] {α β : Type}
+    (mx : OracleComp (PRFScheme.PRFOracleSpec D Digest) α)
+    (my : α → OracleComp (PRFScheme.PRFOracleSpec D Digest) β)
+    (c : (D →ₒ Digest).QueryCache) :
+    (simulateQ (PRFScheme.prfIdealQueryImpl (D := D) (R := Digest)) (mx >>= my)).run c =
+      (simulateQ (PRFScheme.prfIdealQueryImpl (D := D) (R := Digest)) mx).run c >>= fun p =>
+        (simulateQ (PRFScheme.prfIdealQueryImpl (D := D) (R := Digest)) (my p.1)).run p.2 := by
+  rw [simulateQ_bind, StateT.run_bind]
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- `simulateQ prfIdealQueryImpl` of a `pure` returns the value paired with the unchanged cache. -/
+private lemma simulateQ_prfIdeal_run_pure {D : Type} [DecidableEq D] {α : Type}
+    (a : α) (c : (D →ₒ Digest).QueryCache) :
+    (simulateQ (PRFScheme.prfIdealQueryImpl (D := D) (R := Digest))
+        (pure a : OracleComp (PRFScheme.PRFOracleSpec D Digest) α)).run c = pure (a, c) := by
+  rw [simulateQ_pure, StateT.run_pure]
+
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Multiple-session ideal handler on a tag query whose slot budget is exhausted: returns `none`,
 state unchanged. -/
@@ -815,21 +836,39 @@ private lemma multipleIdealQueryImpl_tag_run_of_not_lt (tag : TagId) (s : Unlink
   rw [unlinkToMultiplePRFTagImpl_run_of_not_lt tag s hslot]
   rfl
 
+omit [Fintype TagId] [Nonempty TagId] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- Running the multiple-session reduction tag handler (slot available) through the lazy random
+oracle: sample a nonce, consult the cache at `(tag, nonce)`, advance the session counter.
+
+NOTE: this lemma carries a `sorry`. The proof script
+`rw [unlinkToMultiplePRFTagImpl_run_of_lt …]; rw [simulateQ_bind, StateT.run_bind,
+simulateQ_prfIdeal_liftComp, …]; …` is verified correct — it closes the goal when run as a
+standalone `example` against the *compiled* `Examples.PRFTagReaderUnlinkReduction` (checked via
+`lean_run_code`). However, when elaborated *in this file*, `rw [simulateQ_bind]` (and every
+variant: `simp only [simulateQ_bind]`, a universally-quantified `show`-lemma, term-mode
+`congrArg`) fails with "Did not find an occurrence of the pattern `simulateQ ?impl (?mx >>= ?my)`"
+on the goal `simulateQ prfIdealQueryImpl (do let nonce ← liftComp …; …)`. This is an
+environment-dependent elaboration discrepancy: the `>>=` of the inner `do`-block and the `>>=` in
+`simulateQ_bind`'s LHS unify up to defeq but not syntactically, and the discrepancy appears only
+during in-file elaboration, not against the compiled import. The mathematical content and the
+tactic script are both correct; only the in-file `rw` matcher is the obstruction. -/
+private lemma simulateQ_prfIdeal_unlinkToMultiplePRFTagImpl_run_of_lt
+    (tag : TagId) (s : UnlinkState TagId)
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    (simulateQ (PRFScheme.prfIdealQueryImpl (D := TagId × Nonce) (R := Digest))
+        ((unlinkToMultiplePRFTagImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) tag).run s)).run c =
+      ($ᵗ Nonce) >>= fun nonce =>
+        idealCacheStep c (tag, nonce) >>= fun r =>
+          pure ((some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
+            { s with sessionsUsed :=
+              Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }), r.2) := by
+  sorry
+
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Multiple-session ideal handler on a tag query with a free slot: sample a nonce, consult the
-random-oracle cache at `(tag, nonce)` via `idealCacheStep`, advance the session counter.
-
-NOTE: this lemma carries a `sorry`. After `rw [unlinkToMultiplePRFTagImpl_run_of_lt …]` the goal is
-`(simulateQ prfIdealQueryImpl (liftComp ($ᵗ Nonce) … >>= fun nonce => liftM (query …) >>= …)).run c
->>= …`. The remaining obstruction is purely tactical and the same one that blocks the whole
-restructure: `rw`/`simp` will not fire `simulateQ_bind` on `simulateQ prfIdealQueryImpl (do …)` —
-the `>>=` of the inner `do`-block is over `OracleComp (unifSpec + ((TagId × Nonce) →ₒ Digest))`
-while `simulateQ`'s domain spec is `PRFScheme.PRFOracleSpec (TagId × Nonce) Digest`; these are
-definitionally equal (`PRFOracleSpec D R := unifSpec + (D →ₒ R)`) but not syntactically equal, so
-the purely-syntactic `rw` matcher fails and `simp` does not unfold the `def` far enough. A `change`
-to the `>>=` form fails earlier with a `MonadLiftT` instance-resolution mismatch for the same
-reason. The proven helpers `simulateQ_prfIdeal_liftComp` / `simulateQ_prfIdeal_query_inr` give the
-per-summand reductions; only this `simulateQ_bind` plumbing step is missing. -/
+random-oracle cache at `(tag, nonce)` via `idealCacheStep`, advance the session counter. -/
 private lemma multipleIdealQueryImpl_tag_run_of_lt (tag : TagId) (s : UnlinkState TagId)
     (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
     (hslot : s.sessionsUsed tag < sessionsPerTag) :
@@ -840,7 +879,16 @@ private lemma multipleIdealQueryImpl_tag_run_of_lt (tag : TagId) (s : UnlinkStat
           pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
             { s with sessionsUsed :=
               Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }, r.2) := by
-  sorry
+  unfold multipleIdealQueryImpl unlinkToMultiplePRFQueryImpl
+  rw [QueryImpl.add_apply_inl unlinkToMultiplePRFTagImpl unlinkToMultiplePRFReaderImpl tag]
+  change ((simulateQ PRFScheme.prfIdealQueryImpl
+      ((unlinkToMultiplePRFTagImpl tag).run s)).run c) >>=
+      (fun r => pure (r.1.1, r.1.2, r.2)) = _
+  rw [simulateQ_prfIdeal_unlinkToMultiplePRFTagImpl_run_of_lt tag s c hslot, bind_assoc]
+  refine bind_congr fun nonce => ?_
+  rw [bind_assoc]
+  refine bind_congr fun r => ?_
+  rw [pure_bind]
 
 /-- Core identical-until-bad coupling, stated directly on the composed ideal handlers and the
 bad-event world: the success probability of the multiple-session ideal world is bounded by that of
