@@ -562,6 +562,196 @@ theorem prfRealExp_unlinkToSinglePRFReduction_eq_unlinkSingleExp
     simulateQ_prfReal_unlinkToSinglePRFQueryImpl_run prfs k adversary UnlinkState.init]
   rfl
 
+/-! ### Composed ideal-world handlers
+
+The two ideal-PRF experiments are each a `simulateQ` of the lazy random oracle applied to the
+output of a `simulateQ` of the reduction's query implementation. The `*IdealQueryImpl` definitions
+below package that nested simulation as a single stateful handler over the unlinkability oracle
+interface, with state `UnlinkState TagId × QueryCache`. The `simulateQ_*Ideal_collapse` lemmas show
+that simulating the adversary through the composed handler reproduces the nested simulation up to
+the obvious reassociation of the product state. -/
+
+/-- Composed multiple-session ideal handler: run the reduction's query implementation, then
+interpret the resulting PRF-oracle queries through the lazy random oracle. -/
+noncomputable def multipleIdealQueryImpl :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache) ProbComp) :=
+  fun q => fun p => do
+    let r ← (simulateQ PRFScheme.prfIdealQueryImpl
+      ((unlinkToMultiplePRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) q).run p.1)).run p.2
+    return (r.1.1, (r.1.2, r.2))
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The nested simulation defining the multiple-session ideal experiment collapses to a single
+`simulateQ` of `multipleIdealQueryImpl`, up to reassociating the product state. -/
+private lemma simulateQ_multipleIdeal_collapse
+    (adv : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId) (c : ((TagId × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ PRFScheme.prfIdealQueryImpl
+        ((simulateQ (unlinkToMultiplePRFQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run s)).run c =
+      (fun r : (Bool × UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache) =>
+        ((r.1, r.2.1), r.2.2)) <$>
+        (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run (s, c) := by
+  induction adv using OracleComp.inductionOn generalizing s c with
+  | pure x => rw [simulateQ_pure, StateT.run_pure, simulateQ_pure]; rfl
+  | query_bind t f ih =>
+    rw [simulateQ_bind, StateT.run_bind]
+    change (simulateQ PRFScheme.prfIdealQueryImpl
+        ((simulateQ unlinkToMultiplePRFQueryImpl (liftM (OracleSpec.query t))).run s >>=
+          fun p => (simulateQ unlinkToMultiplePRFQueryImpl (f p.1)).run p.2)).run c = _
+    rw [simulateQ_bind, StateT.run_bind, simulateQ_bind, StateT.run_bind, map_bind]
+    have hhead : (simulateQ PRFScheme.prfIdealQueryImpl
+          ((simulateQ (unlinkToMultiplePRFQueryImpl (sessionsPerTag := sessionsPerTag))
+            (liftM (OracleSpec.query t))).run s)).run c =
+        (fun r : ((UnlinkOracleSpec TagId Nonce Digest).Range t × UnlinkState TagId ×
+            ((TagId × Nonce) →ₒ Digest).QueryCache) => ((r.1, r.2.1), r.2.2)) <$>
+          (multipleIdealQueryImpl (sessionsPerTag := sessionsPerTag) t).run (s, c) := by
+      rw [simulateQ_spec_query]
+      change _ = _ <$> (multipleIdealQueryImpl t (s, c))
+      simp only [multipleIdealQueryImpl, map_bind, map_pure]
+      rw [bind_pure]
+    rw [hhead, bind_map_left, simulateQ_spec_query]
+    refine bind_congr fun r => ?_
+    exact ih r.1 r.2.1 r.2.2
+
+/-- Composed single-session ideal handler: run the reduction's query implementation, then
+interpret the resulting PRF-oracle queries through the lazy random oracle. -/
+noncomputable def singleIdealQueryImpl :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId ×
+        (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) ProbComp) :=
+  fun q => fun p => do
+    let r ← (simulateQ PRFScheme.prfIdealQueryImpl
+      ((unlinkToSinglePRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) q).run p.1)).run p.2
+    return (r.1.1, (r.1.2, r.2))
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The nested simulation defining the single-session ideal experiment collapses to a single
+`simulateQ` of `singleIdealQueryImpl`, up to reassociating the product state. -/
+private lemma simulateQ_singleIdeal_collapse
+    (adv : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ PRFScheme.prfIdealQueryImpl
+        ((simulateQ (unlinkToSinglePRFQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run s)).run c =
+      (fun r : (Bool × UnlinkState TagId ×
+          (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) =>
+        ((r.1, r.2.1), r.2.2)) <$>
+        (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run (s, c) := by
+  induction adv using OracleComp.inductionOn generalizing s c with
+  | pure x => rw [simulateQ_pure, StateT.run_pure, simulateQ_pure]; rfl
+  | query_bind t f ih =>
+    rw [simulateQ_bind, StateT.run_bind]
+    change (simulateQ PRFScheme.prfIdealQueryImpl
+        ((simulateQ unlinkToSinglePRFQueryImpl (liftM (OracleSpec.query t))).run s >>=
+          fun p => (simulateQ unlinkToSinglePRFQueryImpl (f p.1)).run p.2)).run c = _
+    rw [simulateQ_bind, StateT.run_bind, simulateQ_bind, StateT.run_bind, map_bind]
+    have hhead : (simulateQ PRFScheme.prfIdealQueryImpl
+          ((simulateQ (unlinkToSinglePRFQueryImpl (sessionsPerTag := sessionsPerTag))
+            (liftM (OracleSpec.query t))).run s)).run c =
+        (fun r : ((UnlinkOracleSpec TagId Nonce Digest).Range t × UnlinkState TagId ×
+            (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) =>
+            ((r.1, r.2.1), r.2.2)) <$>
+          (singleIdealQueryImpl (sessionsPerTag := sessionsPerTag) t).run (s, c) := by
+      rw [simulateQ_spec_query]
+      change _ = _ <$> (singleIdealQueryImpl t (s, c))
+      simp only [singleIdealQueryImpl, map_bind, map_pure]
+      rw [bind_pure]
+    rw [hhead, bind_map_left, simulateQ_spec_query]
+    refine bind_congr fun r => ?_
+    exact ih r.1 r.2.1 r.2.2
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The multiple-session ideal-PRF experiment is the composed handler `multipleIdealQueryImpl`
+simulated over the adversary from the initial state. -/
+private lemma prfIdealExp_unlinkToMultiplePRFReduction_eq_run'
+    (adv : UnlinkAdversary TagId Nonce Digest) :
+    PRFScheme.prfIdealExp (unlinkToMultiplePRFReduction (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) adv) =
+      (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run' (UnlinkState.init, ∅) := by
+  unfold PRFScheme.prfIdealExp unlinkToMultiplePRFReduction
+  rw [StateT.run']
+  change (simulateQ PRFScheme.prfIdealQueryImpl
+      ((simulateQ unlinkToMultiplePRFQueryImpl adv).run UnlinkState.init >>=
+        fun p => pure p.1)).run' ∅ = _
+  rw [simulateQ_bind]
+  change ((simulateQ PRFScheme.prfIdealQueryImpl
+      ((simulateQ unlinkToMultiplePRFQueryImpl adv).run UnlinkState.init) >>=
+        fun p => simulateQ PRFScheme.prfIdealQueryImpl (pure p.1))).run' ∅ = _
+  rw [StateT.run'_eq, StateT.run_bind]
+  rw [simulateQ_multipleIdeal_collapse adv UnlinkState.init ∅]
+  rw [StateT.run'_eq, map_bind, bind_map_left]
+  refine bind_congr fun r => ?_
+  simp only [simulateQ_pure, StateT.run_pure, map_pure, Function.comp]
+  rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The single-session ideal-PRF experiment is the composed handler `singleIdealQueryImpl`
+simulated over the adversary from the initial state. -/
+private lemma prfIdealExp_unlinkToSinglePRFReduction_eq_run'
+    (adv : UnlinkAdversary TagId Nonce Digest) :
+    PRFScheme.prfIdealExp (unlinkToSinglePRFReduction (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) adv) =
+      (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run' (UnlinkState.init, ∅) := by
+  unfold PRFScheme.prfIdealExp unlinkToSinglePRFReduction
+  rw [StateT.run']
+  change (simulateQ PRFScheme.prfIdealQueryImpl
+      ((simulateQ unlinkToSinglePRFQueryImpl adv).run UnlinkState.init >>=
+        fun p => pure p.1)).run' ∅ = _
+  rw [simulateQ_bind]
+  change ((simulateQ PRFScheme.prfIdealQueryImpl
+      ((simulateQ unlinkToSinglePRFQueryImpl adv).run UnlinkState.init) >>=
+        fun p => simulateQ PRFScheme.prfIdealQueryImpl (pure p.1))).run' ∅ = _
+  rw [StateT.run'_eq, StateT.run_bind]
+  rw [simulateQ_singleIdeal_collapse adv UnlinkState.init ∅]
+  rw [StateT.run'_eq, map_bind, bind_map_left]
+  refine bind_congr fun r => ?_
+  simp only [simulateQ_pure, StateT.run_pure, map_pure, Function.comp]
+  rfl
+
+/-- Core identical-until-bad coupling, stated directly on the composed ideal handlers and the
+bad-event world: the success probability of the multiple-session ideal world is bounded by that of
+the single-session ideal world plus the probability that the bad flag fires in `unlinkBadQueryImpl`.
+
+This is the analytic heart of `unlinkPRFIdeal_gap_le_unlinkBad`; once it is proven (by a coupling
+induction on the adversary, relating the two lazy-random-oracle caches and the bad-event cache),
+the top-level theorem follows by the `prfIdealExp_*_eq_run'` bridges and `ENNReal.toReal`
+monotonicity. -/
+private lemma multipleIdeal_le_singleIdeal_add_bad
+    (adversary : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (UnlinkState.init, ∅)] ≤
+      Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (UnlinkState.init, ∅)] +
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
+        (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+          UnlinkBadState.init] := by
+  sorry
+
+/-- `unlinkBadExp` outputs `true` exactly with the probability that the bad flag fires. -/
+private lemma probOutput_unlinkBadExp_eq
+    (adversary : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | unlinkBadExp (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary] =
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
+        (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+          UnlinkBadState.init] := by
+  rw [← probEvent_eq_eq_probOutput, unlinkBadExp, probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+  refine tsum_congr fun z => ?_
+  by_cases hz : z.2.bad <;> simp [hz]
+
 /-- Identical-until-bad coupling: the gap between the two random-function worlds (the ideal-PRF
 experiments of the multiple- and single-session reductions) is bounded by the nonce-collision
 probability `unlinkBadExp`. The two worlds proceed identically until two sessions of one tag draw
@@ -576,7 +766,26 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad
           (sessionsPerTag := sessionsPerTag) adversary)]).toReal ≤
       (Pr[= true | unlinkBadExp (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal := by
-  sorry
+  have hcore := multipleIdeal_le_singleIdeal_add_bad (sessionsPerTag := sessionsPerTag) adversary
+  rw [prfIdealExp_unlinkToMultiplePRFReduction_eq_run' adversary,
+    prfIdealExp_unlinkToSinglePRFReduction_eq_run' adversary,
+    probOutput_unlinkBadExp_eq adversary]
+  set M := Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+    (UnlinkState.init, ∅)] with hM
+  set S := Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+    (UnlinkState.init, ∅)] with hS
+  set B := Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
+    (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+      UnlinkBadState.init] with hB
+  have hSt : S ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probOutput_le_one
+  have hBt : B ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probEvent_le_one
+  have hMt : M.toReal ≤ S.toReal + B.toReal := by
+    rw [← ENNReal.toReal_add hSt hBt]
+    exact ENNReal.toReal_mono (ENNReal.add_ne_top.mpr ⟨hSt, hBt⟩) hcore
+  linarith
 
 /-! ## Main reduction theorem -/
 
