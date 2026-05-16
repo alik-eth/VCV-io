@@ -1230,6 +1230,50 @@ private lemma MSBInv_init :
       (UnlinkState.init, ∅) (UnlinkState.init, ∅) UnlinkBadState.init :=
   ⟨rfl, rfl, rfl⟩
 
+/-! ### Open obligation: the multiple-vs-single cache coupling
+
+The two `sorry`-carrying lemmas below — `multipleIdeal_tag_step_le_single_add_bad` and
+`multipleIdeal_reader_step_le_single_add_slack` — are the sole open content of the unlinkability
+reduction. Everything else is proven: the telescoping
+`unlinkabilityAdvantage_le_two_prf_plus_collision`, both PRF-real bridges, the ideal-world collapse
+lemmas, the full per-query reduction toolkit, the induction skeleton
+`multipleIdeal_le_singleIdeal_add_bad_aux`, and the `pure` base case. Each residue lemma is one
+`OracleComp.inductionOn` step (tag query, resp. reader query) with the inductive hypothesis `ih`
+available; closing both closes the whole reduction.
+
+**Why this is hard — a state predicate is not enough.** `MSBInv` relates only the three handlers'
+session counters, which is why it is preserved by every step. But the per-step *probability* bound
+genuinely needs a coupling of the three caches — the multiple world's lazy random oracle over
+`TagId × Nonce`, the single world's over `(TagId × Fin sessionsPerTag) × Nonce`, and the bad
+world's list-valued `responses`. That coupling is probabilistic, not a state predicate: it must
+say the *sampled digests* line up, which an `OracleComp.inductionOn` over a `Prop`-valued
+invariant cannot express. An earlier attempt (`MBInv`, a "touched cells agree" predicate) was
+removed precisely because no state predicate is both expressive enough and step-stable.
+
+**The concrete obstruction.** A reader query writes **one** cache cell `(tag, n)` in the multiple
+world but **`sessionsPerTag` independent** cells `((tag, sid), n)` in the single world. To couple
+the two runs one must choose *which* of the single world's `sessionsPerTag` cells mirrors the
+multiple world's single cell — but the tag-session index `sid` that a later tag query will read
+is not known at the time of the reader query. A later tag session landing on a *non-mirrored*
+single-world cell is the source of the unconditional acceptance gap, and it is exactly what the
+`|TagId| * sessionsPerTag / |Digest|`-per-query reader-slack term pays for. The nonce-collision
+case (two tag sessions of one tag drawing the same nonce: reused in the multiple world, fresh in
+the single world) is what the `Pr[unlinkBadExp]` term pays for.
+
+**Recommended route.** A stepwise lazy-cache coupling appears intractable. Reformulate both ideal
+worlds by *eager sampling*: draw the entire random-oracle table up front (`fM : TagId × Nonce →
+Digest`, `fS : (TagId × Fin sessionsPerTag) × Nonce → Digest`), prove each eager world equal in
+distribution to its lazy form, then run both deterministically against a *coupled* pair of tables
+(identify `fM (tag, n)` with `fS ((tag, sid₀), n)` for a fixed reference slot `sid₀`). With the
+tables fixed, the two runs are deterministic and divergence becomes a decidable event on the
+tables — bounded by a union bound: nonce collision (→ `Pr[unlinkBadExp]`) plus a later tag session
+reading a non-reference single-world cell (→ the reader-slack term). The per-query reduction
+lemmas already proven here (`multipleIdealQueryImpl_tag_run_of_lt` etc., `idealCacheStep`,
+`idealCacheMapM`) are the right toolkit for the lazy-vs-eager equivalence step.
+
+This is a self-contained, multi-hundred-line formalization of the fundamental lemma of game
+playing for this three-world setting; it is best tackled as a dedicated effort. -/
+
 /-- Per-step coupling residue, tag-query case: given the inductive hypothesis `ih` bounding the
 continuation uniformly over invariant-related states and the residual budget, a single tag query
 preserves the coupling bound. The slot-collision probability of the multiple world's lazy random
