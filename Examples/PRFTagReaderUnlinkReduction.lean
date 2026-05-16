@@ -1125,26 +1125,44 @@ private lemma singleIdealQueryImpl_reader_run
   refine bind_congr fun rs => ?_
   rw [pure_bind]
 
-/-- Core identical-until-bad coupling, stated directly on the composed ideal handlers and the
-bad-event world: the success probability of the multiple-session ideal world is bounded by that of
-the single-session ideal world plus the probability that the bad flag fires in `unlinkBadQueryImpl`.
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Base case of any coupling induction for `multipleIdeal_le_singleIdeal_add_bad`: on a `pure`
+adversary the multiple- and single-session ideal handlers return the same bit, so the
+multiple-world success probability is trivially bounded by the single-world one plus the
+bad-event probability. Holds for arbitrary (not necessarily coupled) initial states. -/
+private lemma multipleIdeal_le_singleIdeal_add_bad_pure (b : Bool)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sS : UnlinkState TagId × (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (pure b)).run' sM] ≤
+      Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (pure b)).run' sS] +
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
+        (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (pure b)).run sB] := by
+  simp only [simulateQ_pure, StateT.run'_eq, StateT.run_pure, map_pure]
+  exact le_add_right (le_refl _)
 
-This is the analytic heart of `unlinkPRFIdeal_gap_le_unlinkBad` and the one open obligation of the
-unlinkability reduction.
+/-- Core coupling bound for the unlinkability reduction: the multiple-session ideal world's
+success probability is bounded by that of the single-session ideal world plus the nonce-collision
+probability `Pr[bad]` plus a reader-slack term.
 
-Proof architecture (the genuine identical-until-bad pair is *multiple vs single*, not multiple vs
-bad). Both the multiple- and single-session ideal handlers are lazy-random-oracle worlds whose
-tag *and* reader oracles write the cache; they differ only in the oracle domain — `TagId × Nonce`
-for the multiple world, `(TagId × Fin sessionsPerTag) × Nonce` for the single world. They run
-identically until two sessions of one tag draw the same nonce: in the multiple world those two
-sessions collapse onto the single cache cell `(tag, nonce)` (the second reuses the first's digest),
-whereas in the single world they use the distinct slots `(tag, sid)` and stay independent. The
-bad-event world `unlinkBadQueryImpl` is a *measuring device* for exactly that nonce-collision
-event — it is not an intermediate world of an identical-until-bad chain. So the bound decomposes as
-`Pr[multiple] ≤ Pr[single] + Pr[nonce collision in the run]` (a cell-wise coupling of the two
-caches over the differing domains) together with `Pr[nonce collision] ≤ Pr[bad flag]`. -/
-private lemma multipleIdeal_le_singleIdeal_add_bad
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
+The multiple- and single-session ideal handlers are *not* identical-until-bad: they are lazy
+random oracles over different domains — `TagId × Nonce` for the multiple world,
+`(TagId × Fin sessionsPerTag) × Nonce` for the single world — and their reader oracles diverge on
+the *first* reader query, unconditionally. The single-session reader queries the random oracle at
+`((tag, sid), nonce)` for *every* slot, i.e. `Fintype.card TagId * sessionsPerTag` cells, whereas
+the multiple-session reader queries only `Fintype.card TagId` cells `(tag, nonce)`. That slot-count
+asymmetry is a divergence unrelated to nonce collisions, so the bound carries two additive terms:
+the nonce-collision probability `Pr[bad]` (the multiple world collapses two sessions of one tag
+that drew the same nonce onto a single cache cell; the single world keeps them on distinct slots),
+and the reader-slack term `qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest`
+absorbing the extra reader cells, where `qReader` bounds the number of reader queries. -/
+private lemma multipleIdeal_le_singleIdeal_add_bad [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (qReader : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader) :
     Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
         (UnlinkState.init, ∅)] ≤
@@ -1154,7 +1172,9 @@ private lemma multipleIdeal_le_singleIdeal_add_bad
       Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
         (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
           (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
-          UnlinkBadState.init] := by
+          UnlinkBadState.init] +
+      ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
   sorry
 
 /-- `unlinkBadExp` outputs `true` exactly with the probability that the bad flag fires. -/
@@ -1170,12 +1190,16 @@ private lemma probOutput_unlinkBadExp_eq
   refine tsum_congr fun z => ?_
   by_cases hz : z.2.bad <;> simp [hz]
 
-/-- Identical-until-bad coupling: the gap between the two random-function worlds (the ideal-PRF
-experiments of the multiple- and single-session reductions) is bounded by the nonce-collision
-probability `unlinkBadExp`. The two worlds proceed identically until two sessions of one tag draw
-the same nonce — exactly the event `unlinkBadExp` records. -/
-theorem unlinkPRFIdeal_gap_le_unlinkBad
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
+/-- Coupling bound for the two random-function worlds (the ideal-PRF experiments of the multiple-
+and single-session reductions): the gap is bounded by the nonce-collision probability `unlinkBadExp`
+plus a reader-slack term. The two worlds are not identical-until-bad — their reader oracles diverge
+unconditionally because the single-session reader checks `Fintype.card TagId * sessionsPerTag`
+random-oracle cells against the multiple world's `Fintype.card TagId` — so the bound also carries
+`qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest`. -/
+theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (qReader : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader) :
     (Pr[= true | PRFScheme.prfIdealExp (unlinkToMultiplePRFReduction
           (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (sessionsPerTag := sessionsPerTag) adversary)]).toReal -
@@ -1183,8 +1207,11 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad
           (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (sessionsPerTag := sessionsPerTag) adversary)]).toReal ≤
       (Pr[= true | unlinkBadExp (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal := by
-  have hcore := multipleIdeal_le_singleIdeal_add_bad (sessionsPerTag := sessionsPerTag) adversary
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal +
+      ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
+        (Fintype.card Digest : ℝ) := by
+  have hcore := multipleIdeal_le_singleIdeal_add_bad (sessionsPerTag := sessionsPerTag)
+    adversary qReader hqReader
   rw [prfIdealExp_unlinkToMultiplePRFReduction_eq_run' adversary,
     prfIdealExp_unlinkToSinglePRFReduction_eq_run' adversary,
     probOutput_unlinkBadExp_eq adversary]
@@ -1198,26 +1225,46 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad
     (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
       (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
       UnlinkBadState.init] with hB
+  set slackE := ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+    (Fintype.card Digest : ℝ≥0∞) with hslackE
   have hSt : S ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probOutput_le_one
   have hBt : B ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probEvent_le_one
-  have hMt : M.toReal ≤ S.toReal + B.toReal := by
-    rw [← ENNReal.toReal_add hSt hBt]
-    exact ENNReal.toReal_mono (ENNReal.add_ne_top.mpr ⟨hSt, hBt⟩) hcore
+  have hne : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  have hcardpos : 0 < Fintype.card Digest := Fintype.card_pos
+  have hslackEt : slackE ≠ ⊤ := by
+    rw [hslackE]
+    refine ENNReal.div_ne_top (ENNReal.natCast_ne_top _) ?_
+    simp only [ne_eq, Nat.cast_eq_zero]
+    omega
+  have hslackEeq : slackE.toReal =
+      ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+    rw [hslackE, ENNReal.toReal_div, ENNReal.toReal_natCast, ENNReal.toReal_natCast]
+  have hMt : M.toReal ≤ S.toReal + B.toReal + slackE.toReal := by
+    rw [← ENNReal.toReal_add hSt hBt, ← ENNReal.toReal_add
+      (ENNReal.add_ne_top.mpr ⟨hSt, hBt⟩) hslackEt]
+    exact ENNReal.toReal_mono
+      (ENNReal.add_ne_top.mpr ⟨ENNReal.add_ne_top.mpr ⟨hSt, hBt⟩, hslackEt⟩) hcore
+  rw [hslackEeq] at hMt
   linarith
 
 /-! ## Main reduction theorem -/
 
 /-- Unlinkability reduction: the multiple-vs-single advantage is bounded by one PRF advantage for
-the multiple-session world, one PRF advantage for the single-session world, and the bad-event
-probability from the intermediate nonce-collision world.
+the multiple-session world, one PRF advantage for the single-session world, the bad-event
+probability from the intermediate nonce-collision world, and a reader-slack term.
 
 The proof telescopes the three bridge lemmas:
 `Pr[Multiple] − Pr[Single]` splits as `(Pr[Multiple] − Pr[MultRF]) + (Pr[MultRF] − Pr[SingleRF])
 + (Pr[SingleRF] − Pr[Single])`, where the first and last differences are absorbed into the two
-PRF advantages and the middle difference is bounded by `Pr[unlinkBadExp]`. -/
-theorem unlinkabilityAdvantage_le_two_prf_plus_collision
+PRF advantages and the middle difference is bounded by `Pr[unlinkBadExp]` plus the reader-slack
+term `qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest`. The reader-slack term
+is unavoidable: the single-session reader queries the random oracle at `sessionsPerTag` times more
+cells than the multiple-session reader, an unconditional gap unrelated to nonce collisions. -/
+theorem unlinkabilityAdvantage_le_two_prf_plus_collision [Fintype Digest]
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (qReader : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader) :
     ∃ multiAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
       ∃ singleAdv : PRFScheme.PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest,
         unlinkabilityAdvantage (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
@@ -1225,13 +1272,15 @@ theorem unlinkabilityAdvantage_le_two_prf_plus_collision
             PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
             PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
             (Pr[= true | unlinkBadExp (TagId := TagId) (Nonce := Nonce)
-              (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal := by
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal +
+            ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
+              (Fintype.card Digest : ℝ) := by
   refine ⟨unlinkToMultiplePRFReduction (sessionsPerTag := sessionsPerTag) adversary,
     unlinkToSinglePRFReduction (sessionsPerTag := sessionsPerTag) adversary, ?_⟩
   have h1 := prfRealExp_unlinkToMultiplePRFReduction_eq_unlinkMultipleExp prfs adversary
   have h2 := prfRealExp_unlinkToSinglePRFReduction_eq_unlinkSingleExp prfs adversary
   have h3 := unlinkPRFIdeal_gap_le_unlinkBad (TagId := TagId) (Nonce := Nonce)
-    (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary qReader hqReader
   unfold unlinkabilityAdvantage PRFScheme.prfAdvantage
   rw [h1, h2]
   set M := (Pr[= true | unlinkMultipleExp (TagId := TagId) (Nonce := Nonce)
@@ -1253,10 +1302,13 @@ theorem unlinkabilityAdvantage_le_two_prf_plus_collision
 Chaining the proven `unlinkBadExp_le_sessionCollisionBound` onto the reduction theorem gives the
 explicit unlinkability bounds in terms of the nonce-collision parameters. -/
 
-/-- Final unlinkability bound: two PRF advantages plus the explicit session-collision term. -/
-theorem unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound
+/-- Final unlinkability bound: two PRF advantages, the explicit session-collision term, and the
+reader-slack term. -/
+theorem unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound [Fintype Digest]
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
     (adversary : UnlinkAdversary TagId Nonce Digest)
+    (qReader : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader)
     (maxNonceProb : ℝ)
     (hmax : ∀ nonce : Nonce,
       (Pr[= nonce | ($ᵗ Nonce)]).toReal ≤ maxNonceProb) :
@@ -1266,20 +1318,25 @@ theorem unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound
           (sessionsPerTag := sessionsPerTag) prfs adversary ≤
             PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
             PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
-            ((sessionsPerTag ^ 2 * Fintype.card TagId : ℕ) : ℝ) * maxNonceProb := by
+            ((sessionsPerTag ^ 2 * Fintype.card TagId : ℕ) : ℝ) * maxNonceProb +
+            ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
+              (Fintype.card Digest : ℝ) := by
   obtain ⟨multiAdv, singleAdv, hSum⟩ :=
-    unlinkabilityAdvantage_le_two_prf_plus_collision prfs adversary
+    unlinkabilityAdvantage_le_two_prf_plus_collision prfs adversary qReader hqReader
   refine ⟨multiAdv, singleAdv, hSum.trans ?_⟩
   have hBad := unlinkBadExp_le_sessionCollisionBound (sessionsPerTag := sessionsPerTag)
     adversary maxNonceProb hmax
   linarith
 
 /-- Tightest unlinkability bound: when nonces are sampled uniformly (as enforced by
-`SampleableType`), the session-collision term is exactly `sessionsPerTag² · |TagId| / |Nonce|`. -/
+`SampleableType`), the session-collision term is exactly `sessionsPerTag² · |TagId| / |Nonce|`,
+plus the reader-slack term. -/
 theorem unlinkabilityAdvantage_le_two_prf_plus_uniform_sessionCollisionBound
-    [Fintype Nonce]
+    [Fintype Nonce] [Fintype Digest]
     (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (qReader : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader) :
     ∃ multiAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
       ∃ singleAdv : PRFScheme.PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest,
         unlinkabilityAdvantage (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
@@ -1287,12 +1344,14 @@ theorem unlinkabilityAdvantage_le_two_prf_plus_uniform_sessionCollisionBound
             PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
             PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
             (sessionsPerTag ^ 2 * Fintype.card TagId : ℕ) /
-              (Fintype.card Nonce : ℝ) := by
+              (Fintype.card Nonce : ℝ) +
+            ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
+              (Fintype.card Digest : ℝ) := by
   have hmax : ∀ nonce : Nonce,
       (Pr[= nonce | ($ᵗ Nonce)]).toReal ≤ (Fintype.card Nonce : ℝ)⁻¹ := fun nonce => by
     simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
   obtain ⟨multiAdv, singleAdv, h⟩ :=
-    unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound prfs adversary
+    unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound prfs adversary qReader hqReader
       ((Fintype.card Nonce : ℝ)⁻¹) hmax
   exact ⟨multiAdv, singleAdv, by rwa [div_eq_mul_inv]⟩
 
