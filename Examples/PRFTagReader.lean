@@ -3243,22 +3243,6 @@ theorem authExp_le_prfAdvantage_add_uniformCollisionBound [Fintype Digest]
   gcongr
   exact authRFExp_le_uniformCollisionBound_of_distinctReaderNonces adversary q hq hdistinct
 
-/-- Unlinkability reduction statement: the multiple-vs-single gap is bounded by one PRF advantage
-for the multiple-session world, one PRF advantage for the single-session world, and the bad-event
-probability from the intermediate collision world. -/
-theorem unlinkabilityAdvantage_le_two_prf_plus_collision
-    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
-    ∃ multiAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
-      ∃ singleAdv : PRFScheme.PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest,
-        unlinkabilityAdvantage (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) prfs adversary ≤
-            PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
-            PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
-            (Pr[= true | unlinkBadExp (TagId := TagId) (Nonce := Nonce)
-              (Digest := Digest) (sessionsPerTag := sessionsPerTag) adversary]).toReal := by
-  sorry
-
 /-- The number of still-available successful tag sessions in a bad-event state. -/
 private def unlinkBadRemaining (st : UnlinkBadState TagId Nonce Digest) : ℕ :=
   (Finset.univ : Finset TagId).sum fun tag => sessionsPerTag - st.sessionsUsed tag
@@ -3697,49 +3681,6 @@ theorem unlinkBadExp_le_sessionCollisionBound
     hremaining, Nat.cast_mul, toReal_mul, toReal_natCast, ENNReal.toReal_ofReal hmax_nonneg
   ] at hconv
   grind
-
-/-- Final unlinkability bound: two PRF advantages plus the explicit session-collision term. -/
-theorem unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound
-    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
-    (adversary : UnlinkAdversary TagId Nonce Digest)
-    (maxNonceProb : ℝ)
-    (hmax : ∀ nonce : Nonce,
-      (Pr[= nonce | ($ᵗ Nonce)]).toReal ≤ maxNonceProb) :
-    ∃ multiAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
-      ∃ singleAdv : PRFScheme.PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest,
-        unlinkabilityAdvantage (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) prfs adversary ≤
-            PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
-            PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
-            ((sessionsPerTag ^ 2 * Fintype.card TagId : ℕ) : ℝ) * maxNonceProb := by
-  obtain ⟨multiAdv, singleAdv, hSum⟩ :=
-    unlinkabilityAdvantage_le_two_prf_plus_collision prfs adversary
-  refine ⟨multiAdv, singleAdv, hSum.trans ?_⟩
-  have hBad := unlinkBadExp_le_sessionCollisionBound (sessionsPerTag := sessionsPerTag)
-    adversary maxNonceProb hmax
-  linarith
-
-/-- Tightest unlinkability bound: when nonces are sampled uniformly (as enforced by
-`SampleableType`), the session-collision term is exactly `sessionsPerTag² · |TagId| / |Nonce|`. -/
-theorem unlinkabilityAdvantage_le_two_prf_plus_uniform_sessionCollisionBound
-    [Fintype Nonce]
-    (prfs : TagReaderPRFs K TagId Nonce Digest sessionsPerTag)
-    (adversary : UnlinkAdversary TagId Nonce Digest) :
-    ∃ multiAdv : PRFScheme.PRFAdversary (TagId × Nonce) Digest,
-      ∃ singleAdv : PRFScheme.PRFAdversary ((TagId × Fin sessionsPerTag) × Nonce) Digest,
-        unlinkabilityAdvantage (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) prfs adversary ≤
-            PRFScheme.prfAdvantage prfs.multiplePRFScheme multiAdv +
-            PRFScheme.prfAdvantage prfs.singlePRFScheme singleAdv +
-            (sessionsPerTag ^ 2 * Fintype.card TagId : ℕ) /
-              (Fintype.card Nonce : ℝ) := by
-  have hmax : ∀ nonce : Nonce,
-      (Pr[= nonce | ($ᵗ Nonce)]).toReal ≤ (Fintype.card Nonce : ℝ)⁻¹ := fun nonce => by
-    simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
-  obtain ⟨multiAdv, singleAdv, h⟩ :=
-    unlinkabilityAdvantage_le_two_prf_plus_sessionCollisionBound prfs adversary
-      ((Fintype.card Nonce : ℝ)⁻¹) hmax
-  exact ⟨multiAdv, singleAdv, by rwa [div_eq_mul_inv]⟩
 
 end Theorems
 
