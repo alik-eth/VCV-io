@@ -8,6 +8,7 @@ import VCVio.OracleComp.SimSemantics.SimulateQ
 import VCVio.OracleComp.EvalDist
 import VCVio.EvalDist.Bool
 import VCVio.EvalDist.Prod
+import VCVio.EvalDist.Fintype
 import Init.Data.UInt.Lemmas
 import Mathlib.Data.FinEnum
 
@@ -401,6 +402,80 @@ instance (α : Type) (n m : ℕ) [SampleableType α] : SampleableType (Matrix (F
   inferInstanceAs (SampleableType (Fin n → Fin m → α))
 
 end instances
+
+section Marginalization
+
+/-- **Overwriting one coordinate of a uniform function table is measure-preserving.**
+
+Drawing a value `u` uniformly from `R`, then a full function table `g : D → R` uniformly, and
+returning `Function.update g t u` yields the same distribution as drawing the table directly.
+
+This is the `t`-marginal independence of the uniform (product) distribution on `D → R`: the value
+at coordinate `t` is uniform and independent of the others, so replacing it with a fresh
+independent uniform draw leaves the joint distribution unchanged. It is the marginalization step
+behind eager-sampling reformulations of oracle responses. -/
+lemma evalDist_uniformSample_bind_update
+    {D R : Type} [Finite D] [DecidableEq D] [Finite R] [Nonempty R]
+    [SampleableType R] [SampleableType (D → R)] (t : D) :
+    𝒟[do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u)] =
+      𝒟[$ᵗ (D → R)] := by
+  classical
+  letI := Fintype.ofFinite D
+  letI := Fintype.ofFinite R
+  haveI : Nonempty (D → R) := ⟨fun _ => Classical.arbitrary R⟩
+  refine evalDist_ext fun h => ?_
+  rw [probOutput_uniformSample (D → R) h, HasEvalSPMF.probOutput_bind_eq_sum_fintype]
+  -- For each fixed `u`, count the tables `g` whose `t`-update equals `h`.
+  have hinner : ∀ u : R,
+      Pr[= h | (do let g ← $ᵗ (D → R); pure (Function.update g t u))]
+        = (if u = h t then
+            (Fintype.card R : ℝ≥0∞) * (Fintype.card (D → R) : ℝ≥0∞)⁻¹ else 0) := by
+    intro u
+    have hmap : (do let g ← $ᵗ (D → R); pure (Function.update g t u))
+        = (fun g => Function.update g t u) <$> ($ᵗ (D → R)) := by
+      rw [bind_pure_comp]
+    rw [hmap, probOutput_map_eq_sum_fintype_ite]
+    simp only [probOutput_uniformSample (D → R)]
+    rw [← Finset.sum_filter, Finset.sum_const, nsmul_eq_mul]
+    -- The matching tables are exactly `Function.update h t r` for `r : R`.
+    have hcard :
+        ((Finset.univ.filter fun g : D → R => h = Function.update g t u).card : ℝ≥0∞)
+          = if u = h t then (Fintype.card R : ℝ≥0∞) else 0 := by
+      by_cases hu : u = h t
+      · have hset : (Finset.univ.filter fun g : D → R => h = Function.update g t u)
+            = Finset.univ.image (fun r : R => Function.update h t r) := by
+          ext g
+          simp only [Finset.mem_filter, Finset.mem_univ, true_and, Finset.mem_image]
+          constructor
+          · intro hg
+            refine ⟨g t, ?_⟩
+            rw [eq_comm, Function.update_eq_iff] at hg
+            obtain ⟨_, hg2⟩ := hg
+            funext x
+            by_cases hx : x = t
+            · subst hx; simp
+            · simp [Function.update_of_ne hx, hg2 x hx]
+          · rintro ⟨r, rfl⟩
+            rw [eq_comm, Function.update_eq_iff]
+            exact ⟨by simp [hu], fun x hx => by simp [Function.update_of_ne hx]⟩
+        rw [hset, Finset.card_image_of_injective _
+          (fun r₁ r₂ hr => by simpa using congrFun hr t), Finset.card_univ, if_pos hu]
+      · have hempty : (Finset.univ.filter fun g : D → R => h = Function.update g t u) = ∅ := by
+          rw [Finset.filter_eq_empty_iff]
+          intro g _ hg
+          rw [eq_comm, Function.update_eq_iff] at hg
+          exact hu hg.1
+        rw [hempty, Finset.card_empty, Nat.cast_zero, if_neg hu]
+    rw [hcard]
+    by_cases hu : u = h t <;> simp [hu]
+  simp_rw [hinner, mul_ite, mul_zero]
+  rw [Finset.sum_ite_eq' Finset.univ (h t)]
+  rw [if_pos (Finset.mem_univ _), probOutput_uniformSample R, ← mul_assoc,
+      ENNReal.inv_mul_cancel, one_mul]
+  · simp [Fintype.card_ne_zero]
+  · exact ENNReal.natCast_ne_top _
+
+end Marginalization
 
 -- TODO: generalize this lemma
 /--
