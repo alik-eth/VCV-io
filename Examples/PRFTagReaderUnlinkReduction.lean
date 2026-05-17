@@ -1271,8 +1271,21 @@ reading a non-reference single-world cell (→ the reader-slack term). The per-q
 lemmas already proven here (`multipleIdealQueryImpl_tag_run_of_lt` etc., `idealCacheStep`,
 `idealCacheMapM`) are the right toolkit for the lazy-vs-eager equivalence step.
 
-This is a self-contained, multi-hundred-line formalization of the fundamental lemma of game
-playing for this three-world setting; it is best tackled as a dedicated effort. -/
+**Concrete blocker (investigated).** The eager route's first step needs a *distribution-level*
+lazy-random-oracle = eager-full-table equivalence:
+`evalDist ((simulateQ spec.randomOracle oa).run' ∅) = evalDist (do let f ← $ᵗ(D → R);
+pure (evalWithAnswerFn f oa))`. This does NOT exist in `VCVio/OracleComp/QueryTracking/
+RandomOracle/`: `Eager.lean`'s `eagerRandomOracle` gives *independent* per-query samples (no
+consistency), and `Simulation.lean`'s results are support-level only, not `evalDist`-level. So the
+prerequisite is a new reusable library lemma in `RandomOracle/Eager.lean`, proved by induction on
+`oa` generalized over the cache, whose `query`/uncached case is a marginalization fact —
+`evalDist (do u ← $ᵗR; g ← $ᵗ(D→R); pure (Function.update g t u)) = evalDist ($ᵗ(D→R))` — itself a
+per-coordinate-independence pushforward (`tsum`/`Finset.prod` reasoning), not a bijection.
+
+Suggested order for a dedicated follow-up: (1) land the marginalization lemma and the eager-table
+`evalDist` equivalence in `RandomOracle/Eager.lean`; (2) apply them to the composed
+`{multiple,single}IdealQueryImpl` handlers; (3) build the coupled-table union bound. Estimated
+~650 lines total. Best tackled as a dedicated effort. -/
 
 /-- Per-step coupling residue, tag-query case: given the inductive hypothesis `ih` bounding the
 continuation uniformly over invariant-related states and the residual budget, a single tag query
