@@ -5,6 +5,7 @@ Authors: Quang Dao
 -/
 
 import Examples.PRFTagReader
+import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
 
 /-!
 # Unlinkability PRF Reduction
@@ -1229,6 +1230,166 @@ private lemma MSBInv_init :
     MSBInv (TagId := TagId) (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag)
       (UnlinkState.init, ∅) (UnlinkState.init, ∅) UnlinkBadState.init :=
   ⟨rfl, rfl, rfl⟩
+
+/-! ### Composed-handler eager-table equivalence
+
+The composed ideal handler `multipleIdealQueryImpl` embeds the lazy random oracle inside a
+stateful handler over `UnlinkOracleSpec`. The lemma below lifts the top-level lazy-vs-eager-table
+equivalence (`OracleComp.evalDist_simulateQ_randomOracle_run'_eq_tableExtending`) to this composed
+handler: running `multipleIdealQueryImpl` from `(s, c)` has the same output distribution as
+sampling a full random-oracle table `g`, overlaying the cache `c`, and running the *real*
+multiple-session handler `multipleTableHandler` deterministically against that table.
+
+This is the multiple-world half of the recommended eager-sampling reformulation; it does not touch
+the coupled-table union bound or the two residue `sorry`s. -/
+
+section EagerComposed
+
+variable {TagId Nonce Digest : Type}
+  [DecidableEq TagId] [Fintype TagId] [Nonempty TagId]
+  [DecidableEq Nonce] [SampleableType Nonce]
+  [DecidableEq Digest] [SampleableType Digest]
+  {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
+
+/-- Deterministic real multiple-session handler keyed directly on a random-oracle table
+`g : TagId × Nonce → Digest`. This is `unlinkMultipleQueryImpl prfs k` for any PRF package whose
+`evalMultiple k` is the curried table; phrasing it on the raw table lets the eager-table
+equivalence be stated without a `prfs`/`k` witness. -/
+noncomputable def multipleTableHandler (g : TagId × Nonce → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId) ProbComp) :=
+  unlinkTagQueryImpl (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+    (fun tag nonce => g (tag, nonce))
+    (multiplePattern (TagId := TagId) sessionsPerTag) +
+  unlinkReaderQueryImpl (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+    (fun tag nonce => g (tag, nonce))
+    (multiplePattern (TagId := TagId) sessionsPerTag)
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `simulateQ multipleIdealQueryImpl` of a `query_bind`, run from a state and projected to its
+output bit: the per-query handler followed by the recursive simulation of the continuation.
+General-codomain version of `multipleIdeal_run'_query_bind`. -/
+private lemma multipleIdeal_run'_query_bind' {α : Type}
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) (liftM (OracleSpec.query t) >>= f)).run' sM =
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t sM) >>= fun p =>
+        (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `simulateQ multipleTableHandler` of a `query_bind`, run from a state and projected to its
+output: the per-query handler followed by the recursive simulation of the continuation. -/
+private lemma multipleTable_run'_query_bind' {α : Type} (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : UnlinkState TagId) :
+    (simulateQ (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g) (liftM (OracleSpec.query t) >>= f)).run' s =
+      (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t s) >>= fun p =>
+        (simulateQ (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleTableHandler` on a tag query with the slot budget exhausted: returns `none`. -/
+private lemma multipleTableHandler_tag_run_of_not_lt (g : TagId × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : ¬ s.sessionsUsed tag < sessionsPerTag) :
+    (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) s) = pure (none, s) := by
+  unfold multipleTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun tag nonce => g (tag, nonce))
+    (multiplePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, hslot]
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleTableHandler` on a tag query with a free slot: sample a nonce, look up the table at
+`(tag, nonce)`, advance the session counter. -/
+private lemma multipleTableHandler_tag_run_of_lt (g : TagId × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) s) =
+      ($ᵗ Nonce) >>= fun nonce =>
+        pure (some (⟨nonce, g (tag, nonce)⟩ : TagTranscript Nonce Digest),
+          { s with sessionsUsed :=
+            Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }) := by
+  unfold multipleTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun tag nonce => g (tag, nonce))
+    (multiplePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
+    hslot, multiplePattern, bind_pure_comp]
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleTableHandler` on a reader query: deterministic acceptance against the table, with the
+state untouched. -/
+private lemma multipleTableHandler_reader_run (g : TagId × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) s) =
+      pure (ReaderReply.ofBool (unlinkReaderAccepts (TagId := TagId) (Slot := TagId)
+        (Nonce := Nonce) (Digest := Digest) (fun tag nonce => g (tag, nonce))
+        (multiplePattern (TagId := TagId) sessionsPerTag) transcript), s) := by
+  unfold multipleTableHandler
+  rw [QueryImpl.add_apply_inr]
+  change (unlinkReaderQueryImpl (fun tag nonce => g (tag, nonce))
+    (multiplePattern (TagId := TagId) sessionsPerTag) transcript).run s = _
+  unfold unlinkReaderQueryImpl
+  rfl
+
+omit [DecidableEq Digest] in
+/-- **Cache-branch eager-table step.** A single lazy-random-oracle lookup `idealCacheStep` at a
+domain point `d`, followed by sampling a full random-oracle table for the remaining computation,
+has the same output distribution as directly sampling the table: the fresh on-demand draw of a
+cache miss is absorbed by `OracleComp.evalDist_uniformSample_bind_update_map`.
+
+This is the per-query workhorse for an eager-sampling reformulation of the composed ideal handler:
+it reconciles the lazy cache step with the up-front table draw, generalized over an arbitrary
+continuation `ψ` of the resulting full table. -/
+private lemma evalDist_idealCacheStep_bind_uniformTable {D : Type} [DecidableEq D] [Finite D]
+    [Finite Digest] [SampleableType (D → Digest)]
+    {β : Type} (c : (D →ₒ Digest).QueryCache) (d : D) (ψ : (D → Digest) → β) :
+    𝒟[do let r ← idealCacheStep (Digest := Digest) c d;
+          let g ← $ᵗ (D → Digest);
+          pure (ψ (OracleComp.tableExtending r.2 g))] =
+      𝒟[do let g ← $ᵗ (D → Digest); pure (ψ (OracleComp.tableExtending c g))] := by
+  classical
+  haveI : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  unfold idealCacheStep
+  rcases hc : c d with _ | u
+  · dsimp only
+    rw [show (($ᵗ Digest) >>= fun u => pure (u, c.cacheQuery d u)) >>=
+              (fun r => ($ᵗ (D → Digest)) >>= fun g =>
+                pure (ψ (OracleComp.tableExtending r.2 g)))
+          = ($ᵗ Digest) >>= fun u => ($ᵗ (D → Digest)) >>= fun g =>
+              pure ((fun g' => ψ (OracleComp.tableExtending c g')) (Function.update g d u))
+        from by
+          rw [bind_assoc]
+          refine bind_congr fun u => ?_
+          rw [pure_bind]
+          refine bind_congr fun g => ?_
+          rw [OracleComp.tableExtending_cacheQuery,
+            OracleComp.tableExtending_update_of_none c g hc u]]
+    exact OracleComp.evalDist_uniformSample_bind_update_map (R := Digest) d
+      (fun g' => ψ (OracleComp.tableExtending c g'))
+  · dsimp only
+    rw [pure_bind]
+
+end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
 
