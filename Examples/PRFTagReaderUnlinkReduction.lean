@@ -1271,21 +1271,41 @@ reading a non-reference single-world cell (→ the reader-slack term). The per-q
 lemmas already proven here (`multipleIdealQueryImpl_tag_run_of_lt` etc., `idealCacheStep`,
 `idealCacheMapM`) are the right toolkit for the lazy-vs-eager equivalence step.
 
-**Concrete blocker (investigated).** The eager route's first step needs a *distribution-level*
-lazy-random-oracle = eager-full-table equivalence:
-`evalDist ((simulateQ spec.randomOracle oa).run' ∅) = evalDist (do let f ← $ᵗ(D → R);
-pure (evalWithAnswerFn f oa))`. This does NOT exist in `VCVio/OracleComp/QueryTracking/
-RandomOracle/`: `Eager.lean`'s `eagerRandomOracle` gives *independent* per-query samples (no
-consistency), and `Simulation.lean`'s results are support-level only, not `evalDist`-level. So the
-prerequisite is a new reusable library lemma in `RandomOracle/Eager.lean`, proved by induction on
-`oa` generalized over the cache, whose `query`/uncached case is a marginalization fact —
-`evalDist (do u ← $ᵗR; g ← $ᵗ(D→R); pure (Function.update g t u)) = evalDist ($ᵗ(D→R))` — itself a
-per-coordinate-independence pushforward (`tsum`/`Finset.prod` reasoning), not a bijection.
+**Available infrastructure.** The eager route's first step — a *distribution-level*
+lazy-random-oracle = eager-full-table equivalence — is now in place as reusable library lemmas:
 
-Suggested order for a dedicated follow-up: (1) land the marginalization lemma and the eager-table
-`evalDist` equivalence in `RandomOracle/Eager.lean`; (2) apply them to the composed
-`{multiple,single}IdealQueryImpl` handlers; (3) build the coupled-table union bound. Estimated
-~650 lines total. Best tackled as a dedicated effort. -/
+* `evalDist_uniformSample_bind_update` in `VCVio/OracleComp/Constructions/SampleableType.lean` is
+  the marginalization workhorse: drawing a fresh uniform `u` and then a full uniform table `g` and
+  overwriting `g` at `t` with `u` is distributionally a directly drawn uniform table.
+* `OracleComp.evalDist_simulateQ_randomOracle_run'_eq_tableExtending` in
+  `VCVio/OracleComp/QueryTracking/RandomOracle/EagerTable.lean` is the cache-parametrized
+  lazy-vs-eager equivalence: running an `OracleComp (D →ₒ R) α` under the lazy random oracle from
+  cache `c` has the same `evalDist` as sampling a full table `g` and evaluating against
+  `tableExtending c g`. `evalDist_simulateQ_randomOracle_run'_empty_eq_uniformTable` is the
+  empty-cache corollary.
+
+**Remaining gap (the composed-handler lift).** The library lemma is stated for a *top-level*
+`simulateQ randomOracle oa` over a bare `OracleComp (D →ₒ R) α`. Here the random oracle is
+embedded inside the composite handlers `multipleIdealQueryImpl` / `singleIdealQueryImpl`, whose
+target is `StateT (UnlinkState × QueryCache) ProbComp` over `UnlinkOracleSpec`: `prfIdealQueryImpl`
+interleaves `unifSpec` nonce draws (handled directly into `ProbComp`) with `(D →ₒ R)` queries
+(the random oracle threading the cache). To use the eager route one must lift the library
+equivalence to the composed-handler level — proving, by induction on the adversary generalized
+over the cache, that the run of `multipleIdealQueryImpl` from `(s, c)` equals (in `evalDist`)
+sampling a full table extending `c` and running a deterministic-table variant of the handler.
+
+A clean realization of the deterministic-table variant: with the table fixed to `g`, the ideal
+handler `multipleIdealQueryImpl` collapses to the *real* PRF handler — i.e. `unlinkMultipleQueryImpl`
+with `evalMultiple k (tag, nonce) := tableExtending c g (tag, nonce)` — and likewise the single
+world to `unlinkSingleQueryImpl`. The real-handler collapse is already proven
+(`simulateQ_prfReal_unlinkToMultiplePRFQueryImpl_run` and its single-world twin).
+
+Suggested order for a dedicated follow-up: (1) lift the eager-table equivalence to the composed
+`{multiple,single}IdealQueryImpl` handlers, reusing `tableExtending_*` and the real-handler
+collapse lemmas; (2) build the coupled-table union bound (identify `fM (tag, n)` with
+`fS ((tag, sid₀), n)` for a reference slot, bound divergence by a union bound over nonce
+collisions and non-reference reader cells). Estimated ~500 lines. Best tackled as a dedicated
+effort. -/
 
 /-- Per-step coupling residue, tag-query case: given the inductive hypothesis `ih` bounding the
 continuation uniformly over invariant-related states and the residual budget, a single tag query
