@@ -2144,6 +2144,43 @@ private lemma evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending
       beta_reduce
       rw [hAccept]
 
+/-! #### Milestone 4 prep: eager-form success probabilities
+
+With both ideal worlds shown equal in distribution to deterministic table-handler runs
+(Milestones 2 and 3), the two ideal-world success probabilities are exposed as
+table-sampled deterministic runs from the empty cache (`tableExtending ∅ g = g`). These are the
+precise eager forms on which the coupled-table union bound operates. -/
+
+omit [Nonempty TagId] in
+/-- Eager form of the multiple-session ideal success probability: sample a full random-oracle
+table `g`, then run the deterministic real multiple-session table handler. -/
+private lemma probOutput_multipleIdeal_run'_eq_tableSample [Fintype Nonce] [Finite Digest]
+    (adv : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run'
+        (UnlinkState.init, ∅)] =
+      Pr[= true | ($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+        (simulateQ (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g) adv).run' UnlinkState.init] := by
+  rw [probOutput_def, probOutput_def,
+    evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending adv UnlinkState.init ∅]
+  simp only [OracleComp.tableExtending_empty]
+
+omit [Nonempty TagId] in
+/-- Eager form of the single-session ideal success probability: sample a full random-oracle
+table `g`, then run the deterministic real single-session table handler. -/
+private lemma probOutput_singleIdeal_run'_eq_tableSample [Fintype Nonce] [Finite Digest]
+    (adv : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run'
+        (UnlinkState.init, ∅)] =
+      Pr[= true | ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g) adv).run' UnlinkState.init] := by
+  rw [probOutput_def, probOutput_def,
+    evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending adv UnlinkState.init ∅]
+  simp only [OracleComp.tableExtending_empty]
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
