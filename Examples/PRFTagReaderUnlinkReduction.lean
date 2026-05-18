@@ -1389,6 +1389,193 @@ private lemma evalDist_idealCacheStep_bind_uniformTable {D : Type} [DecidableEq 
   · dsimp only
     rw [pure_bind]
 
+/-! #### Milestone 1: the reader table-iteration lemma
+
+`idealCacheMapM` folds the lazy random-oracle lookup `idealCacheStep` over a list of cache cells —
+this is exactly the reader query's behaviour under the composed ideal handler. The lemmas below lift
+the single-cell eager-table absorption (`evalDist_idealCacheStep_bind_uniformTable`) to a whole
+list, by induction on the cell list. The end result: folding `idealCacheStep` over a list `l` and
+then sampling one full table is distributionally the same as sampling the full table up front and
+reading the cells deterministically against `tableExtending`. -/
+
+omit [DecidableEq Digest] in
+/-- After one `idealCacheStep` at `d`, the resulting cache stores the produced digest at `d`. -/
+private lemma idealCacheStep_cache_self {D : Type} [DecidableEq D]
+    (c : (D →ₒ Digest).QueryCache) (d : D)
+    (r : Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheStep (Digest := Digest) c d)) :
+    r.2 d = some r.1 := by
+  classical
+  unfold idealCacheStep at hr
+  rcases hc : c d with _ | u
+  · rw [hc] at hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨u, _, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    simp [QueryCache.cacheQuery]
+  · rw [hc] at hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    exact hc
+
+omit [DecidableEq Digest] in
+/-- After one `idealCacheStep` at `d`, the resulting cache's domain includes `d`. -/
+private lemma idealCacheStep_cache_self_dom {D : Type} [DecidableEq D]
+    (c : (D →ₒ Digest).QueryCache) (d : D)
+    (r : Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheStep (Digest := Digest) c d)) :
+    (r.2 d).isSome := by
+  rw [idealCacheStep_cache_self c d r hr]
+  rfl
+
+omit [DecidableEq Digest] in
+/-- One `idealCacheStep` at `d` leaves all other cells of the cache untouched. -/
+private lemma idealCacheStep_cache_off {D : Type} [DecidableEq D]
+    (c : (D →ₒ Digest).QueryCache) (d : D)
+    (r : Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheStep (Digest := Digest) c d))
+    (d' : D) (hd' : d' ≠ d) :
+    r.2 d' = c d' := by
+  classical
+  unfold idealCacheStep at hr
+  rcases hc : c d with _ | u
+  · rw [hc] at hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨u, _, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    simp [QueryCache.cacheQuery_of_ne _ _ hd']
+  · rw [hc] at hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rfl
+
+omit [DecidableEq Digest] in
+/-- One `idealCacheStep` at `e` leaves any already-cached cell `d` unchanged. -/
+private lemma idealCacheStep_preserves_some {D : Type} [DecidableEq D]
+    (c : (D →ₒ Digest).QueryCache) (e : D)
+    (r : Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheStep (Digest := Digest) c e))
+    (d : D) (hd : (c d).isSome) :
+    r.2 d = c d := by
+  classical
+  by_cases hde : d = e
+  · subst hde
+    unfold idealCacheStep at hr
+    rcases hc : c d with _ | u
+    · rw [hc] at hd; simp at hd
+    · rw [hc] at hr
+      rw [support_pure, Set.mem_singleton_iff] at hr
+      subst hr
+      exact hc
+  · exact idealCacheStep_cache_off c e r hr d hde
+
+omit [DecidableEq Digest] in
+/-- Folding `idealCacheStep` over `l` leaves any already-cached cell `d` unchanged. -/
+private lemma idealCacheMapM_cache_off {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (r : List Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (d : D) (hd : (c d).isSome) :
+    r.2 d = c d := by
+  induction l generalizing c r with
+  | nil =>
+    simp only [idealCacheMapM] at hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rfl
+  | cons e es ih =>
+    simp only [idealCacheMapM] at hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨step, hstep, hr⟩ := hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨rest, hrest, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    have hstepd : (step.2 d).isSome := by
+      rw [idealCacheStep_preserves_some c e step hstep d hd]
+      exact hd
+    have hihrest := ih step.2 rest hrest hstepd
+    rw [hihrest, idealCacheStep_preserves_some c e step hstep d hd]
+
+omit [DecidableEq Digest] in
+/-- Every result of folding `idealCacheStep` over a list `l` from cache `c` has a final cache that
+caches all cells of `l` and agrees with `c` off the cells of `l`. Consequently, overlaying that
+final cache on any full table reads each cell of `l` as the stored digest, so the produced read
+list is `l.map (tableExtending r.2 g)`. -/
+private lemma idealCacheMapM_support {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (r : List Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (g : D → Digest) :
+    r.1 = l.map (OracleComp.tableExtending r.2 g) := by
+  induction l generalizing c r with
+  | nil =>
+    simp only [idealCacheMapM] at hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rfl
+  | cons d ds ih =>
+    simp only [idealCacheMapM] at hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨step, hstep, hr⟩ := hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨rest, hrest, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    have hihrest := ih step.2 rest hrest
+    have hstepd : step.2 d = some step.1 :=
+      idealCacheStep_cache_self (Digest := Digest) c d step hstep
+    have hrestd : rest.2 d = some step.1 := by
+      have hoff := idealCacheMapM_cache_off (Digest := Digest) ds step.2 rest hrest d
+        (idealCacheStep_cache_self_dom (Digest := Digest) c d step hstep)
+      rw [hoff, hstepd]
+    simp only [List.map_cons]
+    rw [hihrest]
+    congr 1
+    simp [OracleComp.tableExtending, hrestd]
+
+omit [DecidableEq Digest] in
+/-- **Reader table-iteration lemma (Milestone 1).** Folding the lazy random-oracle lookup
+`idealCacheStep` over a list of cells `l`, then sampling one full random-oracle table for the
+remaining computation, has the same output distribution as directly sampling the table: every
+fresh on-demand draw of a cache miss is absorbed into the up-front table draw.
+
+This lifts the single-cell absorption `evalDist_idealCacheStep_bind_uniformTable` to a whole list
+by induction on `l`, and is the reader-query workhorse of the eager-sampling reformulation. -/
+private lemma evalDist_idealCacheMapM_bind_uniformTable {D : Type} [DecidableEq D] [Finite D]
+    [Finite Digest] [SampleableType (D → Digest)]
+    {β : Type} (l : List D) (c : (D →ₒ Digest).QueryCache) (ψ : (D → Digest) → β) :
+    𝒟[do let r ← idealCacheMapM (Digest := Digest) l c;
+          let g ← $ᵗ (D → Digest);
+          pure (ψ (OracleComp.tableExtending r.2 g))] =
+      𝒟[do let g ← $ᵗ (D → Digest); pure (ψ (OracleComp.tableExtending c g))] := by
+  induction l generalizing c with
+  | nil =>
+    simp only [idealCacheMapM, pure_bind]
+  | cons d ds ih =>
+    simp only [idealCacheMapM]
+    have hreassoc :
+        (idealCacheStep (Digest := Digest) c d >>= fun r =>
+            idealCacheMapM (Digest := Digest) ds r.2 >>= fun rs =>
+              pure (r.1 :: rs.1, rs.2)) >>= (fun r =>
+          ($ᵗ (D → Digest)) >>= fun g => pure (ψ (OracleComp.tableExtending r.2 g)))
+        = idealCacheStep (Digest := Digest) c d >>= fun r =>
+            idealCacheMapM (Digest := Digest) ds r.2 >>= fun rs =>
+              ($ᵗ (D → Digest)) >>= fun g =>
+                pure (ψ (OracleComp.tableExtending rs.2 g)) := by
+      rw [bind_assoc]
+      refine bind_congr fun r => ?_
+      rw [bind_assoc]
+      refine bind_congr fun rs => ?_
+      rw [pure_bind]
+    rw [hreassoc]
+    refine Eq.trans ?_ (evalDist_idealCacheStep_bind_uniformTable c d ψ)
+    rw [evalDist_bind, evalDist_bind]
+    refine congrArg (fun h => 𝒟[idealCacheStep (Digest := Digest) c d] >>= h) ?_
+    exact funext fun r => ih r.2
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
