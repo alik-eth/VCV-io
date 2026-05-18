@@ -1858,6 +1858,292 @@ private lemma evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending
       beta_reduce
       rw [hAccept]
 
+/-! #### Milestone 3: composed single-world eager-table equivalence
+
+The single-world analogues of the multiple-world `EagerComposed` helpers: a deterministic real
+single-session table handler `singleTableHandler` keyed on a table over
+`(TagId × Fin sessionsPerTag) × Nonce`, its `query_bind` / per-query reductions, and the composed
+eager-table equivalence for `singleIdealQueryImpl`. -/
+
+/-- Deterministic real single-session handler keyed directly on a random-oracle table
+`g : (TagId × Fin sessionsPerTag) × Nonce → Digest`. -/
+noncomputable def singleTableHandler (g : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId) ProbComp) :=
+  unlinkTagQueryImpl (TagId := TagId) (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce)
+    (Digest := Digest) (fun slot nonce => g (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) +
+  unlinkReaderQueryImpl (TagId := TagId) (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce)
+    (Digest := Digest) (fun slot nonce => g (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag)
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `simulateQ singleIdealQueryImpl` of a `query_bind`, run from a state and projected to its
+output: general-codomain version of `singleIdeal_run'_query_bind`. -/
+private lemma singleIdeal_run'_query_bind' {α : Type}
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (sS : UnlinkState TagId × (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) (liftM (OracleSpec.query t) >>= f)).run' sS =
+      (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t sS) >>= fun p =>
+        (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `simulateQ singleTableHandler` of a `query_bind`, run from a state and projected to its
+output. -/
+private lemma singleTable_run'_query_bind' {α : Type}
+    (g : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : UnlinkState TagId) :
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g) (liftM (OracleSpec.query t) >>= f)).run' s =
+      (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t s) >>= fun p =>
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `singleTableHandler` on a tag query with the slot budget exhausted: returns `none`. -/
+private lemma singleTableHandler_tag_run_of_not_lt
+    (g : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : ¬ s.sessionsUsed tag < sessionsPerTag) :
+    (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) s) = pure (none, s) := by
+  unfold singleTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun slot nonce => g (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, hslot]
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `singleTableHandler` on a tag query with a free slot: sample a nonce, look up the table at
+`((tag, sid), nonce)`, advance the session counter. -/
+private lemma singleTableHandler_tag_run_of_lt
+    (g : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) s) =
+      ($ᵗ Nonce) >>= fun nonce =>
+        pure (some (⟨nonce, g ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce)⟩ :
+            TagTranscript Nonce Digest),
+          { s with sessionsUsed :=
+            Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }) := by
+  unfold singleTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun slot nonce => g (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
+    hslot, singlePattern, bind_pure_comp]
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `singleTableHandler` on a reader query: deterministic acceptance against the table. -/
+private lemma singleTableHandler_reader_run
+    (g : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) s) =
+      pure (ReaderReply.ofBool (unlinkReaderAccepts (TagId := TagId)
+        (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce) (Digest := Digest)
+        (fun slot nonce => g (slot, nonce))
+        (singlePattern (TagId := TagId) sessionsPerTag) transcript), s) := by
+  unfold singleTableHandler
+  rw [QueryImpl.add_apply_inr]
+  change (unlinkReaderQueryImpl (fun slot nonce => g (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) transcript).run s = _
+  unfold unlinkReaderQueryImpl
+  rfl
+
+omit [Nonempty TagId] in
+/-- **Step A, single world (Milestone 3).** Running the composed single-session ideal handler
+from state `(s, c)` has the same output distribution as sampling a full random-oracle table `g`,
+overlaying the cache `c`, and running the deterministic real single-session table handler. -/
+private lemma evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending
+    [Fintype Nonce] [Finite Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    𝒟[(simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) oa).run' (s, c)] =
+      𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g)) oa).run' s] := by
+  induction oa using OracleComp.inductionOn generalizing s c with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run'_eq, StateT.run_pure, map_pure]
+    refine (evalDist_ext fun x => ?_).symm
+    rw [probOutput_bind_const, probFailure_uniformSample, tsub_zero, one_mul]
+  | query_bind t f ih =>
+    rw [singleIdeal_run'_query_bind']
+    have hrhs : 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+          (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g))
+            (liftM (OracleSpec.query t) >>= f)).run' s]
+        = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+            (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g) t s) >>= fun p =>
+              (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g))
+                (f p.1)).run' p.2] := by
+      refine congrArg _ (congrArg _ (funext fun g => ?_))
+      rw [singleTable_run'_query_bind']
+    rw [hrhs]
+    cases t with
+    | inl tag =>
+      by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+      · rw [singleIdealQueryImpl_tag_run_of_lt tag s c hslot]
+        set adv := ({ s with sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) } : UnlinkState TagId) with hadv
+        set sid := (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag) with hsid
+        have hlhs_reassoc :
+            ((($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest), adv, r.2)) >>= fun p =>
+              (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+            = (($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                  (f (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest)))).run' (adv, r.2)) := by
+          rw [bind_assoc]
+          refine bind_congr fun nonce => ?_
+          rw [bind_assoc]
+          refine bind_congr fun r => ?_
+          rw [pure_bind]
+        refine (congrArg evalDist hlhs_reassoc).trans ?_
+        have hlhs_inner : ∀ (n : Nonce),
+            𝒟[idealCacheStep c ((tag, sid), n) >>= fun r =>
+              (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (some (⟨n, r.1⟩ : TagTranscript Nonce Digest)))).run' (adv, r.2)]
+            = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                  (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c g))
+                    (f (some (⟨n, OracleComp.tableExtending c g ((tag, sid), n)⟩ :
+                      TagTranscript Nonce Digest)))).run' adv] := by
+          intro n
+          set Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun g' =>
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g')
+              (f (some (⟨n, g' ((tag, sid), n)⟩ : TagTranscript Nonce Digest)))).run' adv with hMψ
+          refine Eq.trans ?_ (evalDist_idealCacheStep_bind_uniformTable_comp c ((tag, sid), n) Mψ)
+          refine evalDist_bind_congr_of_support _ _ _ fun r hr => ?_
+          rw [ih (some (⟨n, r.1⟩ : TagTranscript Nonce Digest)) adv r.2]
+          refine congrArg _ (congrArg _ (funext fun g => ?_))
+          have hcell : OracleComp.tableExtending r.2 g ((tag, sid), n) = r.1 := by
+            simp only [OracleComp.tableExtending,
+              idealCacheStep_cache_self c ((tag, sid), n) r hr, Option.getD_some]
+          rw [hMψ]
+          simp only [hcell]
+        simp only [singleTableHandler_tag_run_of_lt _ tag s hslot]
+        have hrhs_swap :
+            (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+              (($ᵗ Nonce) >>= fun nonce =>
+                pure (some (⟨nonce, OracleComp.tableExtending c g ((tag, sid), nonce)⟩ :
+                  TagTranscript Nonce Digest), adv)) >>= fun p =>
+                (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c g)) (f p.1)).run' p.2)
+            = (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                ($ᵗ Nonce) >>= fun n =>
+                (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c g))
+                  (f (some (⟨n, OracleComp.tableExtending c g ((tag, sid), n)⟩ :
+                    TagTranscript Nonce Digest)))).run' adv) := by
+          refine bind_congr fun g => ?_
+          rw [bind_assoc]
+          refine bind_congr fun n => ?_
+          rw [pure_bind]
+        refine Eq.trans ?_ (congrArg evalDist hrhs_swap).symm
+        rw [evalDist_probComp_bind_comm ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+          ($ᵗ Nonce)]
+        refine evalDist_bind_congr_of_support _ _ _ fun n _ => ?_
+        exact hlhs_inner n
+      · rw [singleIdealQueryImpl_tag_run_of_not_lt tag s c hslot]
+        show 𝒟[(simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f none)).run' (s, c)] = _
+        rw [ih none s c]
+        refine congrArg _ (congrArg _ (funext fun g => ?_))
+        rw [singleTableHandler_tag_run_of_not_lt _ tag s hslot]
+        rfl
+    | inr transcript =>
+      rw [singleIdealQueryImpl_reader_run transcript s c]
+      set cells := (Finset.univ : Finset (TagId × Fin sessionsPerTag)).toList.map
+        (fun slot => (slot, transcript.nonce)) with hcells
+      have hlhs_reassoc :
+          ((idealCacheMapM cells c >>= fun rs =>
+              pure (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth)), s, rs.2))
+            >>= fun p => (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+          = (idealCacheMapM cells c >>= fun rs =>
+              (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth))))).run'
+                (s, rs.2)) := by
+        rw [bind_assoc]
+        refine bind_congr fun rs => ?_
+        rw [pure_bind]
+      refine (congrArg evalDist hlhs_reassoc).trans ?_
+      set Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun g' =>
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g')
+          (f (ReaderReply.ofBool (decide (∃ d ∈ cells.map g', d = transcript.auth))))).run' s
+        with hMψ
+      have hstep1 :
+          𝒟[idealCacheMapM cells c >>= fun rs =>
+              (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth))))).run'
+                (s, rs.2)]
+          = 𝒟[idealCacheMapM cells c >>= fun rs =>
+              ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                Mψ (OracleComp.tableExtending rs.2 g)] := by
+        refine evalDist_bind_congr_of_support _ _ _ fun rs hrs => ?_
+        rw [ih (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth))) s rs.2]
+        refine congrArg _ (congrArg _ (funext fun g => ?_))
+        rw [hMψ]
+        simp only [idealCacheMapM_support cells c rs hrs g]
+      rw [hstep1, evalDist_idealCacheMapM_bind_uniformTable_comp cells c Mψ]
+      refine (evalDist_bind_congr_of_support _ _ _ fun g _ => ?_).symm
+      rw [singleTableHandler_reader_run _ transcript s]
+      show 𝒟[(simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g))
+          (f (ReaderReply.ofBool (unlinkReaderAccepts (TagId := TagId)
+            (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce) (Digest := Digest)
+            (fun slot nonce => OracleComp.tableExtending c g (slot, nonce))
+            (singlePattern (TagId := TagId) sessionsPerTag) transcript)))).run' s] = _
+      rw [hMψ]
+      have hAccept : decide (∃ d ∈ cells.map (OracleComp.tableExtending c g),
+            d = transcript.auth)
+          = unlinkReaderAccepts (TagId := TagId) (Slot := TagId × Fin sessionsPerTag)
+            (Nonce := Nonce) (Digest := Digest)
+            (fun slot nonce => OracleComp.tableExtending c g (slot, nonce))
+            (singlePattern (TagId := TagId) sessionsPerTag) transcript := by
+        unfold unlinkReaderAccepts tagAccepts
+        rw [hcells]
+        simp only [List.map_map, List.mem_map, Finset.mem_toList, Finset.mem_univ, true_and,
+          singlePattern, decide_eq_decide, decide_eq_true_eq, Function.comp]
+        constructor
+        · rintro ⟨d, ⟨slot, rfl⟩, hd⟩
+          exact ⟨slot.1, ⟨slot.2, hd⟩⟩
+        · rintro ⟨tag, sid, hd⟩
+          exact ⟨_, ⟨(tag, sid), rfl⟩, hd⟩
+      beta_reduce
+      rw [hAccept]
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
