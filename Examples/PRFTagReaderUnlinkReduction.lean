@@ -2275,40 +2275,94 @@ The 2-hop hybrid game closing the unlinkability reduction. The hybrid world `H` 
 
 * a tag oracle identical to the single-session world's — session `i` of `tag` reads
   `gS ((tag, i), nonce)`, so tag queries are *per-session fresh*;
-* a reader oracle identical to the multiple-session world's — it inspects only the reference
-  session slot `0`, i.e. `Fintype.card TagId` cells `gS ((tag, 0), nonce)`.
+* a *draw-map-based* reader oracle. The hybrid state carries, beside the session counters, a
+  `drawMap : TagId × Nonce → Option (Fin sessionsPerTag)` recording, for each `(tag, nonce)`,
+  which session of `tag` last drew `nonce`. On a reader query at transcript `(n, v)`, the reader
+  accepts when some tag `tag` has a recorded draw `drawMap (tag, n) = some sid` with
+  `gS ((tag, sid), n) = v` — i.e. it inspects exactly the cells that an honest tag query of that
+  session actually produced.
+
+The draw-map reader is *sound against the replay attack*: a transcript emitted by session `sid`
+of `tag` records `drawMap (tag, n) = some sid`, so the hybrid reader checks cell
+`gS ((tag, sid), n) = v` and accepts its own transcripts — exactly as the single world does. A
+fixed reference-slot reader (always checking session `0`) would instead reject a replayed
+transcript from any session `sid ≠ 0`, an unsound divergence.
 
 Because its tag oracle matches the single world's, `H` and Single can be coupled on one shared
-table `gS` and differ only in the reader (hop B, the reader-slack term). Because its reader
-inspects exactly the multiple world's cells under the reference-slot identification
-`projectTable`, `H` and Multiple differ only when a tag reuses a nonce within its own sessions
-(hop A, the `Pr[unlinkBadExp]` term). -/
+table `gS` and differ only in the reader (hop B): `H`'s reader checks only the drawn cells, a
+subset of the single reader's all-cells check, paying the reader-slack term. Because its tag
+behaviour is per-session fresh and its reader checks the actually-drawn cells, `H` and Multiple
+differ only when a tag reuses a nonce within its own sessions (hop A, the `Pr[unlinkBadExp]`
+term) or on a reader transcript carrying a never-drawn nonce. -/
 
-/-- Reader acceptance for the hybrid world: accept the transcript when some tag's *reference-slot*
-cell of the single-session table matches the authenticator. This is the multiple-session reader
-acceptance `unlinkReaderAccepts … multiplePattern` transported onto the single-session table by
-reading the reference slot `0`. -/
+/-- Per-tag draw map: records, for each `(tag, nonce)`, the session index of `tag` that last drew
+`nonce` in a tag query, or `none` if no session of `tag` ever drew `nonce`. The hybrid world
+threads a `HybridDrawMap` beside its session counters so that its reader can inspect exactly the
+cells that honest tag queries produced. -/
+def HybridDrawMap (TagId Nonce : Type) (sessionsPerTag : ℕ) : Type :=
+  TagId × Nonce → Option (Fin sessionsPerTag)
+
+/-- Empty draw map: no session has drawn any nonce yet. -/
+def HybridDrawMap.init {TagId Nonce : Type} {sessionsPerTag : ℕ} :
+    HybridDrawMap TagId Nonce sessionsPerTag := fun _ => none
+
+/-- Hybrid-world handler state: the session counters together with the draw map. -/
+structure HybridState (TagId Nonce : Type) (sessionsPerTag : ℕ) where
+  sessionsUsed : TagId → ℕ
+  drawMap : HybridDrawMap TagId Nonce sessionsPerTag
+
+/-- Initial hybrid-world state: no sessions used, empty draw map. -/
+def HybridState.init {TagId Nonce : Type} {sessionsPerTag : ℕ} :
+    HybridState TagId Nonce sessionsPerTag where
+  sessionsUsed := fun _ => 0
+  drawMap := HybridDrawMap.init
+
+/-- Reader acceptance for the hybrid world at draw map `dm` and single-session table `gS`: accept
+the transcript when some tag `tag` has a recorded draw `dm (tag, nonce) = some sid` whose cell
+`gS ((tag, sid), nonce)` matches the authenticator. Only the cells that honest tag queries
+actually produced are inspected. -/
 def hybridReaderAccepts (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (dm : HybridDrawMap TagId Nonce sessionsPerTag)
     (transcript : TagTranscript Nonce Digest) : Bool :=
-  decide (∃ tag : TagId, gS ((tag, (0 : Fin sessionsPerTag)), transcript.nonce) = transcript.auth)
+  decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag,
+    dm (tag, transcript.nonce) = some sid ∧
+      gS ((tag, sid), transcript.nonce) = transcript.auth)
 
-/-- Reader oracle of the hybrid world: deterministic reference-slot acceptance against the
-single-session table `gS`, with the state untouched. -/
+/-- Hybrid-world tag oracle keyed on the single-session table `gS`: identical to the
+single-session tag oracle on the session counter, additionally recording the drawn nonce in the
+draw map. Session `sid := sessionsUsed tag` of `tag` samples `nonce`, sets
+`drawMap (tag, nonce) := some sid`, and returns the transcript `⟨nonce, gS ((tag, sid), nonce)⟩`. -/
+noncomputable def hybridTagHandler (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
+    QueryImpl (TagId →ₒ Option (TagTranscript Nonce Digest))
+      (StateT (HybridState TagId Nonce sessionsPerTag) ProbComp) := fun tag => do
+  let st ← get
+  if h : st.sessionsUsed tag < sessionsPerTag then
+    let sid : Fin sessionsPerTag := ⟨st.sessionsUsed tag, h⟩
+    let nonce ← ($ᵗ Nonce : ProbComp Nonce)
+    set
+      ({ sessionsUsed := Function.update st.sessionsUsed tag (st.sessionsUsed tag + 1)
+         drawMap := Function.update st.drawMap (tag, nonce) (some sid) } :
+        HybridState TagId Nonce sessionsPerTag)
+    return some (⟨nonce, gS ((tag, sid), nonce)⟩ : TagTranscript Nonce Digest)
+  else
+    return none
+
+/-- Hybrid-world reader oracle keyed on the single-session table `gS`: deterministic draw-map
+acceptance against `gS`, with the state untouched. -/
 noncomputable def hybridReaderHandler (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
     QueryImpl ((TagTranscript Nonce Digest) →ₒ ReaderReply)
-      (StateT (UnlinkState TagId) ProbComp) := fun transcript => fun s =>
+      (StateT (HybridState TagId Nonce sessionsPerTag) ProbComp) := fun transcript => fun s =>
   pure (ReaderReply.ofBool (hybridReaderAccepts (TagId := TagId) (Nonce := Nonce)
-    (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS transcript), s)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS s.drawMap transcript), s)
 
 /-- Deterministic hybrid handler keyed on a single-session random-oracle table
-`gS : (TagId × Fin sessionsPerTag) × Nonce → Digest`: the single-session tag oracle (per-session
-fresh cells) paired with the reference-slot reader oracle (one slot per tag). -/
+`gS : (TagId × Fin sessionsPerTag) × Nonce → Digest`: the draw-map-recording single-session tag
+oracle paired with the draw-map-consulting reader oracle. -/
 noncomputable def hybridTableHandler (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
     QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
-      (StateT (UnlinkState TagId) ProbComp) :=
-  unlinkTagQueryImpl (TagId := TagId) (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce)
-    (Digest := Digest) (fun slot nonce => gS (slot, nonce))
-    (singlePattern (TagId := TagId) sessionsPerTag) +
+      (StateT (HybridState TagId Nonce sessionsPerTag) ProbComp) :=
+  hybridTagHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) gS +
   hybridReaderHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
     (sessionsPerTag := sessionsPerTag) gS
 
@@ -2319,7 +2373,7 @@ private lemma hybridTable_run'_query_bind' {α : Type}
     (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
     (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
       OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
-    (s : UnlinkState TagId) :
+    (s : HybridState TagId Nonce sessionsPerTag) :
     (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) gS) (liftM (OracleSpec.query t) >>= f)).run' s =
       (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
@@ -2329,89 +2383,75 @@ private lemma hybridTable_run'_query_bind' {α : Type}
   rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
   rfl
 
-/-- `hybridTableHandler` on a tag query with the slot budget exhausted: returns `none`. -/
+/-- `hybridTableHandler` on a tag query with the slot budget exhausted: returns `none`, state
+unchanged. -/
 private lemma hybridTableHandler_tag_run_of_not_lt
     (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
-    (tag : TagId) (s : UnlinkState TagId)
+    (tag : TagId) (s : HybridState TagId Nonce sessionsPerTag)
     (hslot : ¬ s.sessionsUsed tag < sessionsPerTag) :
     (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) = pure (none, s) := by
   unfold hybridTableHandler
   rw [QueryImpl.add_apply_inl]
-  change (unlinkTagQueryImpl (fun slot nonce => gS (slot, nonce))
-    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
-  unfold unlinkTagQueryImpl
+  change (hybridTagHandler gS tag).run s = _
+  unfold hybridTagHandler
   simp [StateT.run_bind, StateT.run_get, hslot]
 
-/-- `hybridTableHandler` on a tag query with a free slot: identical to `singleTableHandler` — sample
-a nonce, look up the table at `((tag, sid), nonce)`, advance the session counter. -/
+/-- `hybridTableHandler` on a tag query with a free slot: sample a nonce, look up the table at
+`((tag, sid), nonce)`, advance the session counter, and record the draw in the draw map. -/
 private lemma hybridTableHandler_tag_run_of_lt
     (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
-    (tag : TagId) (s : UnlinkState TagId)
+    (tag : TagId) (s : HybridState TagId Nonce sessionsPerTag)
     (hslot : s.sessionsUsed tag < sessionsPerTag) :
     (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) =
       ($ᵗ Nonce) >>= fun nonce =>
         pure (some (⟨nonce, gS ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce)⟩ :
             TagTranscript Nonce Digest),
-          { s with sessionsUsed :=
-            Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }) := by
+          ({ sessionsUsed :=
+              Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1)
+             drawMap := Function.update s.drawMap (tag, nonce)
+              (some ⟨s.sessionsUsed tag, hslot⟩) } :
+            HybridState TagId Nonce sessionsPerTag)) := by
   unfold hybridTableHandler
   rw [QueryImpl.add_apply_inl]
-  change (unlinkTagQueryImpl (fun slot nonce => gS (slot, nonce))
-    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
-  unfold unlinkTagQueryImpl
+  change (hybridTagHandler gS tag).run s = _
+  unfold hybridTagHandler
   simp [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
-    hslot, singlePattern, bind_pure_comp]
+    hslot, bind_pure_comp]
 
-/-- `hybridTableHandler` on a tag query agrees with `singleTableHandler` on the same table: both
-tag oracles are `unlinkTagQueryImpl` under the `singlePattern`. -/
-private lemma hybridTableHandler_tag_eq_singleTableHandler_tag
-    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
-    (tag : TagId) (s : UnlinkState TagId) :
-    (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) =
-      (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) := by
-  by_cases hslot : s.sessionsUsed tag < sessionsPerTag
-  · rw [hybridTableHandler_tag_run_of_lt _ tag s hslot,
-      singleTableHandler_tag_run_of_lt _ tag s hslot]
-  · rw [hybridTableHandler_tag_run_of_not_lt _ tag s hslot,
-      singleTableHandler_tag_run_of_not_lt _ tag s hslot]
-
-/-- `hybridTableHandler` on a reader query: deterministic reference-slot acceptance, state
-untouched. -/
+/-- `hybridTableHandler` on a reader query: deterministic draw-map acceptance against the table,
+state untouched. -/
 private lemma hybridTableHandler_reader_run
     (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
-    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    (transcript : TagTranscript Nonce Digest) (s : HybridState TagId Nonce sessionsPerTag) :
     (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) gS (Sum.inr transcript) s) =
       pure (ReaderReply.ofBool (hybridReaderAccepts (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS transcript), s) := by
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS s.drawMap transcript), s) := by
   unfold hybridTableHandler
   rw [QueryImpl.add_apply_inr]
   rfl
 
 omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] in
-/-- The hybrid reader-acceptance at table `gS` equals the multiple-session reader-acceptance at the
-reference-slot projection `projectTable gS`: both inspect exactly the cells
-`gS ((tag, 0), nonce)`. -/
-private lemma hybridReaderAccepts_eq_multipleReaderAccepts
+/-- Hybrid draw-map acceptance is monotone in the table-cell agreement: whenever the hybrid reader
+accepts a transcript at draw map `dm` and table `gS`, the single-session reader
+`unlinkReaderAccepts … singlePattern` at the same table also accepts it — `H`'s accept condition
+inspects a *subset* of the cells the single reader checks (only the drawn ones). -/
+private lemma hybridReaderAccepts_imp_singleReaderAccepts
     (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
-    (transcript : TagTranscript Nonce Digest) :
-    hybridReaderAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-        (sessionsPerTag := sessionsPerTag) gS transcript =
-      unlinkReaderAccepts (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
-        (fun tag nonce => projectTable (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) gS (tag, nonce))
-        (multiplePattern (TagId := TagId) sessionsPerTag) transcript := by
-  unfold hybridReaderAccepts unlinkReaderAccepts tagAccepts projectTable multiplePattern
-  simp only [decide_eq_decide, decide_eq_true_eq]
-  constructor
-  · rintro ⟨tag, hd⟩
-    exact ⟨tag, ⟨0, Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)⟩, hd⟩
-  · rintro ⟨tag, _, hd⟩
-    exact ⟨tag, hd⟩
+    (dm : HybridDrawMap TagId Nonce sessionsPerTag)
+    (transcript : TagTranscript Nonce Digest)
+    (h : hybridReaderAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) gS dm transcript = true) :
+    unlinkReaderAccepts (TagId := TagId) (Slot := TagId × Fin sessionsPerTag)
+      (Nonce := Nonce) (Digest := Digest) (fun slot nonce => gS (slot, nonce))
+      (singlePattern (TagId := TagId) sessionsPerTag) transcript = true := by
+  unfold hybridReaderAccepts at h
+  unfold unlinkReaderAccepts tagAccepts singlePattern
+  simp only [decide_eq_true_eq] at h ⊢
+  obtain ⟨tag, sid, _, hcell⟩ := h
+  exact ⟨tag, sid, hcell⟩
 
 end EagerComposed
 
