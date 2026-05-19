@@ -4373,6 +4373,36 @@ private lemma multipleBadQueryImpl_run_preserves_bad {α : Type}
     obtain ⟨p, hp, hz⟩ := hz
     exact ih p.1 p.2 (multipleBadQueryImpl_step_preserves_bad t s hbad p hp) z hz
 
+/-! ### Hop A: spare uniform draws are distribution-neutral
+
+The hop-A coupling pairs each multiple-cache cell written by a *reader* query with a reserved
+hybrid "spare" digest. Operationally the hybrid side draws those spares and discards them. The
+lemma below is the soundness core making that free: appending any failure-free probabilistic
+prefix to a computation — in particular a fold of fresh uniform digest draws via
+`idealCacheMapM` — leaves the output distribution unchanged. `ProbComp` never fails
+(`probFailure_eq_zero`), so a discarded draw cannot shift any output probability. -/
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- Appending a failure-free probabilistic prefix and discarding its result is
+distribution-neutral: `𝒟[mx >>= fun _ => my] = 𝒟[my]`. Since every `ProbComp` has zero failure
+probability, the discarded draw `mx` contributes only the constant factor `1`. -/
+private lemma evalDist_bind_const_eq {α β : Type} (mx : ProbComp α) (my : ProbComp β) :
+    𝒟[mx >>= fun _ => my] = 𝒟[my] := by
+  refine evalDist_ext fun y => ?_
+  rw [probOutput_bind_const, probFailure_eq_zero, tsub_zero, one_mul]
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Spare draws are distribution-neutral.** Folding `idealCacheStep` over an arbitrary list of
+domain points — drawing a fresh uniform digest at every uncached cell — and then discarding the
+result leaves the output distribution unchanged. This is the soundness core of the hop-A
+spare-draws coupling: the hybrid reader may draw `|TagId|` spare digests it never reads, matching
+the cells the multiple reader writes, without shifting any output probability. -/
+private lemma evalDist_idealCacheMapM_bind_const_eq {D β : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache) (my : ProbComp β) :
+    𝒟[idealCacheMapM l c >>= fun _ => my] = 𝒟[my] :=
+  evalDist_bind_const_eq (idealCacheMapM l c) my
+
 end EagerComposed
 
 /-! ### Hop A: the multiple-vs-hybrid coupling relation
