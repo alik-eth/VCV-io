@@ -1201,6 +1201,63 @@ private lemma unlinkBad_run_query_bind
   rw [simulateQ_query_bind, StateT.run_bind]
   rfl
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `unlinkBadQueryImpl` on a tag query with the slot budget exhausted: returns `none`, state
+unchanged. -/
+private lemma unlinkBadQueryImpl_tag_run_of_not_lt (tag : TagId)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hslot : ¬ sB.sessionsUsed tag < sessionsPerTag) :
+    (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sB = pure (none, sB) := by
+  unfold unlinkBadQueryImpl
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkBadTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) tag).run sB = _
+  unfold unlinkBadTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, hslot]
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `unlinkBadQueryImpl` on a tag query with a free slot: sample a nonce and a fresh digest,
+record the digest under `(tag, nonce)`, set the `bad` flag if `(tag, nonce)` was already cached,
+and advance the session counter. -/
+private lemma unlinkBadQueryImpl_tag_run_of_lt (tag : TagId)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hslot : sB.sessionsUsed tag < sessionsPerTag) :
+    (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sB =
+      ($ᵗ Nonce) >>= fun nonce =>
+        ($ᵗ Digest) >>= fun auth =>
+          pure (some (⟨nonce, auth⟩ : TagTranscript Nonce Digest),
+            ({ sessionsUsed :=
+                Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1)
+               responses := sB.responses.cacheQuery (tag, nonce)
+                 (auth :: Option.getD (sB.responses (tag, nonce)) [])
+               bad := sB.bad || (sB.responses (tag, nonce)).isSome } :
+              UnlinkBadState TagId Nonce Digest)) := by
+  unfold unlinkBadQueryImpl
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkBadTagQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) tag).run sB = _
+  unfold unlinkBadTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set, hslot,
+    bind_pure_comp]
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `unlinkBadQueryImpl` on a reader query: deterministic acceptance against the recorded
+random-function responses, state untouched. -/
+private lemma unlinkBadQueryImpl_reader_run (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) sB =
+      pure (ReaderReply.ofBool (decide (∃ tag ∈ (Finset.univ : Finset TagId),
+        transcript.auth ∈ ((sB.responses (tag, transcript.nonce)).getD []))), sB) := by
+  unfold unlinkBadQueryImpl
+  rw [QueryImpl.add_apply_inr]
+  change (unlinkBadReaderQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    transcript).run sB = _
+  unfold unlinkBadReaderQueryImpl
+  simp [StateT.run_bind, StateT.run_get]
+
 /-! ### Coupling invariant and per-step residue lemmas
 
 The coupling between the multiple- and single-session ideal worlds and the bad-event world is
