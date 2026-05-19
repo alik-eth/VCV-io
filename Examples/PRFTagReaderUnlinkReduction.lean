@@ -3967,6 +3967,75 @@ private lemma MHBInv_init :
   · intro tag sid n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
   · intro tag sid₁ sid₂ n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
 
+/-- The list of multiple-world cells inspected by a reader query at `transcript.nonce`: one cell
+`(tag, transcript.nonce)` per tag. -/
+private noncomputable def multipleReaderCells (transcript : TagTranscript Nonce Digest) :
+    List (TagId × Nonce) :=
+  (Finset.univ : Finset TagId).toList.map (fun tag => (tag, transcript.nonce))
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The multiple-world reader-cell list is duplicate-free. -/
+private lemma multipleReaderCells_nodup (transcript : TagTranscript Nonce Digest) :
+    (multipleReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      transcript).Nodup := by
+  unfold multipleReaderCells
+  refine (Finset.univ : Finset TagId).nodup_toList.map ?_
+  intro a b hab
+  simpa using hab
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The multiple-world reader-cell list has exactly `|TagId|` cells. -/
+private lemma multipleReaderCells_length (transcript : TagTranscript Nonce Digest) :
+    (multipleReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      transcript).length = Fintype.card TagId := by
+  unfold multipleReaderCells
+  rw [List.length_map, Finset.length_toList, Finset.card_univ]
+
+omit [Nonempty TagId] [SampleableType Nonce] in
+/-- **Per-reader-query multiple-vs-hybrid disagreement bound.** Fix a multiple cache `cM`, a hybrid
+cache `cH` and a session-nonce map `sn`. Suppose every multiple cell `(tag, transcript.nonce)` that
+is *already cached* was produced by a tag draw — recorded in `sn` (`hcol`) — and that every
+tag-drawn cell of the multiple cache mirrors the hybrid cache (`hcorr`, the `MHBInv` cache
+correspondence). Then, folding `idealCacheStep` over the `|TagId|` multiple reader cells, the
+probability that the multiple reader accepts while the hybrid reader (`hybridCacheAccepts`) rejects
+is at most `|TagId| / |Digest|`: the only way they disagree is a fresh draw at a never-drawn cell
+hitting the authenticator, bounded by `probEvent_idealCacheMapM_mem_le`. -/
+private lemma probEvent_multipleReader_disagree_le [Fintype Digest]
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (cH : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag)
+    (transcript : TagTranscript Nonce Digest)
+    (hcol : ∀ tag, (cM (tag, transcript.nonce)).isSome →
+      ∃ sid, sn (tag, sid) = some transcript.nonce)
+    (hcorr : ∀ tag sid n, sn (tag, sid) = some n → cM (tag, n) = cH ((tag, sid), n)) :
+    Pr[fun rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache =>
+        decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧
+          hybridCacheAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) cH sn transcript = false |
+        idealCacheMapM (multipleReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          transcript) cM] ≤
+      (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  rw [← multipleReaderCells_length (TagId := TagId) (Digest := Digest) transcript]
+  push_cast
+  refine le_trans (probEvent_mono fun rs _ hrs => ?_)
+    (probEvent_idealCacheMapM_mem_le _
+      (multipleReaderCells_nodup (TagId := TagId) (Digest := Digest) transcript) cM
+      transcript.auth)
+  obtain ⟨haccept, hreject⟩ := hrs
+  rw [decide_eq_true_eq] at haccept
+  refine ⟨haccept.1, fun cell hcell hcc => ?_⟩
+  obtain ⟨tag, rfl⟩ : ∃ tag, cell = (tag, transcript.nonce) := by
+    unfold multipleReaderCells at hcell
+    rw [List.mem_map] at hcell
+    obtain ⟨tag, _, rfl⟩ := hcell
+    exact ⟨tag, rfl⟩
+  -- the cell `(tag, transcript.nonce)` is cached and equals `auth`; it must be tag-drawn
+  obtain ⟨sid, hsid⟩ := hcol tag (by rw [hcc]; rfl)
+  rw [hybridCacheAccepts, decide_eq_false_iff_not] at hreject
+  refine hreject ⟨tag, sid, hsid, ?_⟩
+  rw [← hcorr tag sid transcript.nonce hsid, hcc]
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
