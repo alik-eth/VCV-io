@@ -2784,6 +2784,23 @@ private lemma evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending
       rw [hybridCacheAccepts_eq_hybridReaderAccepts_tableExtending s c g hcons transcript]
       rfl
 
+/-- **Hop B, deliverable 1.** Eager form of the hybrid-world success probability: running the
+lazy hybrid handler from the initial state has the same success probability as sampling a full
+single-session random-oracle table `gS` up front and running the deterministic table hybrid
+handler. The hybrid analogue of `probOutput_singleIdeal_run'_eq_tableSample`. -/
+private lemma probOutput_hybrid_run'_eq_tableSample [Fintype Nonce] [Finite Digest]
+    (adv : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run'
+        (HybridState.init, ∅)] =
+      Pr[= true | ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gS =>
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) gS) adv).run' HybridState.init] := by
+  rw [probOutput_def, probOutput_def,
+    evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending adv HybridState.init ∅
+      hybridCacheConsistent_init]
+  simp only [OracleComp.tableExtending_empty]
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
