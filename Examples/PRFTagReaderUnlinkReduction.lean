@@ -4375,6 +4375,33 @@ private lemma multipleBadQueryImpl_run_preserves_bad {α : Type}
 
 end EagerComposed
 
+/-! ### Hop A: the multiple-vs-hybrid coupling relation
+
+The heterogeneous bad+slack `simulateQ` rule couples the instrumented multiple handler
+`multipleBadQueryImpl` (state `MultipleBadState`, the multiple-ideal state paired with the
+bad-world `UnlinkBadState`) against the lazy hybrid handler `hybridLazyHandler` (state
+`HybridState × QueryCache`). `MHBRel` repackages the three-way coupling invariant `MHBInv` —
+which relates a multiple-ideal state, a hybrid state and a bad-world state — as the binary
+relation the rule expects, by pairing the multiple-ideal and bad-world components inside the
+`MultipleBadState`. -/
+
+/-- Hop-A coupling relation for the heterogeneous bad+slack `simulateQ` rule: relate a
+`MultipleBadState` (a multiple-ideal state `s₁.1` together with a bad-world state `s₁.2`) and a
+lazy-hybrid state `s₂` exactly when the underlying three components satisfy `MHBInv`. -/
+private def MHBRel
+    (s₁ : MultipleBadState TagId Nonce Digest sessionsPerTag)
+    (s₂ : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) : Prop :=
+  MHBInv (sessionsPerTag := sessionsPerTag) s₁.1 s₂ s₁.2
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The initial `MultipleBadState` and lazy-hybrid state are `MHBRel`-related. -/
+private lemma MHBRel_init :
+    MHBRel (TagId := TagId) (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+      ((UnlinkState.init, ∅), UnlinkBadState.init) (HybridState.init, ∅) :=
+  MHBInv_init
+
 /-! ### Open obligation: the multiple-vs-single cache coupling
 
 The two `sorry`-carrying lemmas below — `multipleIdeal_tag_step_le_single_add_bad` and
