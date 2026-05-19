@@ -4193,6 +4193,79 @@ private lemma MHBInv_tag_step
       rw [QueryCache.cacheQuery_of_ne _ _ hhkey]
       exact hcons tag' sid' n' hsn'
 
+/-! ### Hop A: the instrumented multiple-session handler
+
+`multipleIdealQueryImpl`'s state — a lazy random-oracle cache over `(TagId × Nonce)` — cannot
+express "a within-tag tag–tag nonce collision has occurred": the cache key does not record whether
+a cell was written by a tag draw or by a reader query, and a collision is history. The
+instrumented handler `multipleBadQueryImpl` carries, beside the multiple-ideal state, a full
+bad-world `UnlinkBadState` whose `bad` flag fires exactly on a tag-written cell collision. Its
+*output bit* is identical to `multipleIdealQueryImpl`'s — the instrumentation only threads an extra
+state component — so `Pr[= true]` is unchanged (`probOutput_multipleBad_run'_eq_multipleIdeal`),
+while `Pr[bad]` is exactly the bad-world collision probability
+(`probEvent_multipleBad_bad_eq_unlinkBad`). -/
+
+/-- Joint handler state for the instrumented multiple-session world: the multiple-ideal state
+(session counters + lazy random-oracle cache over `TagId × Nonce`) paired with a full bad-world
+`UnlinkBadState` whose `responses` cache and `bad` flag detect within-tag nonce collisions. -/
+abbrev MultipleBadState (TagId Nonce Digest : Type) (sessionsPerTag : ℕ) : Type :=
+  (UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache) ×
+    UnlinkBadState TagId Nonce Digest
+
+/-- Bad-world state advance on a tag query: given the previous bad state `sB` and the transcript
+the multiple-ideal tag oracle produced, advance `sB` exactly as `unlinkBadTagQueryImpl` would —
+recording the drawn digest and firing `bad` on a repeat `(tag, nonce)`. A `none` transcript (slot
+exhausted) leaves `sB` untouched. -/
+def multipleBadAdvance (tag : TagId)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (r : Option (TagTranscript Nonce Digest)) : UnlinkBadState TagId Nonce Digest :=
+  match r with
+  | none => sB
+  | some tr =>
+      { sessionsUsed := Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1)
+        responses := sB.responses.cacheQuery (tag, tr.nonce)
+          (tr.auth :: Option.getD (sB.responses (tag, tr.nonce)) [])
+        bad := sB.bad || (sB.responses (tag, tr.nonce)).isSome }
+
+/-- Instrumented multiple-session handler: runs `multipleIdealQueryImpl` on the multiple-ideal
+component and, on a tag query, advances the bad-world component via `multipleBadAdvance`. Reader
+queries leave the bad-world component untouched. The first projection of the output equals
+`multipleIdealQueryImpl`'s output. -/
+noncomputable def multipleBadQueryImpl :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (MultipleBadState TagId Nonce Digest sessionsPerTag) ProbComp) :=
+  fun q => fun p => match q with
+    | Sum.inl tag =>
+        (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) p.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), multipleBadAdvance tag p.2 r.1)
+    | Sum.inr transcript =>
+        (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) p.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), p.2)
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `multipleBadQueryImpl` on a tag query: the multiple-ideal tag step with the bad-world component
+advanced by `multipleBadAdvance`. -/
+private lemma multipleBadQueryImpl_tag_run (tag : TagId)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) :
+    (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s =
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s.1 >>= fun r =>
+        pure (r.1, (r.2.1, r.2.2), multipleBadAdvance tag s.2 r.1) := rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `multipleBadQueryImpl` on a reader query: the multiple-ideal reader step, bad-world component
+untouched. -/
+private lemma multipleBadQueryImpl_reader_run (transcript : TagTranscript Nonce Digest)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) :
+    (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s =
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s.1 >>= fun r =>
+        pure (r.1, (r.2.1, r.2.2), s.2) := rfl
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
