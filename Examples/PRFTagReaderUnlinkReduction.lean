@@ -3284,6 +3284,405 @@ private lemma probEvent_bind_le_add_of_disagree {α β : Type} {mx : ProbComp α
         · rw [ENNReal.tsum_mul_right]
           exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
 
+
+/-! #### Hop B, deliverable 4: the coupled hybrid-vs-single coupling theorem
+
+The coupled hybrid handler `hybridCoupledHandler` and the single-session ideal handler
+`singleIdealQueryImpl` evolve their random-oracle cache and session counters in lockstep — they
+differ only in the reader oracle's *output bit*. The hybrid reader accepts on a subset of the
+single reader's cells, so the only disagreement is the single reader accepting on a non-tag-drawn
+cell. Under `HasDistinctUnlinkReaderNonces` that cell is genuinely fresh, and
+`probEvent_coupledReader_disagree_le` bounds the per-reader-query gap by
+`|TagId| * sessionsPerTag / |Digest|`. -/
+
+/-- Coupling invariant for hop B: a cached column-`n` cell that was *not* produced by the tag draw
+of its own session forces the residual computation to make no further reader query at `n`. Tag
+draws set the cache cell and the `sessionNonce` record together, so a non-tag-drawn cached cell can
+only come from an earlier reader query; `HasDistinctUnlinkReaderNonces` then rules out a second
+reader query at that nonce. -/
+private def HybridColFresh (oa : UnlinkAdversary TagId Nonce Digest)
+    (s : HybridState TagId Nonce sessionsPerTag)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) : Prop :=
+  ∀ (n : Nonce) (tag : TagId) (sid : Fin sessionsPerTag),
+    (c ((tag, sid), n)).isSome → s.sessionNonce (tag, sid) ≠ some n →
+      OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
+
+/-- Write-once invariant for the hybrid session-nonce map: a session that has not yet been used
+(its index is at or beyond the session counter) carries no recorded nonce. -/
+private def HybridWriteOnce (s : HybridState TagId Nonce sessionsPerTag) : Prop :=
+  ∀ (tag : TagId) (sid : Fin sessionsPerTag),
+    s.sessionsUsed tag ≤ sid.val → s.sessionNonce (tag, sid) = none
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The initial hybrid state satisfies the write-once invariant: nothing is recorded. -/
+private lemma hybridWriteOnce_init :
+    HybridWriteOnce (TagId := TagId) (Nonce := Nonce)
+      (sessionsPerTag := sessionsPerTag) HybridState.init := by
+  intro tag sid _
+  rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The empty cache satisfies the coupling invariant vacuously. -/
+private lemma hybridColFresh_init (oa : UnlinkAdversary TagId Nonce Digest)
+    (s : HybridState TagId Nonce sessionsPerTag) :
+    HybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa s ∅ := by
+  intro n tag sid hsome _
+  simp at hsome
+
+/-- **Hop B, core coupling bound.** For any hybrid state `s` and single state `sS` with equal
+session counters, sharing a random-oracle cache `c`, the coupled hybrid handler's success
+probability is bounded by the single-session ideal handler's plus the reader-slack term
+`qR * |TagId| * sessionsPerTag / |Digest|`, provided the adversary has pairwise-distinct reader
+nonces (`hdist`), at most `qR` reader queries (`hqR`), and the cache satisfies the coupling
+invariants `HybridColFresh`/`HybridWriteOnce`. Proved by induction on the adversary. -/
+private lemma hybridCoupled_le_singleIdeal_add_readerSlack_aux [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (s : HybridState TagId Nonce sessionsPerTag) (sS : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hcounter : s.sessionsUsed = sS.sessionsUsed)
+    (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
+    (hdist : ∀ n : Nonce, OracleComp.IsQueryBoundP oa (pReaderNonce n) 1)
+    (hwo : HybridWriteOnce (TagId := TagId) (Nonce := Nonce)
+      (sessionsPerTag := sessionsPerTag) s)
+    (hfresh : HybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa s c) :
+    Pr[= true | (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (s, c)] ≤
+      Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sS, c)] +
+      ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR s sS c with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run'_eq, StateT.run_pure, map_pure]
+    exact le_add_right (le_refl _)
+  | query_bind t f ih =>
+    rw [hybridCoupled_run'_query_bind', singleIdeal_run'_query_bind']
+    cases t with
+    | inl tag =>
+      -- Tag query: the two handlers are pointwise identical; recurse with `ε₁ = 0`.
+      have hqRf : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight) qR := by
+        intro u
+        have := hqR
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa using this.2 u
+      have hdistf : ∀ u, ∀ n, OracleComp.IsQueryBoundP (f u) (pReaderNonce n) 1 := by
+        intro u n
+        have := hdist n
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa [pReaderNonce] using this.2 u
+      have hfreshf : ∀ u, ∀ n, OracleComp.IsQueryBoundP
+          (liftM (OracleSpec.query (Sum.inl tag : (UnlinkOracleSpec TagId Nonce Digest).Domain))
+            >>= f) (pReaderNonce n) 0 →
+          OracleComp.IsQueryBoundP (f u) (pReaderNonce n) 0 := by
+        intro u n hb
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+        simpa [pReaderNonce] using hb.2 u
+      have hcounter_tag : sS.sessionsUsed tag = s.sessionsUsed tag := (congrFun hcounter tag).symm
+      by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+      · rw [hybridCoupledHandler_tag_run tag (s, c),
+          hybridLazyHandler_tag_run_of_lt tag (s, c) hslot,
+          singleIdealQueryImpl_tag_run_of_lt tag sS c (hcounter_tag ▸ hslot)]
+        dsimp only
+        simp only [hcounter_tag]
+        set sid := (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag) with hsid
+        set advH : Nonce → HybridState TagId Nonce sessionsPerTag := fun nonce =>
+          { sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1),
+            sessionNonce := Function.update s.sessionNonce (tag, sid) (some nonce) } with hadvH
+        set advS : UnlinkState TagId :=
+          { sS with sessionsUsed :=
+            Function.update sS.sessionsUsed tag (s.sessionsUsed tag + 1) } with hadvS
+        -- Reassociate both binds to a shared `mx`.
+        set mx : ProbComp (Nonce × Digest ×
+            (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :=
+          ($ᵗ Nonce) >>= fun n => idealCacheStep c ((tag, sid), n) >>= fun r => pure (n, r)
+          with hmx
+        have hreassocH :
+            (($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
+                  ({ sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1),
+                     sessionNonce := Function.update s.sessionNonce (tag, sid) (some nonce) } :
+                    HybridState TagId Nonce sessionsPerTag), r.2))
+              >>= (fun p => (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+            = mx >>= fun nr =>
+                (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                  (f (some (⟨nr.1, nr.2.1⟩ : TagTranscript Nonce Digest)))).run'
+                    (advH nr.1, nr.2.2) := by
+          rw [hmx]
+          simp only [bind_assoc, pure_bind, hadvH, hadvS]
+        have hreassocS :
+            (($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest), advS, r.2))
+              >>= (fun p => (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+            = mx >>= fun nr =>
+                (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                  (f (some (⟨nr.1, nr.2.1⟩ : TagTranscript Nonce Digest)))).run'
+                    (advS, nr.2.2) := by
+          rw [hmx]
+          simp only [bind_assoc, pure_bind, hadvH, hadvS]
+        rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+        refine le_trans (le_of_eq (congrArg (fun m => probEvent m (· = true)) hreassocH)) ?_
+        refine le_trans ?_ (le_of_eq (congrArg (fun z => z +
+          ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞))
+          (congrArg (fun m => probEvent m (· = true)) hreassocS.symm)))
+        refine le_trans (probEvent_bind_le_add_of_disagree (D := fun _ => False)
+          (ε₁ := 0)
+          (ε₂ := ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞))
+          (oc := fun nr => (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+            (f (some (⟨nr.1, nr.2.1⟩ : TagTranscript Nonce Digest)))).run' (advS, nr.2.2))
+          (by simp) ?_) (le_of_eq (by rw [add_zero]))
+        · -- per-point inductive step
+          rintro nr hnr -
+          obtain ⟨n, hn, r, hr, hnreq⟩ : ∃ n, n ∈ support ($ᵗ Nonce) ∧
+              ∃ r, r ∈ support (idealCacheStep c ((tag, sid), n)) ∧ nr = (n, r) := by
+            rw [hmx, mem_support_bind_iff] at hnr
+            obtain ⟨n, hn, hrest⟩ := hnr
+            rw [mem_support_bind_iff] at hrest
+            obtain ⟨r, hr, hpure⟩ := hrest
+            rw [support_pure, Set.mem_singleton_iff] at hpure
+            exact ⟨n, hn, r, hr, hpure⟩
+          subst hnreq
+          have hcellself : r.2 ((tag, sid), n) = some r.1 :=
+            idealCacheStep_cache_self c ((tag, sid), n) r hr
+          have hcounter' : (advH n).sessionsUsed = advS.sessionsUsed := by
+            rw [hadvH, hadvS]
+            dsimp only [HybridState.sessionsUsed]
+            rw [hcounter]
+          have hwo' : HybridWriteOnce (TagId := TagId) (Nonce := Nonce)
+              (sessionsPerTag := sessionsPerTag) (advH n) := by
+            intro tag' sid' hle
+            simp only [hadvH] at hle ⊢
+            by_cases htag : tag' = tag
+            · subst htag
+              rw [Function.update_self] at hle
+              have hne : sid' ≠ sid := by
+                intro h; rw [h, hsid] at hle; simp at hle
+              rw [Function.update_of_ne (by simp [Prod.ext_iff, hne])]
+              exact hwo tag' sid' (by omega)
+            · rw [Function.update_of_ne htag] at hle
+              rw [Function.update_of_ne (by simp [htag])]
+              exact hwo tag' sid' hle
+          have hfresh' : HybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag)
+              (f (some (⟨n, r.1⟩ : TagTranscript Nonce Digest))) (advH n) r.2 := by
+            intro n' tag' sid' hsome hne
+            refine hfreshf _ n' ?_
+            by_cases hkey : ((tag', sid'), n') = ((tag, sid), n)
+            · obtain ⟨hkk, rfl⟩ := Prod.mk.injEq .. ▸ hkey
+              obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. ▸ hkk
+              exact absurd (by rw [hadvH]; exact Function.update_self ..) hne
+            · have hcoff : r.2 ((tag', sid'), n') = c ((tag', sid'), n') :=
+                idealCacheStep_cache_off c ((tag, sid), n) r hr _ hkey
+              rw [hcoff] at hsome
+              have hsnH : (advH n).sessionNonce (tag', sid') ≠ some n' := hne
+              have hsn : s.sessionNonce (tag', sid') ≠ some n' := by
+                simp only [hadvH] at hsnH
+                by_cases hkey2 : (tag', sid') = (tag, sid)
+                · rw [hkey2, hwo tag sid (by simp [hsid])]
+                  simp
+                · rwa [Function.update_of_ne hkey2] at hsnH
+              exact hfresh n' tag' sid' hsome hsn
+          have hih := ih (some (⟨n, r.1⟩ : TagTranscript Nonce Digest)) qR (advH n) advS r.2
+            hcounter' (hqRf _) (fun n' => hdistf _ n') hwo' hfresh'
+          rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput] at hih
+          exact hih
+      · rw [hybridCoupledHandler_tag_run tag (s, c),
+          hybridLazyHandler_tag_run_of_not_lt tag (s, c) hslot,
+          singleIdealQueryImpl_tag_run_of_not_lt tag sS c (hcounter_tag ▸ hslot)]
+        have hfresh' : HybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (f none) s c := by
+          intro n tag' sid' hsome hne
+          exact hfreshf none n (hfresh n tag' sid' hsome hne)
+        exact ih none qR s sS c hcounter (hqRf none) (fun n => hdistf none n) hwo hfresh'
+    | inr transcript =>
+      -- Reader query: handlers fold the same column; the output bits may disagree.
+      set n₀ := transcript.nonce with hn₀
+      rw [hybridCoupledHandler_reader_run transcript (s, c),
+        singleIdealQueryImpl_reader_run transcript sS c]
+      set cells := (Finset.univ : Finset (TagId × Fin sessionsPerTag)).toList.map
+        (fun slot => (slot, transcript.nonce)) with hcells
+      have hcellseq : cells = hybridReaderCells (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) transcript := rfl
+      -- Budgets after the reader query.
+      have hqRsplit := hqR
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hqRsplit
+      obtain ⟨hvalid, hbudget⟩ := hqRsplit
+      have hqRpos : 0 < qR := by
+        rcases hvalid with h | h
+        · exact absurd rfl h
+        · exact h
+      obtain ⟨qR', rfl⟩ : ∃ qR', qR = qR' + 1 := ⟨qR - 1, by omega⟩
+      have hqRf : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight) qR' := by
+        intro u; simpa using hbudget u
+      -- the residual budget at `n₀` is exhausted
+      have hb0 : ∀ u, OracleComp.IsQueryBoundP (f u) (pReaderNonce n₀) 0 := by
+        intro u
+        have := hdist n₀
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        have h2 := this.2 u
+        simp only [pReaderNonce, hn₀, if_pos rfl] at h2
+        simpa using h2
+      -- off-`n₀` budget transfers to the continuation
+      have hbn : ∀ u, ∀ n, n ≠ n₀ → OracleComp.IsQueryBoundP
+          (liftM (OracleSpec.query (Sum.inr transcript :
+            (UnlinkOracleSpec TagId Nonce Digest).Domain)) >>= f) (pReaderNonce n) 0 →
+          OracleComp.IsQueryBoundP (f u) (pReaderNonce n) 0 := by
+        intro u n hne hb
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+        have h2 := hb.2 u
+        have hpfalse : ¬ pReaderNonce (TagId := TagId) (Nonce := Nonce) (Digest := Digest) n
+            (Sum.inr transcript) := fun h => hne (h.symm)
+        simpa [hpfalse] using h2
+      -- `hcol`: at the current reader nonce, no non-tag-drawn cached cell
+      have hcol : ∀ (tag : TagId) (sid : Fin sessionsPerTag),
+          (c ((tag, sid), n₀)).isSome → s.sessionNonce (tag, sid) = some n₀ := by
+        intro tag sid hsome
+        by_contra hne
+        have hbad := hfresh n₀ tag sid hsome hne
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hbad
+        have hp : pReaderNonce (TagId := TagId) (Nonce := Nonce) (Digest := Digest) n₀
+            (Sum.inr transcript) := rfl
+        rcases hbad.1 with h | h
+        · exact h hp
+        · exact absurd h (lt_irrefl 0)
+      -- reassociate both reader binds to a shared `mx`
+      set mx : ProbComp (List Digest ×
+          (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :=
+        idealCacheMapM cells c with hmx
+      set hybBit := hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.sessionNonce transcript
+        with hhybBit
+      have hreassocH :
+          (mx >>= fun rs => pure (ReaderReply.ofBool hybBit, s, rs.2))
+            >>= (fun p => (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+          = mx >>= fun rs =>
+              (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool hybBit))).run' (s, rs.2) := by
+        rw [bind_assoc]
+        refine bind_congr fun rs => ?_
+        rw [pure_bind]
+      have hreassocS :
+          (mx >>= fun rs =>
+              pure (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth)), sS, rs.2))
+            >>= (fun p => (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+          = mx >>= fun rs =>
+              (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth))))).run'
+                (sS, rs.2) := by
+        rw [bind_assoc]
+        refine bind_congr fun rs => ?_
+        rw [pure_bind]
+      rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+      refine le_trans (le_of_eq (congrArg (fun m => probEvent m (· = true)) hreassocH)) ?_
+      refine le_trans ?_ (le_of_eq (congrArg (fun z => z +
+        (((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞))
+        (congrArg (fun m => probEvent m (· = true)) hreassocS.symm)))
+      classical
+      set D : List Digest × (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache → Prop :=
+        fun rs => decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧ hybBit = false with hD
+      have hslackeq :
+          (((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞)
+            = (Fintype.card TagId * sessionsPerTag : ℕ) / (Fintype.card Digest : ℝ≥0∞)
+              + ((qR' * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+                (Fintype.card Digest : ℝ≥0∞) := by
+        rw [← ENNReal.add_div]
+        congr 1
+        push_cast
+        ring
+      refine le_trans (probEvent_bind_le_add_of_disagree (D := D)
+        (ε₁ := (Fintype.card TagId * sessionsPerTag : ℕ) / (Fintype.card Digest : ℝ≥0∞))
+        (ε₂ := ((qR' * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞))
+        (oc := fun rs => (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+          (f (ReaderReply.ofBool (decide (∃ d ∈ rs.1, d = transcript.auth))))).run' (sS, rs.2))
+        ?_ ?_) (le_of_eq (by rw [add_assoc, ← hslackeq]))
+      · -- the disagreement probability is bounded by the per-query slack
+        have hdis := probEvent_coupledReader_disagree_le (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.sessionNonce transcript hcol
+        rw [hmx, hcellseq]
+        exact hdis
+      · -- off the disagreement set, the bits agree; recurse with `ε₂ = 0`
+        intro rs hrs hDrs
+        have hrsmem : rs ∈ support (idealCacheMapM cells c) := by rw [hmx] at hrs; exact hrs
+        -- `hybBit → single bit`
+        have himp : hybBit = true →
+            decide (∃ d ∈ rs.1, d = transcript.auth) = true := by
+          intro hht
+          rw [hhybBit, hybridCacheAccepts, decide_eq_true_eq] at hht
+          obtain ⟨tag, sid, hsn, hcv⟩ := hht
+          rw [decide_eq_true_eq]
+          refine ⟨transcript.auth, ?_, rfl⟩
+          have hcellmem : ((tag, sid), n₀) ∈ cells := by
+            rw [hcells]
+            exact List.mem_map.mpr ⟨(tag, sid), Finset.mem_toList.mpr (Finset.mem_univ _), rfl⟩
+          have hcoff : rs.2 ((tag, sid), n₀) = c ((tag, sid), n₀) :=
+            idealCacheMapM_cache_off cells c rs hrsmem ((tag, sid), n₀) (by rw [hcv]; rfl)
+          have hrs1 : rs.1 = cells.map (OracleComp.tableExtending rs.2
+              (fun _ => transcript.auth)) :=
+            idealCacheMapM_support cells c rs hrsmem (fun _ => transcript.auth)
+          rw [hrs1]
+          refine List.mem_map.mpr ⟨((tag, sid), n₀), hcellmem, ?_⟩
+          rw [OracleComp.tableExtending, hcoff, hcv, Option.getD_some]
+        -- the bits are equal
+        have hbiteq : decide (∃ d ∈ rs.1, d = transcript.auth) = hybBit := by
+          have hDrs' : ¬ (decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧ hybBit = false) :=
+            hDrs
+          rcases hb : hybBit with _ | _
+          · -- hybBit false: `¬ D rs` forces single false
+            rcases hd : decide (∃ d ∈ rs.1, d = transcript.auth) with _ | _
+            · rfl
+            · exact absurd ⟨hd, hb⟩ hDrs'
+          · -- hybBit true: single true by `himp`
+            exact himp hb
+        beta_reduce
+        rw [hbiteq]
+        -- recurse on the shared continuation `f (ReaderReply.ofBool hybBit)`
+        rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput]
+        have hfresh' : HybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (f (ReaderReply.ofBool hybBit)) s rs.2 := by
+          intro n tag sid hsome hne
+          by_cases hnn : n = n₀
+          · subst hnn; exact hb0 _
+          · have hcellnotmem : ((tag, sid), n) ∉ cells := by
+              rw [hcells]
+              simp only [List.mem_map, Finset.mem_toList, Finset.mem_univ, true_and, not_exists]
+              intro slot hslot
+              exact hnn (congrArg Prod.snd hslot).symm
+            have hcoff : rs.2 ((tag, sid), n) = c ((tag, sid), n) :=
+              idealCacheMapM_cache_not_mem cells c rs hrsmem ((tag, sid), n) hcellnotmem
+            rw [hcoff] at hsome
+            exact hbn _ n hnn (hfresh n tag sid hsome hne)
+        have hdistcont : ∀ n, OracleComp.IsQueryBoundP (f (ReaderReply.ofBool hybBit))
+            (pReaderNonce n) 1 := by
+          intro n
+          by_cases hnn : n = n₀
+          · subst hnn
+            exact (hb0 (ReaderReply.ofBool hybBit)).mono (Nat.zero_le 1)
+          · have := hdist n
+            rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+            have h2 := this.2 (ReaderReply.ofBool hybBit)
+            have hpf : ¬ pReaderNonce (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                n (Sum.inr transcript) := fun h => hnn h.symm
+            simpa [hpf] using h2
+        exact ih (ReaderReply.ofBool hybBit) qR' s sS rs.2 hcounter (hqRf _)
+          hdistcont hwo hfresh'
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
