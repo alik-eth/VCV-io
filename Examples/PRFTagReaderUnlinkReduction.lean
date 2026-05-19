@@ -2268,6 +2268,151 @@ private lemma evalDist_projectTable_uniformSample
     exact Prod.ext h.1.1 h.2
   exact evalDist_uniformSample_map_comp_injective (R := Digest) he
 
+/-! #### Milestone 5: the hybrid table handler
+
+The 2-hop hybrid game closing the unlinkability reduction. The hybrid world `H` runs on the
+*single-session* random-oracle table `gS : (TagId × Fin sessionsPerTag) × Nonce → Digest`, with:
+
+* a tag oracle identical to the single-session world's — session `i` of `tag` reads
+  `gS ((tag, i), nonce)`, so tag queries are *per-session fresh*;
+* a reader oracle identical to the multiple-session world's — it inspects only the reference
+  session slot `0`, i.e. `Fintype.card TagId` cells `gS ((tag, 0), nonce)`.
+
+Because its tag oracle matches the single world's, `H` and Single can be coupled on one shared
+table `gS` and differ only in the reader (hop B, the reader-slack term). Because its reader
+inspects exactly the multiple world's cells under the reference-slot identification
+`projectTable`, `H` and Multiple differ only when a tag reuses a nonce within its own sessions
+(hop A, the `Pr[unlinkBadExp]` term). -/
+
+/-- Reader acceptance for the hybrid world: accept the transcript when some tag's *reference-slot*
+cell of the single-session table matches the authenticator. This is the multiple-session reader
+acceptance `unlinkReaderAccepts … multiplePattern` transported onto the single-session table by
+reading the reference slot `0`. -/
+def hybridReaderAccepts (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) : Bool :=
+  decide (∃ tag : TagId, gS ((tag, (0 : Fin sessionsPerTag)), transcript.nonce) = transcript.auth)
+
+/-- Reader oracle of the hybrid world: deterministic reference-slot acceptance against the
+single-session table `gS`, with the state untouched. -/
+noncomputable def hybridReaderHandler (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
+    QueryImpl ((TagTranscript Nonce Digest) →ₒ ReaderReply)
+      (StateT (UnlinkState TagId) ProbComp) := fun transcript => fun s =>
+  pure (ReaderReply.ofBool (hybridReaderAccepts (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS transcript), s)
+
+/-- Deterministic hybrid handler keyed on a single-session random-oracle table
+`gS : (TagId × Fin sessionsPerTag) × Nonce → Digest`: the single-session tag oracle (per-session
+fresh cells) paired with the reference-slot reader oracle (one slot per tag). -/
+noncomputable def hybridTableHandler (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId) ProbComp) :=
+  unlinkTagQueryImpl (TagId := TagId) (Slot := TagId × Fin sessionsPerTag) (Nonce := Nonce)
+    (Digest := Digest) (fun slot nonce => gS (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) +
+  hybridReaderHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) gS
+
+/-- `simulateQ hybridTableHandler` of a `query_bind`, run from a state and projected to its
+output: the per-query handler followed by the recursive simulation of the continuation. -/
+private lemma hybridTable_run'_query_bind' {α : Type}
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : UnlinkState TagId) :
+    (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS) (liftM (OracleSpec.query t) >>= f)).run' s =
+      (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS t s) >>= fun p =>
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) gS) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+/-- `hybridTableHandler` on a tag query with the slot budget exhausted: returns `none`. -/
+private lemma hybridTableHandler_tag_run_of_not_lt
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : ¬ s.sessionsUsed tag < sessionsPerTag) :
+    (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) = pure (none, s) := by
+  unfold hybridTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun slot nonce => gS (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, hslot]
+
+/-- `hybridTableHandler` on a tag query with a free slot: identical to `singleTableHandler` — sample
+a nonce, look up the table at `((tag, sid), nonce)`, advance the session counter. -/
+private lemma hybridTableHandler_tag_run_of_lt
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) =
+      ($ᵗ Nonce) >>= fun nonce =>
+        pure (some (⟨nonce, gS ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce)⟩ :
+            TagTranscript Nonce Digest),
+          { s with sessionsUsed :=
+            Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }) := by
+  unfold hybridTableHandler
+  rw [QueryImpl.add_apply_inl]
+  change (unlinkTagQueryImpl (fun slot nonce => gS (slot, nonce))
+    (singlePattern (TagId := TagId) sessionsPerTag) tag).run s = _
+  unfold unlinkTagQueryImpl
+  simp [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
+    hslot, singlePattern, bind_pure_comp]
+
+/-- `hybridTableHandler` on a tag query agrees with `singleTableHandler` on the same table: both
+tag oracles are `unlinkTagQueryImpl` under the `singlePattern`. -/
+private lemma hybridTableHandler_tag_eq_singleTableHandler_tag
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId) :
+    (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) =
+      (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s) := by
+  by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+  · rw [hybridTableHandler_tag_run_of_lt _ tag s hslot,
+      singleTableHandler_tag_run_of_lt _ tag s hslot]
+  · rw [hybridTableHandler_tag_run_of_not_lt _ tag s hslot,
+      singleTableHandler_tag_run_of_not_lt _ tag s hslot]
+
+/-- `hybridTableHandler` on a reader query: deterministic reference-slot acceptance, state
+untouched. -/
+private lemma hybridTableHandler_reader_run
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS (Sum.inr transcript) s) =
+      pure (ReaderReply.ofBool (hybridReaderAccepts (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) gS transcript), s) := by
+  unfold hybridTableHandler
+  rw [QueryImpl.add_apply_inr]
+  rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] in
+/-- The hybrid reader-acceptance at table `gS` equals the multiple-session reader-acceptance at the
+reference-slot projection `projectTable gS`: both inspect exactly the cells
+`gS ((tag, 0), nonce)`. -/
+private lemma hybridReaderAccepts_eq_multipleReaderAccepts
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) :
+    hybridReaderAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) gS transcript =
+      unlinkReaderAccepts (TagId := TagId) (Slot := TagId) (Nonce := Nonce) (Digest := Digest)
+        (fun tag nonce => projectTable (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) gS (tag, nonce))
+        (multiplePattern (TagId := TagId) sessionsPerTag) transcript := by
+  unfold hybridReaderAccepts unlinkReaderAccepts tagAccepts projectTable multiplePattern
+  simp only [decide_eq_decide, decide_eq_true_eq]
+  constructor
+  · rintro ⟨tag, hd⟩
+    exact ⟨tag, ⟨0, Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)⟩, hd⟩
+  · rintro ⟨tag, _, hd⟩
+    exact ⟨tag, hd⟩
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
