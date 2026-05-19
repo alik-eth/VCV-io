@@ -2962,6 +2962,69 @@ private lemma probEvent_coupledReader_disagree_le [Fintype Digest]
   rw [hybridCacheAccepts, decide_eq_false_iff_not] at hreject
   exact hreject ⟨slot.1, slot.2, hdrawn, hcc⟩
 
+/-- **Coupled hybrid handler.** The hybrid world run *in lockstep* with the single-session ideal
+handler. Its tag oracle is the lazy hybrid tag oracle (`hybridLazyHandler` on `Sum.inl`); its
+reader oracle folds `idealCacheStep` over the *whole* single-session column — exactly as
+`singleIdealQueryImpl` does — so the random-oracle cache evolves identically in the two worlds.
+The reader's output bit, however, is the draw-map bit `hybridCacheAccepts` read off the
+*pre-fold* cache, so the coupled handler returns the same answers as `hybridLazyHandler` while
+maintaining a cache in lockstep with `singleIdealQueryImpl`. -/
+noncomputable def hybridCoupledHandler :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (HybridState TagId Nonce sessionsPerTag ×
+        (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) ProbComp) :=
+  fun q => fun p => match q with
+    | Sum.inl tag => hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag) p
+    | Sum.inr transcript => do
+        let rs ← idealCacheMapM (hybridReaderCells (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) transcript) p.2
+        pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) p.2 p.1.drawMap transcript),
+          p.1, rs.2)
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `simulateQ hybridCoupledHandler` of a `query_bind`, run from a state and projected to its
+output: the per-query handler followed by the recursive simulation of the continuation. -/
+private lemma hybridCoupled_run'_query_bind' {α : Type}
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) (liftM (OracleSpec.query t) >>= f)).run' sH =
+      (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t sH) >>= fun p =>
+        (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `hybridCoupledHandler` on a tag query: identical to `hybridLazyHandler`. -/
+private lemma hybridCoupledHandler_tag_run (tag : TagId)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sH =
+      (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sH := rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `hybridCoupledHandler` on a reader query: fold `idealCacheStep` over the whole single-session
+column, return the draw-map bit read off the pre-fold cache, advance the cache. -/
+private lemma hybridCoupledHandler_reader_run (transcript : TagTranscript Nonce Digest)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) sH =
+      idealCacheMapM (hybridReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) transcript) sH.2 >>= fun rs =>
+        pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) sH.2 sH.1.drawMap transcript),
+          sH.1, rs.2) := rfl
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
