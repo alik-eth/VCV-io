@@ -1560,6 +1560,32 @@ private lemma idealCacheMapM_cache_off {D : Type} [DecidableEq D]
     rw [hihrest, idealCacheStep_preserves_some c e step hstep d hd]
 
 omit [DecidableEq Digest] in
+/-- Folding `idealCacheStep` over `l` leaves any cell `d` outside `l` unchanged. -/
+private lemma idealCacheMapM_cache_not_mem {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (r : List Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (d : D) (hd : d ∉ l) :
+    r.2 d = c d := by
+  induction l generalizing c r with
+  | nil =>
+    simp only [idealCacheMapM] at hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rfl
+  | cons e es ih =>
+    simp only [List.mem_cons, not_or] at hd
+    obtain ⟨hde, hdes⟩ := hd
+    simp only [idealCacheMapM] at hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨step, hstep, hr⟩ := hr
+    rw [mem_support_bind_iff] at hr
+    obtain ⟨rest, hrest, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rw [ih step.2 rest hrest hdes, idealCacheStep_cache_off c e step hstep d hde]
+
+omit [DecidableEq Digest] in
 /-- Every result of folding `idealCacheStep` over a list `l` from cache `c` has a final cache that
 caches all cells of `l` and agrees with `c` off the cells of `l`. Consequently, overlaying that
 final cache on any full table reads each cell of `l` as the stored digest, so the produced read
@@ -3228,55 +3254,6 @@ private lemma probOutput_hybridCoupled_run'_eq_lazy [Fintype Nonce] [Finite Dige
         (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run'
         (HybridState.init, ∅)] := by
   rw [probOutput_def, probOutput_def, evalDist_simulateQ_hybridCoupledHandler_run'_eq_lazy oa]
-
-/-! #### Hop B, deliverable 4: the coupled-vs-single induction
-
-`hybridCoupledHandler` and `singleIdealQueryImpl` run in lockstep on a *shared* random-oracle
-cache: their tag oracles are pointwise identical (both `idealCacheStep` on `((tag, sid), nonce)`
-plus a session-counter bump, the hybrid one additionally recording the draw map) and their reader
-oracles fold `idealCacheStep` over the *same* column `hybridReaderCells transcript`. The two
-handlers differ only in the reader's output bit: the coupled handler returns the draw-map bit
-`hybridCacheAccepts`, the single handler the column-membership bit. The per-reader-query
-disagreement is bounded by `probEvent_coupledReader_disagree_le`, whose column-freshness
-hypothesis is supplied by the residual invariant `HybridColResidualFresh`. -/
-
-/-- **Disagreement-aware additive bind bound.** If the disagreement set `D` has probability at
-most `ε₁` under `mx`, and off `D` the continuation `my` is within `ε₂` of the reference
-continuation `oc`, then `Pr[q | mx >>= my] ≤ Pr[q | mx >>= oc] + ε₁ + ε₂`. The exceptional set `D`
-is charged its full mass `ε₁`; everywhere else the per-point gap `ε₂` is paid. -/
-private lemma probEvent_bind_le_add_of_disagree {α β : Type} {mx : ProbComp α}
-    {my oc : α → ProbComp β} {q : β → Prop} {D : α → Prop} [DecidablePred D] {ε₁ ε₂ : ℝ≥0∞}
-    (hD : Pr[D | mx] ≤ ε₁)
-    (h : ∀ x ∈ support mx, ¬ D x → Pr[q | my x] ≤ Pr[q | oc x] + ε₂) :
-    Pr[q | mx >>= my] ≤ Pr[q | mx >>= oc] + ε₁ + ε₂ := by
-  have := Classical.decPred q
-  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
-  calc ∑' x, Pr[= x | mx] * Pr[q | my x]
-      ≤ ∑' x, (Pr[= x | mx] * Pr[q | oc x]
-            + (if D x then Pr[= x | mx] else 0) + Pr[= x | mx] * ε₂) := by
-        refine ENNReal.tsum_le_tsum fun x => ?_
-        by_cases hx : x ∈ support mx
-        · by_cases hDx : D x
-          · simp only [if_pos hDx]
-            calc Pr[= x | mx] * Pr[q | my x]
-                ≤ Pr[= x | mx] * 1 := mul_le_mul' le_rfl probEvent_le_one
-              _ = Pr[= x | mx] := mul_one _
-              _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] + Pr[= x | mx] * ε₂ := by
-                  refine le_add_right (le_add_left le_rfl)
-          · simp only [if_neg hDx, add_zero]
-            calc Pr[= x | mx] * Pr[q | my x]
-                ≤ Pr[= x | mx] * (Pr[q | oc x] + ε₂) :=
-                  mul_le_mul' le_rfl (h x hx hDx)
-              _ = Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * ε₂ := left_distrib ..
-        · simp [probOutput_eq_zero_of_not_mem_support hx]
-    _ = (∑' x, Pr[= x | mx] * Pr[q | oc x])
-          + (∑' x, if D x then Pr[= x | mx] else 0) + (∑' x, Pr[= x | mx] * ε₂) := by
-        rw [ENNReal.tsum_add, ENNReal.tsum_add]
-    _ ≤ (∑' x, Pr[= x | mx] * Pr[q | oc x]) + ε₁ + ε₂ := by
-        refine add_le_add (add_le_add le_rfl ?_) ?_
-        · rw [← probEvent_eq_tsum_ite]; exact hD
-        · rw [ENNReal.tsum_mul_right]
-          exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
 
 end EagerComposed
 
