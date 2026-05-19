@@ -4517,6 +4517,36 @@ private lemma HopARel_init :
       ((UnlinkState.init, ∅), UnlinkBadState.init) (HybridState.init, ∅) :=
   HopACoupling_init
 
+/-- **Hop A freshness invariant** (the `HybridColFresh`-analogue for the multiple cache). A cached
+multiple-cache cell `(tag, n)` that was *not* produced by a tag draw — no session of `tag` recorded
+the nonce `n` in the hybrid session-nonce map `sH.1.sessionNonce` — can only have been written by
+an earlier *reader* query. Under `HasDistinctUnlinkReaderNonces` a second reader query at `n` is
+then impossible, which is recorded here as the residual reader budget at `n` being exhausted.
+
+The hybrid tag oracle records `sessionNonce (tag, sid) := some n` exactly when it draws nonce `n`
+for session `(tag, sid)`, and the hop-A cache correspondence `HopACoupling.hcorr` ties tag-drawn
+multiple cells to recorded sessions; so a cached multiple cell with no recorded session is genuinely
+reader-written. This predicate is the freshness witness that the reader-step coupling threads
+through the induction, exactly mirroring `HybridColFresh` in hop B. -/
+private def HopAColFresh (oa : UnlinkAdversary TagId Nonce Digest)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache) : Prop :=
+  ∀ (n : Nonce) (tag : TagId),
+    (cM (tag, n)).isSome → (∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some n) →
+      OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The empty multiple cache satisfies the hop-A freshness invariant vacuously: no cell is cached,
+so the hypothesis `(cM (tag, n)).isSome` is never met. -/
+private lemma hopAColFresh_init (oa : UnlinkAdversary TagId Nonce Digest)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    HopAColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sH ∅ := by
+  intro n tag hsome _
+  simp at hsome
+
 omit [Fintype TagId] [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest]
   [NeZero sessionsPerTag] in
 /-- **Hop A, reader-step coupling stability.** A multiple-session reader query folds
