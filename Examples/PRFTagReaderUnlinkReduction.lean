@@ -2801,6 +2801,89 @@ private lemma probOutput_hybrid_run'_eq_tableSample [Fintype Nonce] [Finite Dige
       hybridCacheConsistent_init]
   simp only [OracleComp.tableExtending_empty]
 
+/-! #### Hop B, deliverable 2: the per-reader-query slack bound
+
+A single reader query under the single-session ideal handler folds `idealCacheStep` over the
+column of cells `l`. The hybrid reader inspects only the *already cached* cells; a cell that is
+uncached in `c` is sampled fresh. The lemma below bounds the probability that the fresh draws
+produce the target authenticator `v` at a cell whose cache slot does not already hold `v`, by
+`l.length / |Digest|`: each of the (at most `l.length`) freshly drawn cells equals `v` with
+probability `1 / |Digest|`, and a union bound over the list closes it. This is the per-step
+disagreement bound between the hybrid and single readers. -/
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [NeZero sessionsPerTag] in
+/-- **Per-reader-query slack.** Folding `idealCacheStep` over a list `l` of distinct cells: the
+probability that the produced digest list contains the target `v` while no cache slot of `l`
+already holds `v` is at most `l.length / |Digest|`. Every such occurrence of `v` is a fresh
+uniform draw, and a union bound over the list gives the stated cell-count-over-`|Digest|` bound. -/
+private lemma probEvent_idealCacheMapM_mem_le {D : Type} [DecidableEq D] [Fintype Digest]
+    (l : List D) (hnd : l.Nodup) (c : (D →ₒ Digest).QueryCache) (v : Digest) :
+    Pr[fun rs : List Digest × (D →ₒ Digest).QueryCache =>
+        v ∈ rs.1 ∧ ∀ d ∈ l, c d ≠ some v | idealCacheMapM l c] ≤
+      (l.length : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction l generalizing c with
+  | nil =>
+    rw [idealCacheMapM, List.length_nil, Nat.cast_zero, ENNReal.zero_div]
+    refine le_of_eq_of_le (probEvent_eq_zero (fun rs hrs => ?_)) (le_refl 0)
+    rintro ⟨hmem, _⟩
+    rw [support_pure, Set.mem_singleton_iff] at hrs
+    subst hrs
+    simp at hmem
+  | cons d ds ih =>
+    rw [List.nodup_cons] at hnd
+    obtain ⟨hdnd, hndtail⟩ := hnd
+    rw [idealCacheMapM]
+    by_cases hcd : c d = some v
+    · -- The cell `d` already caches `v`, so the outer freshness conjunct is false.
+      refine le_of_eq_of_le (probEvent_eq_zero (fun rs _ => ?_)) (zero_le _)
+      rintro ⟨_, hfresh⟩
+      exact hfresh d (List.mem_cons_self ..) hcd
+    · -- The head digest is a genuine fresh draw equalling `v` with probability `≤ 1/|Digest|`.
+      have hcons_len : ((d :: ds).length : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
+          = (1 : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
+            + (ds.length : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+        rw [List.length_cons, Nat.cast_add, Nat.cast_one, ENNReal.add_div, add_comm]
+      rw [hcons_len]
+      rw [show (fun rs : List Digest × (D →ₒ Digest).QueryCache =>
+            v ∈ rs.1 ∧ ∀ d_1 ∈ d :: ds, c d_1 ≠ some v)
+          = (fun rs => ¬¬(v ∈ rs.1 ∧ ∀ d_1 ∈ d :: ds, c d_1 ≠ some v)) from by
+        funext rs; rw [not_not]]
+      refine probEvent_bind_le_add (p := fun r => r.1 ≠ v) ?_ ?_
+      · -- Head step: the probability the head digest equals `v`.
+        have hstep : Pr[fun r : Digest × (D →ₒ Digest).QueryCache => r.1 = v |
+            idealCacheStep c d] ≤ (1 : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+          unfold idealCacheStep
+          rcases hc : c d with _ | u
+          · simp only [hc]
+            rw [bind_pure_comp, probEvent_map]
+            refine le_of_eq ?_
+            rw [show ((fun r : Digest × (D →ₒ Digest).QueryCache => r.1 = v) ∘
+                fun u => (u, c.cacheQuery d u)) = (fun u => u = v) from rfl]
+            rw [probEvent_eq_eq_probOutput, probOutput_uniformSample, one_div]
+          · simp only [hc] at hcd
+            simp only [hc, probEvent_pure]
+            by_cases hu : u = v
+            · exact absurd (hu ▸ rfl) hcd
+            · simp [hu]
+        simp only [not_not] at hstep ⊢
+        exact hstep
+      · -- Tail step: recurse, translating the cache-freshness conjunct off the head cell.
+        intro r hr hrne
+        simp only [not_not]
+        rw [bind_pure_comp, probEvent_map]
+        have hrcache : ∀ d' ∈ ds, r.2 d' = c d' := fun d' hd' =>
+          idealCacheStep_cache_off c d r hr d' (fun h => hdnd (h ▸ hd'))
+        refine le_trans (probEvent_mono (fun rs _ hrs => ?_)) (ih hndtail r.2)
+        simp only [Function.comp, List.mem_cons] at hrs ⊢
+        obtain ⟨hmem, hfresh⟩ := hrs
+        refine ⟨?_, fun d' hd' => ?_⟩
+        · rcases hmem with h | h
+          · exact absurd h.symm hrne
+          · exact h
+        · rw [hrcache d' hd']; exact hfresh d' (Or.inr hd')
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
