@@ -6,6 +6,7 @@ Authors: Quang Dao
 
 import Examples.PRFTagReader
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
+import VCVio.ProgramLogic.Relational.SimulateQ
 
 /-!
 # Unlinkability PRF Reduction
@@ -4265,6 +4266,63 @@ private lemma multipleBadQueryImpl_reader_run (transcript : TagTranscript Nonce 
       (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s.1 >>= fun r =>
         pure (r.1, (r.2.1, r.2.2), s.2) := rfl
+
+open OracleComp.ProgramLogic.Relational in
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- **Hop A, output equivalence.** The instrumented handler `multipleBadQueryImpl` produces the
+same output distribution as `multipleIdealQueryImpl`: the bad-world component it threads beside the
+multiple-ideal state never feeds back into the output bit. Hence `Pr[= true]` is unchanged. -/
+private lemma probOutput_multipleBad_run'_eq_multipleIdeal
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    Pr[= true | (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run' (s, sB)] =
+      Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run' s] := by
+  have hrt : RelTriple
+      ((simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) adversary).run' (s, sB))
+      ((simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) adversary).run' s)
+      (EqRel Bool) := by
+    refine relTriple_simulateQ_run'
+      (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag))
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag))
+      (fun s₁ s₂ => s₁.1 = s₂) adversary ?_ (s, sB) s rfl
+    intro t s₁ s₂ hs
+    -- the head: `multipleBadQueryImpl t s₁` is `multipleIdealQueryImpl t s₁.1 >>= pure (…)`
+    subst hs
+    cases t with
+    | inl tag =>
+      show RelTriple
+        ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s₁.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), multipleBadAdvance tag s₁.2 r.1))
+        ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s₁.1) _
+      refine relTriple_of_evalDist_eq_right
+        (congrArg evalDist (bind_pure ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s₁.1))) ?_
+      refine relTriple_bind (relTriple_refl _) ?_
+      rintro a b rfl
+      exact relTriple_pure_pure ⟨rfl, rfl⟩
+    | inr transcript =>
+      show RelTriple
+        ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s₁.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), s₁.2))
+        ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s₁.1) _
+      refine relTriple_of_evalDist_eq_right
+        (congrArg evalDist (bind_pure ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s₁.1))) ?_
+      refine relTriple_bind (relTriple_refl _) ?_
+      rintro a b rfl
+      exact relTriple_pure_pure ⟨rfl, rfl⟩
+  exact probOutput_eq_of_relTriple_eqRel hrt true
 
 end EagerComposed
 
