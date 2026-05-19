@@ -2569,6 +2569,59 @@ private lemma hybridLazyHandler_reader_run (transcript : TagTranscript Nonce Dig
         sH) := by
   rfl
 
+/-- Draw-map / cache consistency invariant for the lazy hybrid handler: every cell recorded in the
+draw map is already present in the random-oracle cache. The lazy hybrid tag oracle maintains this
+invariant — it records `drawMap (tag, nonce) := some sid` exactly when it caches the cell
+`((tag, sid), nonce)` — and it is what lets the lazy reader (which reads only cached cells) agree
+with the table reader (which reads the overlaid table `tableExtending c g`). -/
+def HybridCacheConsistent
+    (s : HybridState TagId Nonce sessionsPerTag)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) : Prop :=
+  ∀ (tag : TagId) (n : Nonce) (sid : Fin sessionsPerTag),
+    s.drawMap (tag, n) = some sid → (c ((tag, sid), n)).isSome
+
+omit [Fintype TagId] [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The initial hybrid state with the empty cache is draw-map / cache consistent: the empty draw
+map records nothing. -/
+private lemma hybridCacheConsistent_init :
+    HybridCacheConsistent (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) HybridState.init ∅ := by
+  intro tag n sid h
+  simp [HybridState.init, HybridDrawMap.init] at h
+
+omit [Fintype TagId] [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The lazy hybrid tag oracle preserves draw-map / cache consistency: a tag query at `tag` with a
+free slot caches the freshly drawn cell `((tag, sid), nonce)` and records exactly that draw, while
+leaving every previously recorded draw both still recorded and still cached. -/
+private lemma hybridCacheConsistent_tag_step
+    (tag : TagId) (s : HybridState TagId Nonce sessionsPerTag)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hcons : HybridCacheConsistent (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) s c)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) (nonce : Nonce)
+    (r : Digest × (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheStep c ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce))) :
+    HybridCacheConsistent (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag)
+      ({ sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1)
+         drawMap := Function.update s.drawMap (tag, nonce)
+          (some ⟨s.sessionsUsed tag, hslot⟩) } : HybridState TagId Nonce sessionsPerTag)
+      r.2 := by
+  classical
+  intro tag' n' sid' hdm
+  dsimp only [HybridState.drawMap] at hdm
+  by_cases hkey : (tag', n') = (tag, nonce)
+  · obtain ⟨rfl, rfl⟩ := Prod.mk.injEq .. ▸ hkey
+    rw [Function.update_self] at hdm
+    obtain rfl := Option.some.injEq .. ▸ hdm
+    rw [idealCacheStep_cache_self c _ r hr]
+    rfl
+  · rw [Function.update_of_ne hkey] at hdm
+    have hcell := hcons tag' n' sid' hdm
+    by_cases hcellkey : ((tag', sid'), n') = ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce)
+    · rw [hcellkey, idealCacheStep_cache_self c _ r hr]; rfl
+    · rw [idealCacheStep_cache_off c _ r hr _ hcellkey]; exact hcell
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
