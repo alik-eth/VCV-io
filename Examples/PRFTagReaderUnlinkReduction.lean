@@ -2961,8 +2961,9 @@ spare as the tag digest; otherwise it draws fresh exactly as `hybridLazyHandler`
 `(TagId × Nonce)`. The reader additionally populates the reservoir with fresh uniform digests at
 `(tag, transcript.nonce)` for every tag (write-once via `idealCacheStep`), leaving the read-only
 output bit unchanged. The tag oracle draws a nonce `n`; if the reservoir holds a spare at
-`(tag, n)` it consumes it as the tag digest, recording it in the session cell `((tag, sid), n)`;
-otherwise it draws fresh via `idealCacheStep` on the session cache. -/
+`(tag, n)` it consumes it as the tag digest, recording it in the session cell `((tag, sid), n)` and
+*clearing* the reservoir cell so the spare is consumed at most once; otherwise it draws fresh via
+`idealCacheStep` on the session cache. -/
 noncomputable def hybridSpareHandler :
     QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
       (StateT (HybridState TagId Nonce sessionsPerTag ×
@@ -2980,7 +2981,8 @@ noncomputable def hybridSpareHandler :
                 ({ sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1)
                    sessionNonce := Function.update s.sessionNonce (tag, sid) (some nonce) } :
                   HybridState TagId Nonce sessionsPerTag),
-                p.2.1.cacheQuery ((tag, sid), nonce) d, p.2.2)
+                p.2.1.cacheQuery ((tag, sid), nonce) d,
+                Function.update p.2.2 (tag, nonce) none)
           | none => do
               let r ← idealCacheStep p.2.1 ((tag, sid), nonce)
               pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
@@ -3030,7 +3032,8 @@ private lemma hybridSpareHandler_tag_run_of_lt (tag : TagId)
                    sessionNonce := Function.update p.1.sessionNonce
                     (tag, ⟨p.1.sessionsUsed tag, hslot⟩) (some nonce) } :
                   HybridState TagId Nonce sessionsPerTag),
-                p.2.1.cacheQuery ((tag, ⟨p.1.sessionsUsed tag, hslot⟩), nonce) d, p.2.2)
+                p.2.1.cacheQuery ((tag, ⟨p.1.sessionsUsed tag, hslot⟩), nonce) d,
+                Function.update p.2.2 (tag, nonce) none)
           | none =>
               idealCacheStep p.2.1 ((tag, ⟨p.1.sessionsUsed tag, hslot⟩), nonce) >>= fun r =>
                 pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
@@ -3043,7 +3046,7 @@ private lemma hybridSpareHandler_tag_run_of_lt (tag : TagId)
   change (if h : p.1.sessionsUsed tag < sessionsPerTag then
       ($ᵗ Nonce) >>= fun nonce =>
         (match p.2.2 (tag, nonce) with
-          | some d => pure (_, _, _, p.2.2)
+          | some d => pure (_, _, _, Function.update p.2.2 (tag, nonce) none)
           | none => idealCacheStep p.2.1 ((tag, ⟨p.1.sessionsUsed tag, h⟩), nonce) >>= fun r =>
               pure (_, _, r.2, p.2.2))
       else pure (none, p)) = _
