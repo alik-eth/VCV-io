@@ -485,6 +485,98 @@ lemma evalDist_uniformSample_bind_update
   · simp [Fintype.card_ne_zero]
   · exact ENNReal.natCast_ne_top _
 
+/-- **The first coordinate of a uniform pair is uniform.**
+
+Mapping the uniform distribution on `α × β` through `Prod.fst` yields the uniform distribution on
+`α`: the `Prod.fst`-marginal of a uniform (product) distribution is uniform. -/
+lemma evalDist_map_fst_uniformSample_prod {α β : Type} [Finite α]
+    [Finite β] [Nonempty β] [SampleableType α] [SampleableType β] [SampleableType (α × β)] :
+    𝒟[Prod.fst <$> ($ᵗ (α × β))] = 𝒟[$ᵗ α] := by
+  classical
+  letI := Fintype.ofFinite α
+  letI := Fintype.ofFinite β
+  haveI : DecidableEq α := Classical.decEq α
+  refine evalDist_ext fun x => ?_
+  rw [probOutput_uniformSample α x, probOutput_map_eq_sum_fintype_ite]
+  simp only [probOutput_uniformSample (α × β)]
+  rw [← Finset.sum_filter, Finset.sum_const, nsmul_eq_mul]
+  have hset : (Finset.univ.filter fun p : α × β => x = p.1)
+      = ({x} : Finset α) ×ˢ (Finset.univ : Finset β) := by
+    ext p
+    simp only [Finset.mem_filter, Finset.mem_univ, true_and, Finset.mem_product,
+      Finset.mem_singleton, and_true]
+    exact eq_comm
+  rw [hset, Finset.card_product, Finset.card_singleton, one_mul, Finset.card_univ,
+    Fintype.card_prod, Nat.cast_mul,
+    ENNReal.mul_inv (Or.inr (ENNReal.natCast_ne_top _)) (Or.inl (ENNReal.natCast_ne_top _)),
+    ← mul_assoc, mul_comm (Fintype.card β : ℝ≥0∞) (Fintype.card α : ℝ≥0∞)⁻¹, mul_assoc,
+    ENNReal.mul_inv_cancel (Nat.cast_ne_zero.mpr Fintype.card_ne_zero)
+      (ENNReal.natCast_ne_top _), mul_one]
+
+/-- **Restricting a uniform function table to a subdomain along an injection is uniform.**
+
+For an injection `e : A → B` between finite types, drawing a uniform table `g : B → R` and
+restricting it along `e` (i.e. `g ∘ e`) yields the uniform distribution on `A → R`.
+
+This is the marginalization of the uniform (product) distribution on `B → R` onto the block of
+coordinates indexed by `Set.range e`: those coordinates are jointly uniform and independent of
+the rest, and `e` reindexes the block by `A`. It underlies eager-sampling reformulations that
+project a fine-grained random-oracle table onto a coarser one. -/
+lemma evalDist_uniformSample_map_comp_injective
+    {A B R : Type} [Finite A] [Finite B] [Finite R]
+    [Nonempty R] [SampleableType R] [SampleableType (A → R)] [SampleableType (B → R)]
+    {e : A → B} (he : Function.Injective e) :
+    𝒟[do let g ← $ᵗ (B → R); pure (g ∘ e)] = 𝒟[$ᵗ (A → R)] := by
+  classical
+  letI := Fintype.ofFinite A
+  letI := Fintype.ofFinite B
+  letI := Fintype.ofFinite R
+  haveI : DecidableEq A := Classical.decEq A
+  haveI : DecidableEq B := Classical.decEq B
+  letI : Inhabited R := Classical.inhabited_of_nonempty inferInstance
+  set C := {b : B // b ∉ Set.range e} with hC
+  letI : Fintype C := Fintype.ofFinite C
+  letI : Inhabited (A → R) := ⟨fun _ => default⟩
+  letI : Inhabited (C → R) := ⟨fun _ => default⟩
+  haveI hsC : SampleableType (C → R) := instSampleableTypePiFintype
+  haveI hsP : SampleableType ((A → R) × (C → R)) := inferInstance
+  -- Split `B → R` into the `range e` block (reindexed by `A`) and its complement `C`:
+  -- a table is determined by its restriction along `e` and its values off `range e`.
+  set φ : (B → R) ≃ (A → R) × (C → R) :=
+    { toFun := fun g => (g ∘ e, fun c => g c.1)
+      invFun := fun p b => if h : ∃ a, e a = b then p.1 h.choose else p.2 ⟨b, by
+        simpa [Set.mem_range] using h⟩
+      left_inv := fun g => by
+        funext b
+        by_cases h : ∃ a, e a = b
+        · simp only [h, dif_pos, Function.comp_apply]
+          exact congrArg g h.choose_spec
+        · simp [h]
+      right_inv := fun p => by
+        refine Prod.ext ?_ ?_
+        · funext a
+          have h : ∃ a', e a' = e a := ⟨a, rfl⟩
+          simp only [Function.comp_apply, h, dif_pos]
+          exact congrArg p.1 (he h.choose_spec)
+        · funext c
+          have h : ¬ ∃ a, e a = c.1 := by simpa [Set.mem_range] using c.2
+          simp only [h, dif_neg, not_false_iff]
+          exact congrArg p.2 (Subtype.ext rfl) }
+    with hφ
+  have hφ1 : ∀ g : B → R, (φ g).1 = g ∘ e := fun g => rfl
+  have hmap : (do let g ← $ᵗ (B → R); pure (g ∘ e)) = (Prod.fst ∘ φ) <$> ($ᵗ (B → R)) := by
+    rw [bind_pure_comp]; exact congrArg (· <$> _) (funext fun g => (hφ1 g).symm)
+  have hcross : 𝒟[φ <$> ($ᵗ (B → R))] = 𝒟[$ᵗ ((A → R) × (C → R))] :=
+    evalDist_ext fun p =>
+      probOutput_map_bijective_uniform_cross (α := B → R) φ φ.bijective p
+  calc 𝒟[do let g ← $ᵗ (B → R); pure (g ∘ e)]
+      = 𝒟[(Prod.fst ∘ φ) <$> ($ᵗ (B → R))] := by rw [hmap]
+    _ = 𝒟[Prod.fst <$> (φ <$> ($ᵗ (B → R)))] := by
+        simp only [Functor.map_map, Function.comp_def]
+    _ = 𝒟[Prod.fst <$> ($ᵗ ((A → R) × (C → R)))] := by
+        rw [evalDist_map, hcross, ← evalDist_map]
+    _ = 𝒟[$ᵗ (A → R)] := evalDist_map_fst_uniformSample_prod
+
 end Marginalization
 
 -- TODO: generalize this lemma

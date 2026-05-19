@@ -2181,6 +2181,33 @@ private lemma probOutput_singleIdeal_run'_eq_tableSample [Fintype Nonce] [Finite
     evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending adv UnlinkState.init ∅]
   simp only [OracleComp.tableExtending_empty]
 
+/-- The reference-slot projection of a single-session random-oracle table onto a multiple-session
+one: read the single-session table at the fixed reference session slot `0`. It is the table-level
+coupling map underlying the eager-route comparison of the two ideal worlds. -/
+private def projectTable
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) : TagId × Nonce → Digest :=
+  fun p => gS ((p.1, (0 : Fin sessionsPerTag)), p.2)
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] in
+/-- **M4a — projecting a uniform single-session table is a uniform multiple-session table.**
+
+Drawing a uniform single-session random-oracle table `gS` and projecting it onto the reference
+session slot (`projectTable`) yields the uniform distribution on multiple-session tables. This is
+the marginalization step of the coupled-table union bound: the reference-slot cells of `gS` are
+themselves jointly uniform and independent of the off-slot cells. -/
+private lemma evalDist_projectTable_uniformSample
+    [Fintype Nonce] [Finite Digest] [Nonempty Digest] :
+    𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>=
+        fun gS => pure (projectTable (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) gS)] =
+      𝒟[$ᵗ (TagId × Nonce → Digest)] := by
+  have he : Function.Injective
+      (fun p : TagId × Nonce => ((p.1, (0 : Fin sessionsPerTag)), p.2)) := by
+    intro p q h
+    simp only [Prod.mk.injEq] at h
+    exact Prod.ext h.1.1 h.2
+  exact evalDist_uniformSample_map_comp_injective (R := Digest) he
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
