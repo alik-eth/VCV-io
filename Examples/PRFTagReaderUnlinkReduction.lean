@@ -3683,6 +3683,33 @@ private lemma hybridCoupled_le_singleIdeal_add_readerSlack_aux [Fintype Digest]
         exact ih (ReaderReply.ofBool hybBit) qR' s sS rs.2 hcounter (hqRf _)
           hdistcont hwo hfresh'
 
+/-- **Hop B.** Under `HasDistinctUnlinkReaderNonces` and a reader-query bound `qReader`, the hybrid
+world `H` (run as the lazy hybrid handler from the initial state) succeeds with probability at most
+that of the single-session ideal world plus the reader-slack term
+`qReader * |TagId| * sessionsPerTag / |Digest|`.
+
+The lazy hybrid handler and the coupled hybrid handler agree in distribution
+(`probOutput_hybridCoupled_run'_eq_lazy`), and the coupled handler is bounded against
+`singleIdealQueryImpl` by `hybridCoupled_le_singleIdeal_add_readerSlack_aux`; the empty cache and
+initial state satisfy the coupling invariants `hybridColFresh_init` / `hybridWriteOnce_init`. -/
+theorem hybrid_le_singleIdeal_add_readerSlack [Fintype Nonce] [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest) (qReader : ℕ)
+    (hdist : HasDistinctUnlinkReaderNonces adversary)
+    (hqReader : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) qReader) :
+    Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (HybridState.init, ∅)] ≤
+      Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (UnlinkState.init, ∅)] +
+      ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
+  rw [← probOutput_hybridCoupled_run'_eq_lazy adversary]
+  refine hybridCoupled_le_singleIdeal_add_readerSlack_aux adversary qReader
+    HybridState.init UnlinkState.init ∅ rfl hqReader
+    ((hasDistinctUnlinkReaderNonces_iff adversary).mp hdist)
+    (hybridWriteOnce_init) (hybridColFresh_init adversary HybridState.init)
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
