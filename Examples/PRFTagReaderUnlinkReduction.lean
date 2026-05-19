@@ -3613,6 +3613,55 @@ private lemma probEvent_bind_le_add_bad_of_disagree' {α β γ : Type} {mx : Pro
         rw [ENNReal.tsum_mul_right]
         exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
 
+/-- **Four-way disagreement+bad additive bind bound.** A merge of
+`probEvent_bind_le_add_of_disagree` with the three-world `probEvent_bind_le_add_bad_of_disagree`:
+the disagreement set `D` (a *table-level* exceptional set, not a bad event) is charged its full
+mass `ε₁`; everywhere off `D` the `my`-world is bounded by the `oc`-world plus the per-shared-sample
+bad probability `Pr[r | ob x]` plus the slack `ε₂`. -/
+private lemma probEvent_bind_le_add_bad_disagree {α β γ : Type} {mx : ProbComp α}
+    {my : α → ProbComp β} {oc : α → ProbComp β} {ob : α → ProbComp γ}
+    {q : β → Prop} {r : γ → Prop} {D : α → Prop} [DecidablePred D] {ε₁ ε₂ : ℝ≥0∞}
+    (hD : Pr[ D | mx] ≤ ε₁)
+    (h : ∀ x ∈ support mx, ¬ D x → Pr[ q | my x] ≤ Pr[ q | oc x] + Pr[ r | ob x] + ε₂) :
+    Pr[q | mx >>= my] ≤ Pr[q | mx >>= oc] + Pr[r | mx >>= ob] + ε₁ + ε₂ := by
+  have := Classical.decPred q
+  have := Classical.decPred r
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  calc ∑' x, Pr[= x | mx] * Pr[q | my x]
+      ≤ ∑' x, (Pr[= x | mx] * Pr[q | oc x]
+            + Pr[= x | mx] * Pr[r | ob x] + (if D x then Pr[= x | mx] else 0)
+            + Pr[= x | mx] * ε₂) := by
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support mx
+        · by_cases hDx : D x
+          · simp only [if_pos hDx]
+            calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * 1 := mul_le_mul' le_rfl probEvent_le_one
+              _ = Pr[= x | mx] := mul_one _
+              _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] + Pr[= x | mx] * ε₂ := by
+                  calc Pr[= x | mx]
+                      = 0 + 0 + Pr[= x | mx] + 0 := by ring
+                    _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                          + Pr[= x | mx] + Pr[= x | mx] * ε₂ := by
+                        gcongr <;> exact zero_le _
+          · simp only [if_neg hDx, add_zero]
+            calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * (Pr[q | oc x] + Pr[r | ob x] + ε₂) :=
+                  mul_le_mul' le_rfl (h x hx hDx)
+              _ = Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] * ε₂ := by rw [left_distrib, left_distrib]
+        · simp [probOutput_eq_zero_of_not_mem_support hx]
+    _ = (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x])
+          + (∑' x, if D x then Pr[= x | mx] else 0) + (∑' x, Pr[= x | mx] * ε₂) := by
+        rw [ENNReal.tsum_add, ENNReal.tsum_add, ENNReal.tsum_add]
+    _ ≤ (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x]) + ε₁ + ε₂ := by
+        refine add_le_add (add_le_add le_rfl ?_) ?_
+        · rw [← probEvent_eq_tsum_ite]; exact hD
+        · rw [ENNReal.tsum_mul_right]
+          exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
 
 /-! #### Hop B, deliverable 4: the coupled hybrid-vs-single coupling theorem
 
@@ -5244,6 +5293,129 @@ private lemma evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending
       rw [← hAccept]
       rfl
 
+/-- The session index chosen to couple a multiple-world cell `(tag, n)` to a hybrid-world cell:
+the (off-collision unique) session of `tag` that drew nonce `n`, defaulting to slot `0` when no
+session drew it. -/
+private noncomputable def chooseSid
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag) (tag : TagId) (n : Nonce) :
+    Fin sessionsPerTag :=
+  if h : ∃ sid : Fin sessionsPerTag, sn (tag, sid) = some n then h.choose else 0
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- When some session of `tag` drew `n`, `chooseSid` returns a witness session. -/
+private lemma chooseSid_spec (sn : HybridSessionNonce TagId Nonce sessionsPerTag)
+    (tag : TagId) (n : Nonce) (h : ∃ sid : Fin sessionsPerTag, sn (tag, sid) = some n) :
+    sn (tag, chooseSid (sessionsPerTag := sessionsPerTag) sn tag n) = some n := by
+  rw [chooseSid, dif_pos h]
+  exact h.choose_spec
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- Off-collision (`hcf`), `chooseSid sn tag n` is *the* session that drew `n`. -/
+private lemma chooseSid_eq (sn : HybridSessionNonce TagId Nonce sessionsPerTag)
+    (hcf : ∀ tag sid₁ sid₂ n, sn (tag, sid₁) = some n → sn (tag, sid₂) = some n → sid₁ = sid₂)
+    (tag : TagId) (sid : Fin sessionsPerTag) (n : Nonce) (hsn : sn (tag, sid) = some n) :
+    chooseSid (sessionsPerTag := sessionsPerTag) sn tag n = sid :=
+  hcf tag _ sid n (chooseSid_spec sn tag n ⟨sid, hsn⟩) hsn
+
+/-- The coupling injection from multiple-world cells to hybrid-world cells induced by a
+session-nonce map `sn`: send `(tag, n)` to the cell `((tag, chooseSid sn tag n), n)`. -/
+private noncomputable def couplingEmbed
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag) :
+    TagId × Nonce → (TagId × Fin sessionsPerTag) × Nonce :=
+  fun p => ((p.1, chooseSid (sessionsPerTag := sessionsPerTag) sn p.1 p.2), p.2)
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- The coupling embedding is injective: it preserves the tag and the nonce coordinates. -/
+private lemma couplingEmbed_injective
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag) :
+    Function.Injective (couplingEmbed (sessionsPerTag := sessionsPerTag) sn) := by
+  intro p q h
+  simp only [couplingEmbed, Prod.mk.injEq] at h
+  exact Prod.ext h.1.1 h.2
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] in
+/-- **State-dependent table coupling.** Drawing a uniform hybrid (fine) table `gH` and projecting
+it along the coupling embedding yields the uniform distribution on multiple (coarse) tables. This
+is the marginalization step underlying the hop-A coupled-table comparison: it lets a multiple-world
+table draw be replaced by a projection of a single hybrid-world draw. -/
+private lemma evalDist_couplingProject_uniformSample [Fintype Nonce] [Finite Digest]
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag) :
+    𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>=
+        fun gH => pure (gH ∘ couplingEmbed (sessionsPerTag := sessionsPerTag) sn)] =
+      𝒟[$ᵗ (TagId × Nonce → Digest)] := by
+  haveI : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  exact evalDist_uniformSample_map_comp_injective (R := Digest)
+    (couplingEmbed_injective (sessionsPerTag := sessionsPerTag) sn)
+
+/-- **Hop A, eager-coupled core.** The deterministic-table form of the hop-A coupling bound: with
+both worlds eagerized (the multiple-side instrumented handler `multipleBadTableHandler` run against
+`tableExtending sM2 gM`, the hybrid handler `hybridTableHandler` run against
+`tableExtending sH2 gH`), the multiple success probability is bounded by the hybrid success
+probability plus the bad-event probability plus the per-reader-query slack.
+
+The two table samples are coupled cell-by-cell: an outer uniform draw of the hybrid table `gH`
+already determines, at every drawn hybrid cell `((tag,sid),n)`, the multiple value `gM(tag,n)`
+(the multiple table is recovered from the hybrid table by projection). Proved by induction on the
+adversary, threading the reader budget `qR` exactly as `hybridCoupled_le_singleIdeal_add_readerSlack_aux`. -/
+private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : HopACoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
+    (hdist : ∀ n : Nonce, OracleComp.IsQueryBoundP oa (pReaderNonce n) 1)
+    (hfresh : HopAColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sH sM.2) :
+    Pr[= true | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] ≤
+      Pr[= true | do
+        let gH ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending sH.2 gH)) oa).run' sH.1] +
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            (z.1, z.2.2)) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] +
+      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR sM sH sB with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run_pure, StateT.run'_eq, map_pure, bind_pure_comp]
+    have h1 : Pr[= true | (fun _ => b) <$> ($ᵗ (TagId × Nonce → Digest))] =
+        Pr[= true | (fun _ => b) <$> ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+      rw [← bind_pure_comp, ← bind_pure_comp, probOutput_bind_const, probOutput_bind_const,
+        probFailure_uniformSample, probFailure_uniformSample]
+    exact le_add_right (le_add_right (le_of_eq h1))
+  | query_bind t f ih =>
+    simp only [multipleBadTable_run_query_bind', hybridTable_run'_query_bind', map_bind]
+    cases t with
+    | inl tag =>
+      -- **Tag step (open).** Unfold both table-handler tag queries to their nonce-sampling forms
+      -- (`multipleTableHandler_tag_run_of_lt` / `hybridTableHandler_tag_run_of_lt`), couple the two
+      -- independent uniform table draws `gM`/`gH` so the nonce-sampled cell reads agree, and
+      -- recurse via `ih`. A within-tag repeated nonce is charged to `Pr[bad]` via
+      -- `probEvent_bind_le_add_bad_of_disagree'`.
+      sorry
+    | inr transcript =>
+      -- **Reader step (open).** Both table handlers fold the same column deterministically; the
+      -- multiple reader may speculatively accept where the hybrid rejects. Charge the per-query
+      -- asymmetry `|TagId|/|Digest|` via `probEvent_multipleReader_disagree_le` and
+      -- `multipleReader_accepts_of_hybridCacheAccepts`; `hdist` (threaded) rules out a second
+      -- reader query at a written nonce.
+      sorry
+
 /-- **Hop A, core coupling bound.** Threaded by the reader-aware coupling invariant `HopACoupling`
 and the freshness witness `HopAColFresh`, the instrumented multiple handler's success probability
 is bounded by the lazy hybrid handler's plus the bad-event probability plus the reader-slack term
@@ -5252,8 +5424,8 @@ is bounded by the lazy hybrid handler's plus the bad-event probability plus the 
 **Eager route.** Both worlds are eagerized to deterministic-table handlers
 (`evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending`,
 `evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`); the resulting deterministic runs are
-coupled by a trace-conditioned table patch (`evalDist_uniformSample_patchList`). -/
-private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Digest]
+coupled cell-by-cell by `multipleBadEager_le_hybridEager_aux`. -/
+private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (sH : HybridState TagId Nonce sessionsPerTag ×
@@ -5273,22 +5445,93 @@ private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Digest]
           (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
   classical
-  -- **Eager route, step 1 (done).** The multiple-side eager equivalence
-  -- `evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending` rewrites both multiple-side
-  -- terms of this bound — the success probability `Pr[= true]` and the bad-event probability
-  -- `Pr[bad]` — to their eager forms: sample a table `gM : TagId × Nonce → Digest` up front and
-  -- run the deterministic instrumented table handler `multipleBadTableHandler (tableExtending
-  -- sM.2 gM)`. The hybrid side is eagerized symmetrically by
-  -- `evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`.
-  --
-  -- **Eager route, step 3 (open).** With both worlds deterministic-given-(table, nonce trace),
-  -- the remaining content is the trace-conditioned table coupling: induct on the adversary, and
-  -- at each tag step patch the about-to-be-read fresh hybrid cell `((tag,sid),n)` to `gM(tag,n)`
-  -- via `evalDist_uniformSample_patchList` / `patchTable`. The induction threads the reader
-  -- budget `qR` and `HasDistinctUnlinkReaderNonces` exactly as the proven Hop B aux
-  -- `hybridCoupled_le_singleIdeal_add_readerSlack_aux` does, charging within-tag nonce repeats to
-  -- `Pr[bad]` and the reader-cell asymmetry to the `|TagId|/|Digest|` slack.
-  sorry
+  -- **Eager route, step A.** Eagerize all three `Pr` terms with the landed equivalences, then
+  -- discharge the resulting eager-coupled bound by `multipleBadEager_le_hybridEager_aux`.
+  have hM := evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending
+    (sessionsPerTag := sessionsPerTag) oa sM.1 sM.2 sB
+  have hH := evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending oa sH.1 sH.2
+    hInv.2.2.2.2.2.2.2.2
+  -- Multiple-side success term: `run' = (·.1) <$> run`, factored through `(z.1,z.2.2) <$> run`.
+  have hMsucc :
+      Pr[= true | (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB)] =
+      Pr[= true | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] := by
+    rw [probOutput_def, probOutput_def]
+    have hlhs : (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.1) <$>
+          ((fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => (z.1, z.2.2)) <$>
+            (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)) := by
+      rw [Functor.map_map]; rfl
+    have hrhs : (do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.1) <$>
+          (do
+            let gM ← $ᵗ (TagId × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)) := by
+      rw [map_bind]
+      refine bind_congr fun gM => ?_
+      rw [Functor.map_map]
+    have hM' : (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+          (z.1, z.2.2)) <$>
+        𝒟[(simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)]
+        = 𝒟[do
+            let g ← $ᵗ (TagId × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending sM.2 g)) oa).run (sM.1, sB)] := by
+      rw [← evalDist_map]; exact hM
+    rw [hlhs, hrhs, evalDist_map, evalDist_map, evalDist_map, hM']
+  -- Multiple-side bad term: factored through `(z.1,z.2.2) <$> run`.
+  have hMbad :
+      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
+        (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] =
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            (z.1, z.2.2)) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] := by
+    have hbadev :
+        (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad = true) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.2.bad = true) ∘
+          (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => (z.1, z.2.2)) := rfl
+    rw [hbadev, ← probEvent_map]
+    exact probEvent_congr' (fun _ _ => Iff.rfl) hM
+  -- Hybrid-side success term.
+  have hHsucc :
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' sH] =
+      Pr[= true | do
+        let gH ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending sH.2 gH)) oa).run'
+          sH.1] := by
+    rw [probOutput_def, probOutput_def]
+    have := hH
+    rw [show ((sH.1, sH.2) : HybridState TagId Nonce sessionsPerTag × _) = sH from rfl] at this
+    rw [this]
+  rw [hMsucc, hHsucc, hMbad]
+  exact multipleBadEager_le_hybridEager_aux oa qR sM sH sB hInv hqR hdist hfresh
 
 /-- **Hop A.** Under `HasDistinctUnlinkReaderNonces` and a reader-query bound `qReader`, the
 multiple-session ideal world succeeds with probability at most that of the hybrid world plus the
