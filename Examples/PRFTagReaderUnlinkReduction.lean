@@ -3403,6 +3403,49 @@ private lemma probEvent_bind_le_add_of_disagree {α β : Type} {mx : ProbComp α
         · rw [ENNReal.tsum_mul_right]
           exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
 
+/-- **Three-way disagreement-aware additive bind bound (hop A).** A coupled three-world variant of
+`probEvent_bind_le_add_of_disagree`: the three worlds share the sampling computation `mx`, and at
+each shared sample `x`, off the disagreement set `D` the `my`-world is bounded by the `oc`-world
+plus the per-step slack `ε`, while on `D` the `ob`-world (the bad world) already fires its event
+`r` with probability `1`. The conclusion charges the disagreement to `Pr[r | mx >>= ob]`. -/
+private lemma probEvent_bind_le_add_bad_of_disagree {α β γ : Type} {mx : ProbComp α}
+    {my : α → ProbComp β} {oc : α → ProbComp β} {ob : α → ProbComp γ}
+    {q : β → Prop} {r : γ → Prop} {D : α → Prop} [DecidablePred D] {ε : ℝ≥0∞}
+    (hbad : ∀ x ∈ support mx, D x → Pr[r | ob x] = 1)
+    (h : ∀ x ∈ support mx, ¬ D x → Pr[q | my x] ≤ Pr[q | oc x] + ε) :
+    Pr[q | mx >>= my] ≤ Pr[q | mx >>= oc] + Pr[r | mx >>= ob] + ε := by
+  have := Classical.decPred q
+  have := Classical.decPred r
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  calc ∑' x, Pr[= x | mx] * Pr[q | my x]
+      ≤ ∑' x, (Pr[= x | mx] * Pr[q | oc x]
+            + Pr[= x | mx] * Pr[r | ob x] + Pr[= x | mx] * ε) := by
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support mx
+        · by_cases hDx : D x
+          · calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * 1 := mul_le_mul' le_rfl probEvent_le_one
+              _ = Pr[= x | mx] * Pr[r | ob x] := by rw [hbad x hx hDx]
+              _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] * ε := le_add_right (le_add_left le_rfl)
+          · calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * (Pr[q | oc x] + ε) :=
+                  mul_le_mul' le_rfl (h x hx hDx)
+              _ = Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * ε := left_distrib ..
+              _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] * ε := by
+                  rw [add_right_comm]
+                  exact le_add_right le_rfl
+        · simp [probOutput_eq_zero_of_not_mem_support hx]
+    _ = (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x]) + (∑' x, Pr[= x | mx] * ε) := by
+        rw [ENNReal.tsum_add, ENNReal.tsum_add]
+    _ ≤ (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x]) + ε := by
+        refine add_le_add le_rfl ?_
+        rw [ENNReal.tsum_mul_right]
+        exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
+
 
 /-! #### Hop B, deliverable 4: the coupled hybrid-vs-single coupling theorem
 
