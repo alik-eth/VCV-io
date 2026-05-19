@@ -3025,6 +3025,210 @@ private lemma hybridCoupledHandler_reader_run (transcript : TagTranscript Nonce 
           (Digest := Digest) (sessionsPerTag := sessionsPerTag) sH.2 sH.1.drawMap transcript),
           sH.1, rs.2) := rfl
 
+/-- **Coupled hybrid eager-table equivalence.** Running the coupled hybrid handler from a draw-map
+/ cache consistent state `(s, c)` has the same output distribution as sampling a full
+single-session random-oracle table `g`, overlaying the cache `c`, and running the deterministic
+table hybrid handler `hybridTableHandler (tableExtending c g)` from `s`. The hybrid analogue of
+`evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`; the reader step folds the whole
+column but the extra cells are absorbed by `evalDist_idealCacheMapM_bind_uniformTable_comp`. -/
+private lemma evalDist_simulateQ_hybridCoupledHandler_run'_eq_tableExtending
+    [Fintype Nonce] [Finite Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest)
+    (s : HybridState TagId Nonce sessionsPerTag)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hcons : HybridCacheConsistent (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) s c) :
+    𝒟[(simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) oa).run' (s, c)] =
+      𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+            (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g)) oa).run' s] := by
+  induction oa using OracleComp.inductionOn generalizing s c with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run'_eq, StateT.run_pure, map_pure]
+    refine (evalDist_ext fun x => ?_).symm
+    rw [probOutput_bind_const, probFailure_uniformSample, tsub_zero, one_mul]
+  | query_bind t f ih =>
+    rw [hybridCoupled_run'_query_bind']
+    have hrhs : 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+          (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g))
+            (liftM (OracleSpec.query t) >>= f)).run' s]
+        = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+            (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g) t s) >>= fun p =>
+              (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c g))
+                (f p.1)).run' p.2] := by
+      refine congrArg _ (congrArg _ (funext fun g => ?_))
+      rw [hybridTable_run'_query_bind']
+    rw [hrhs]
+    cases t with
+    | inl tag =>
+      rw [hybridCoupledHandler_tag_run tag (s, c)]
+      by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+      · rw [hybridLazyHandler_tag_run_of_lt tag (s, c) hslot]
+        set sid := (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag) with hsid
+        set adv : Nonce → HybridState TagId Nonce sessionsPerTag :=
+          fun nonce =>
+            { sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1),
+              drawMap := Function.update s.drawMap (tag, nonce) (some sid) } with hadv
+        have hlhs_reassoc :
+            ((($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest), adv nonce, r.2))
+              >>= fun p =>
+              (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+            = (($ᵗ Nonce) >>= fun nonce => idealCacheStep c ((tag, sid), nonce) >>= fun r =>
+                (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                  (f (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest)))).run' (adv nonce, r.2)) := by
+          rw [bind_assoc]
+          refine bind_congr fun nonce => ?_
+          rw [bind_assoc]
+          refine bind_congr fun r => ?_
+          rw [pure_bind]
+        refine (congrArg evalDist hlhs_reassoc).trans ?_
+        have hlhs_inner : ∀ (n : Nonce),
+            𝒟[idealCacheStep c ((tag, sid), n) >>= fun r =>
+              (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (some (⟨n, r.1⟩ : TagTranscript Nonce Digest)))).run' (adv n, r.2)]
+            = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                  (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c g))
+                    (f (some (⟨n, OracleComp.tableExtending c g ((tag, sid), n)⟩ :
+                      TagTranscript Nonce Digest)))).run' (adv n)] := by
+          intro n
+          set Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun g' =>
+            (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g')
+              (f (some (⟨n, g' ((tag, sid), n)⟩ : TagTranscript Nonce Digest)))).run' (adv n)
+            with hMψ
+          refine Eq.trans ?_ (evalDist_idealCacheStep_bind_uniformTable_comp c ((tag, sid), n) Mψ)
+          refine evalDist_bind_congr_of_support _ _ _ fun r hr => ?_
+          rw [ih (some (⟨n, r.1⟩ : TagTranscript Nonce Digest)) (adv n) r.2
+            (hybridCacheConsistent_tag_step tag s c hcons hslot n r hr)]
+          refine congrArg _ (congrArg _ (funext fun g => ?_))
+          have hcell : OracleComp.tableExtending r.2 g ((tag, sid), n) = r.1 := by
+            simp only [OracleComp.tableExtending,
+              idealCacheStep_cache_self c ((tag, sid), n) r hr, Option.getD_some]
+          rw [hMψ]
+          simp only [hcell]
+        simp only [hybridTableHandler_tag_run_of_lt _ tag s hslot]
+        have hrhs_swap :
+            (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+              (($ᵗ Nonce) >>= fun nonce =>
+                pure (some (⟨nonce, OracleComp.tableExtending c g ((tag, sid), nonce)⟩ :
+                  TagTranscript Nonce Digest), adv nonce)) >>= fun p =>
+                (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c g)) (f p.1)).run' p.2)
+            = (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                ($ᵗ Nonce) >>= fun n =>
+                (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c g))
+                  (f (some (⟨n, OracleComp.tableExtending c g ((tag, sid), n)⟩ :
+                    TagTranscript Nonce Digest)))).run' (adv n)) := by
+          refine bind_congr fun g => ?_
+          rw [bind_assoc]
+          refine bind_congr fun n => ?_
+          rw [pure_bind]
+        refine Eq.trans ?_ (congrArg evalDist hrhs_swap).symm
+        rw [evalDist_probComp_bind_comm ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+          ($ᵗ Nonce)]
+        refine evalDist_bind_congr_of_support _ _ _ fun n _ => ?_
+        exact hlhs_inner n
+      · rw [hybridLazyHandler_tag_run_of_not_lt tag (s, c) hslot]
+        show 𝒟[(simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f none)).run' (s, c)] = _
+        rw [ih none s c hcons]
+        refine congrArg _ (congrArg _ (funext fun g => ?_))
+        rw [hybridTableHandler_tag_run_of_not_lt _ tag s hslot]
+        rfl
+    | inr transcript =>
+      rw [hybridCoupledHandler_reader_run transcript (s, c)]
+      set cells := hybridReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) transcript with hcells
+      have hlhs_reassoc :
+          ((idealCacheMapM cells c >>= fun rs =>
+              pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.drawMap transcript),
+                s, rs.2))
+            >>= fun p => (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2)
+          = (idealCacheMapM cells c >>= fun rs =>
+              (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.drawMap
+                  transcript)))).run' (s, rs.2)) := by
+        rw [bind_assoc]
+        refine bind_congr fun rs => ?_
+        rw [pure_bind]
+      refine (congrArg evalDist hlhs_reassoc).trans ?_
+      set Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun g' =>
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g')
+          (f (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.drawMap transcript)))).run' s
+        with hMψ
+      have hstep1 :
+          𝒟[idealCacheMapM cells c >>= fun rs =>
+              (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag))
+                (f (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.drawMap
+                  transcript)))).run' (s, rs.2)]
+          = 𝒟[idealCacheMapM cells c >>= fun rs =>
+              ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun g =>
+                Mψ (OracleComp.tableExtending rs.2 g)] := by
+        refine evalDist_bind_congr_of_support _ _ _ fun rs hrs => ?_
+        have hcons' : HybridCacheConsistent (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) s rs.2 := by
+          intro tag' n' sid' hdm
+          exact idealCacheMapM_cache_off cells c rs hrs ((tag', sid'), n')
+            (hcons tag' n' sid' hdm) ▸ hcons tag' n' sid' hdm
+        rw [ih (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) c s.drawMap transcript))
+          s rs.2 hcons']
+      rw [hstep1, evalDist_idealCacheMapM_bind_uniformTable_comp cells c Mψ]
+      refine (evalDist_bind_congr_of_support _ _ _ fun g _ => ?_).symm
+      rw [hybridTableHandler_reader_run _ transcript s]
+      rw [hMψ]
+      rw [hybridCacheAccepts_eq_hybridReaderAccepts_tableExtending s c g hcons transcript]
+      rfl
+
+/-- **Coupled hybrid handler distributional equivalence.** Running the coupled hybrid handler from
+the initial state has the same output distribution as running the lazy hybrid handler. Both equal
+the eager-table form (`evalDist_simulateQ_hybridCoupledHandler_run'_eq_tableExtending` and
+`evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`); caching the extra column cells the
+hybrid output ignores does not change the hybrid output distribution. -/
+private lemma evalDist_simulateQ_hybridCoupledHandler_run'_eq_lazy
+    [Fintype Nonce] [Finite Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) :
+    𝒟[(simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) oa).run' (HybridState.init, ∅)] =
+      𝒟[(simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) oa).run' (HybridState.init, ∅)] := by
+  rw [evalDist_simulateQ_hybridCoupledHandler_run'_eq_tableExtending oa HybridState.init ∅
+      hybridCacheConsistent_init,
+    evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending oa HybridState.init ∅
+      hybridCacheConsistent_init]
+
+/-- The coupled hybrid handler has the same success probability as the lazy hybrid handler. -/
+private lemma probOutput_hybridCoupled_run'_eq_lazy [Fintype Nonce] [Finite Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) :
+    Pr[= true | (simulateQ (hybridCoupledHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run'
+        (HybridState.init, ∅)] =
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run'
+        (HybridState.init, ∅)] := by
+  rw [probOutput_def, probOutput_def, evalDist_simulateQ_hybridCoupledHandler_run'_eq_lazy oa]
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
