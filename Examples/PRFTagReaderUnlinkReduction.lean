@@ -1258,6 +1258,68 @@ private lemma unlinkBadQueryImpl_reader_run (transcript : TagTranscript Nonce Di
   unfold unlinkBadReaderQueryImpl
   simp [StateT.run_bind, StateT.run_get]
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The `bad` flag of `unlinkBadQueryImpl` is monotone: a single per-query step started from a
+state with `bad = true` keeps `bad = true`. -/
+private lemma unlinkBadQueryImpl_step_preserves_bad
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (sB : UnlinkBadState TagId Nonce Digest) (hbad : sB.bad = true) :
+    ∀ z ∈ support ((unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t) sB), z.2.bad = true := by
+  cases t with
+  | inl tag =>
+    by_cases hslot : sB.sessionsUsed tag < sessionsPerTag
+    · have key : ∀ z : Option (TagTranscript Nonce Digest) × UnlinkBadState TagId Nonce Digest,
+          z ∈ support
+            ((unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sB) → z.2.bad = true := by
+        intro z hz
+        rw [unlinkBadQueryImpl_tag_run_of_lt tag sB hslot] at hz
+        obtain ⟨nonce, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+        obtain ⟨auth, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+        rw [mem_support_pure_iff] at hz
+        subst hz; simp [hbad]
+      exact key
+    · intro z hz
+      rw [unlinkBadQueryImpl_tag_run_of_not_lt tag sB hslot] at hz
+      have hz' := (mem_support_pure_iff _ _).mp hz
+      subst hz'; exact hbad
+  | inr transcript =>
+    intro z hz
+    rw [unlinkBadQueryImpl_reader_run transcript sB] at hz
+    have hz' := (mem_support_pure_iff _ _).mp hz
+    subst hz'; exact hbad
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The `bad` flag of a full `simulateQ unlinkBadQueryImpl` run is monotone: started from a state
+with `bad = true` the run keeps `bad = true`. -/
+private lemma simulateQ_unlinkBad_preserves_bad
+    (adv : UnlinkAdversary TagId Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) (hbad : sB.bad = true) :
+    ∀ z ∈ support ((simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run sB), z.2.bad = true := by
+  induction adv using OracleComp.inductionOn generalizing sB with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hbad
+  | query_bind t f ih =>
+    intro z hz
+    rw [unlinkBad_run_query_bind] at hz
+    obtain ⟨p, hp, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    exact ih p.1 p.2 (unlinkBadQueryImpl_step_preserves_bad t sB hbad p hp) z hz
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Once the `bad` flag is set, the `Pr[bad]` of the residual `unlinkBadQueryImpl` run is `1`. -/
+private lemma probEvent_unlinkBad_bad_eq_one_of_bad
+    (adv : UnlinkAdversary TagId Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) (hbad : sB.bad = true) :
+    Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
+        (simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run sB] = 1 := by
+  rw [probEvent_eq_one_iff]
+  exact ⟨by simp, fun z hz => simulateQ_unlinkBad_preserves_bad adv sB hbad z hz⟩
+
 /-! ### Coupling invariant and per-step residue lemmas
 
 The coupling between the multiple- and single-session ideal worlds and the bad-event world is
