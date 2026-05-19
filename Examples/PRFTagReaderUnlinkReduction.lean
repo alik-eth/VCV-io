@@ -4324,6 +4324,55 @@ private lemma probOutput_multipleBad_run'_eq_multipleIdeal
       exact relTriple_pure_pure ⟨rfl, rfl⟩
   exact probOutput_eq_of_relTriple_eqRel hrt true
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- The bad flag threaded by `multipleBadQueryImpl` is monotone under a single per-query step:
+started from a `MultipleBadState` whose bad flag is set, every output state still has it set.
+`multipleBadAdvance` only ever OR-s into the flag, and reader queries leave the bad-world component
+untouched. -/
+private lemma multipleBadQueryImpl_step_preserves_bad
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) (hbad : s.2.bad = true) :
+    ∀ z ∈ support ((multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t) s), z.2.2.bad = true := by
+  cases t with
+  | inl tag =>
+    intro z hz
+    rw [multipleBadQueryImpl_tag_run tag s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    cases hr : r.1 with
+    | none => simp [multipleBadAdvance, hr, hbad]
+    | some tr => simp [multipleBadAdvance, hr, hbad]
+  | inr transcript =>
+    intro z hz
+    rw [multipleBadQueryImpl_reader_run transcript s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    exact hbad
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Bad monotonicity for a full `simulateQ multipleBadQueryImpl` run: started from a state whose
+bad flag is set, every reachable output state keeps it set. This is the `hmono` hypothesis of the
+heterogeneous bad+slack `simulateQ` rule. -/
+private lemma multipleBadQueryImpl_run_preserves_bad {α : Type}
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) (hbad : s.2.bad = true) :
+    ∀ z ∈ support ((simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run s), z.2.2.bad = true := by
+  induction oa using OracleComp.inductionOn generalizing s with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hbad
+  | query_bind t f ih =>
+    intro z hz
+    simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+      OracleQuery.cont_query, id_map, StateT.run_bind, mem_support_bind_iff] at hz
+    obtain ⟨p, hp, hz⟩ := hz
+    exact ih p.1 p.2 (multipleBadQueryImpl_step_preserves_bad t s hbad p hp) z hz
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
