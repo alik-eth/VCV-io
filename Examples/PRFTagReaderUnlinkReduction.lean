@@ -2453,6 +2453,56 @@ private lemma hybridReaderAccepts_imp_singleReaderAccepts
   obtain ⟨tag, sid, _, hcell⟩ := h
   exact ⟨tag, sid, hcell⟩
 
+/-! #### Hop B: the lazy hybrid handler and its eager-table equivalence
+
+`hybridTableHandler` runs the hybrid world `H` against a *pre-sampled* single-session table `gS`.
+For the hop-B coupling we instead need `H` and `Single` to share a *lazily-sampled* random-oracle
+cache, so that the cells the single reader inspects but the hybrid reader does not are genuinely
+fresh at each reader query. `hybridLazyHandler` is that lazy form: its state is
+`HybridState × QueryCache` over the single-session domain `(TagId × Fin sessionsPerTag) × Nonce`,
+its tag oracle samples a nonce and consults the cache via `idealCacheStep` (recording the draw in
+the draw map), and its reader oracle inspects only the drawn cache cells. The lemma
+`evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending` lifts the lazy-vs-eager-table
+equivalence to `H`, exactly as `evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending`
+does for `Single`. -/
+
+/-- Reader acceptance for the lazy hybrid world, read directly off the random-oracle cache `c`:
+accept the transcript when some tag has a recorded draw `dm (tag, nonce) = some sid` whose cached
+cell `c ((tag, sid), nonce)` equals the authenticator. This is `hybridReaderAccepts` with the
+table lookup replaced by a cache lookup. -/
+def hybridCacheAccepts
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (dm : HybridDrawMap TagId Nonce sessionsPerTag)
+    (transcript : TagTranscript Nonce Digest) : Bool :=
+  decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag,
+    dm (tag, transcript.nonce) = some sid ∧
+      c ((tag, sid), transcript.nonce) = some transcript.auth)
+
+/-- Lazy hybrid handler: the hybrid world `H` run against a lazily-sampled random-oracle cache
+rather than a pre-sampled table. The tag oracle samples a nonce, consults the cache at
+`((tag, sid), nonce)` via `idealCacheStep`, advances the session counter, and records the draw in
+the draw map. The reader oracle inspects only the drawn cache cells via `hybridCacheAccepts`. -/
+noncomputable def hybridLazyHandler :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (HybridState TagId Nonce sessionsPerTag ×
+        (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) ProbComp) :=
+  fun q => fun p => match q with
+    | Sum.inl tag => do
+        let s := p.1
+        if h : s.sessionsUsed tag < sessionsPerTag then
+          let sid : Fin sessionsPerTag := ⟨s.sessionsUsed tag, h⟩
+          let nonce ← ($ᵗ Nonce : ProbComp Nonce)
+          let r ← idealCacheStep p.2 ((tag, sid), nonce)
+          pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
+            ({ sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1)
+               drawMap := Function.update s.drawMap (tag, nonce) (some sid) } :
+              HybridState TagId Nonce sessionsPerTag), r.2)
+        else
+          pure (none, p)
+    | Sum.inr transcript =>
+        pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) p.2 p.1.drawMap transcript), p)
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
