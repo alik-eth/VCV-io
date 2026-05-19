@@ -3940,7 +3940,11 @@ cache, the hybrid cache + session-nonce map, and the bad-world `responses` cache
   whenever a hybrid session `(tag, sid)` recorded the draw `sn (tag, sid) = some nonce`, the
   multiple cell `(tag, nonce)` and the hybrid cell `((tag, sid), nonce)` carry the same digest;
 * the hybrid session-nonce map is collision-free per tag: at most one session of each tag has
-  drawn any given nonce (this is exactly the off-collision regime). -/
+  drawn any given nonce (this is exactly the off-collision regime);
+* the hybrid session-nonce map is write-once: a session at or beyond the session counter has no
+  recorded nonce;
+* the hybrid cache only records cells produced by a tag draw: a cached hybrid cell
+  `((tag, sid), nonce)` has `sessionNonce (tag, sid) = some nonce`. -/
 private def MHBInv
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (sH : HybridState TagId Nonce sessionsPerTag ×
@@ -3953,7 +3957,11 @@ private def MHBInv
     (∀ tag sid n, sH.1.sessionNonce (tag, sid) = some n →
       sM.2 (tag, n) = sH.2 ((tag, sid), n)) ∧
     (∀ tag sid₁ sid₂ n, sH.1.sessionNonce (tag, sid₁) = some n →
-      sH.1.sessionNonce (tag, sid₂) = some n → sid₁ = sid₂)
+      sH.1.sessionNonce (tag, sid₂) = some n → sid₁ = sid₂) ∧
+    (∀ tag (sid : Fin sessionsPerTag), sH.1.sessionsUsed tag ≤ sid.val →
+      sH.1.sessionNonce (tag, sid) = none) ∧
+    (∀ tag sid n, (sH.2 ((tag, sid), n)).isSome →
+      sH.1.sessionNonce (tag, sid) = some n)
 
 omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
   [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest] [NeZero sessionsPerTag] in
@@ -3962,10 +3970,12 @@ flag is unset, all caches and the session-nonce map are empty. -/
 private lemma MHBInv_init :
     MHBInv (TagId := TagId) (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag)
       (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init := by
-  refine ⟨rfl, rfl, rfl, ?_, ?_, ?_⟩
+  refine ⟨rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_⟩
   · intro tag n; simp [UnlinkBadState.init]
   · intro tag sid n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
   · intro tag sid₁ sid₂ n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
+  · intro tag sid _; rfl
+  · intro tag sid n h; exact absurd h (by simp)
 
 /-- The list of multiple-world cells inspected by a reader query at `transcript.nonce`: one cell
 `(tag, transcript.nonce)` per tag. -/
