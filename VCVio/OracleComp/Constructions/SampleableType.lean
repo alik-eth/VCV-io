@@ -577,6 +577,65 @@ lemma evalDist_uniformSample_map_comp_injective
         rw [evalDist_map, hcross, ← evalDist_map]
     _ = 𝒟[$ᵗ (A → R)] := evalDist_map_fst_uniformSample_prod
 
+/-- Patch a uniform function table at every point of a list `l`, drawing one fresh uniform value
+per list entry. With `l = []` the table is returned unchanged; with `l = d :: ds` the tail is
+patched first and the head point `d` is then overwritten with a fresh uniform draw.
+
+This is the iterated form of `Function.update` used by `evalDist_uniformSample_patchList`: the
+outermost update is at the head, so the list is consumed head-first. -/
+noncomputable def patchTable {D R : Type} [DecidableEq D] [SampleableType R] :
+    List D → (D → R) → ProbComp (D → R)
+  | [], g => pure g
+  | d :: ds, g => do
+      let g' ← patchTable ds g
+      let u ← $ᵗ R
+      pure (Function.update g' d u)
+
+@[simp] lemma patchTable_nil {D R : Type} [DecidableEq D] [SampleableType R] (g : D → R) :
+    patchTable [] g = pure g := rfl
+
+lemma patchTable_cons {D R : Type} [DecidableEq D] [SampleableType R]
+    (d : D) (ds : List D) (g : D → R) :
+    patchTable (d :: ds) g =
+      (do let g' ← patchTable ds g; let u ← $ᵗ R; pure (Function.update g' d u)) := rfl
+
+/-- **Patching a uniform function table at finitely many points preserves uniformity.**
+
+Drawing a uniform table `g : D → R` and then `patchTable l g` — overwriting `g` at every point of
+`l` with independent fresh uniform draws — yields the same distribution as drawing the table
+directly. The points of `l` need not be distinct: each `Function.update` is the outermost
+operation of its recursion step, so `evalDist_uniformSample_bind_update` applies regardless of
+overlap. This is the marginalization step behind trace-conditioned eager-table reformulations,
+where the patched points are determined only after the table is sampled. -/
+lemma evalDist_uniformSample_patchList
+    {D R : Type} [Finite D] [DecidableEq D] [Finite R] [Nonempty R]
+    [SampleableType R] [SampleableType (D → R)] (l : List D) :
+    𝒟[do let g ← $ᵗ (D → R); patchTable l g] = 𝒟[$ᵗ (D → R)] := by
+  classical
+  induction l with
+  | nil => simp [patchTable_nil, bind_pure]
+  | cons d ds ih =>
+    refine evalDist_ext fun h => ?_
+    -- The tail-patch block, abbreviated.
+    set blk : ProbComp (D → R) := (do let g ← $ᵗ (D → R); patchTable ds g) with hblk
+    -- LHS: unfold one `patchTable` step and reassociate so the tail-patch block stands alone.
+    have hlhs :
+        Pr[= h | do let g ← $ᵗ (D → R); patchTable (d :: ds) g]
+          = Pr[= h | blk >>= fun g' => $ᵗ R >>= fun u => pure (Function.update g' d u)] := by
+      refine OracleComp.probOutput_congr rfl ?_
+      simp only [patchTable_cons, bind_assoc, hblk]
+    rw [hlhs]
+    -- Push the tail-patch block through the bind; by the IH it is the uniform table.
+    rw [probOutput_bind_eq_tsum]
+    have hihp : ∀ g' : D → R, Pr[= g' | blk] = Pr[= g' | $ᵗ (D → R)] :=
+      fun g' => OracleComp.probOutput_congr rfl ih
+    simp_rw [hihp]
+    rw [← probOutput_bind_eq_tsum]
+    -- Now swap the table draw and the fresh-uniform draw, then apply the single-cell lemma.
+    rw [probOutput_bind_bind_swap ($ᵗ (D → R)) ($ᵗ R)
+      (fun g' u => pure (Function.update g' d u))]
+    exact OracleComp.probOutput_congr rfl (evalDist_uniformSample_bind_update d)
+
 end Marginalization
 
 -- TODO: generalize this lemma
