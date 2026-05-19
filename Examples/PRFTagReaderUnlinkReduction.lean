@@ -4701,6 +4701,62 @@ private lemma HopACoupling_tag_step
       rw [QueryCache.cacheQuery_of_ne _ _ hhkey]
       exact hcons tag' sid' n' hsn'
 
+/-! ### Hop A: closing `multipleIdeal_le_hybrid_add_bad`
+
+The reader and tag per-query coupling steps are discharged below and assembled through the
+heterogeneous bad+slack `simulateQ` rule `probOutput_simulateQ_run'_le_add_bad_add_slack`. -/
+
+omit [Nonempty TagId] [SampleableType Nonce] [NeZero sessionsPerTag] in
+/-- If a multiple-reader cell `(tag, n)` is already cached with digest `v`, then folding
+`idealCacheStep` over a cell list containing `(tag, n)` produces a drawn list containing `v`: a
+cached cell is read back unchanged. -/
+private lemma mem_drawn_of_cached_cell {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (rs : List Digest × (D →ₒ Digest).QueryCache)
+    (hrs : rs ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (d : D) (hd : d ∈ l) (v : Digest) (hcd : c d = some v) :
+    v ∈ rs.1 := by
+  classical
+  have hr2 : rs.2 d = c d :=
+    idealCacheMapM_cache_off l c rs hrs d (by rw [hcd]; rfl)
+  have hmap := idealCacheMapM_support l c rs hrs (fun _ => v)
+  rw [hmap]
+  refine List.mem_map.mpr ⟨d, hd, ?_⟩
+  simp [OracleComp.tableExtending, hr2, hcd]
+
+omit [Nonempty TagId] [SampleableType Nonce] [NeZero sessionsPerTag] in
+/-- **Hop A, reader-step output domination.** Under `HopACoupling sM sH sB`, whenever the lazy
+hybrid reader accepts a transcript (`hybridCacheAccepts` reads `true`), the multiple reader also
+accepts: the accepting hybrid session cell mirrors a cached multiple cell holding the
+authenticator, which the multiple reader fold reads back into its drawn list. Hence the two
+readers disagree only in the direction `multiple accepts, hybrid rejects`. -/
+private lemma multipleReader_accepts_of_hybridCacheAccepts
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : HopACoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (transcript : TagTranscript Nonce Digest)
+    (rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hrs : rs ∈ support (idealCacheMapM (multipleReaderCells (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) transcript) sM.2))
+    (hhyb : hybridCacheAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) sH.2 sH.1.sessionNonce transcript = true) :
+    decide (∃ d ∈ rs.1, d = transcript.auth) = true := by
+  classical
+  obtain ⟨_, _, _, _, hcorr, _, _, _, _⟩ := hInv
+  rw [hybridCacheAccepts, decide_eq_true_eq] at hhyb
+  obtain ⟨tag, sid, hsn, hcell⟩ := hhyb
+  have hmcell : sM.2 (tag, transcript.nonce) = some transcript.auth := by
+    rw [hcorr tag sid transcript.nonce hsn]; exact hcell
+  have hmem : (tag, transcript.nonce) ∈ multipleReaderCells (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) transcript := by
+    unfold multipleReaderCells
+    exact List.mem_map.mpr ⟨tag, Finset.mem_toList.mpr (Finset.mem_univ tag), rfl⟩
+  exact decide_eq_true (⟨transcript.auth,
+    mem_drawn_of_cached_cell _ sM.2 rs hrs (tag, transcript.nonce) hmem transcript.auth hmcell,
+    rfl⟩)
+
 /-! ### Open obligation: the multiple-vs-single cache coupling
 
 The two `sorry`-carrying lemmas below — `multipleIdeal_tag_step_le_single_add_bad` and
