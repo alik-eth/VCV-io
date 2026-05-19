@@ -2503,6 +2503,72 @@ noncomputable def hybridLazyHandler :
         pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
           (Digest := Digest) (sessionsPerTag := sessionsPerTag) p.2 p.1.drawMap transcript), p)
 
+/-- `simulateQ hybridLazyHandler` of a `query_bind`, run from a state and projected to its
+output: the per-query handler followed by the recursive simulation of the continuation. -/
+private lemma hybridLazy_run'_query_bind' {α : Type}
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) (liftM (OracleSpec.query t) >>= f)).run' sH =
+      (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t sH) >>= fun p =>
+        (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) (f p.1)).run' p.2 := by
+  rw [simulateQ_query_bind, StateT.run'_eq, StateT.run_bind, map_bind]
+  rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `hybridLazyHandler` on a tag query whose slot budget is exhausted: returns `none`, state
+unchanged. -/
+private lemma hybridLazyHandler_tag_run_of_not_lt (tag : TagId)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hslot : ¬ sH.1.sessionsUsed tag < sessionsPerTag) :
+    (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sH = pure (none, sH) := by
+  show (if _h : sH.1.sessionsUsed tag < sessionsPerTag then _ else pure (none, sH)) = _
+  rw [dif_neg hslot]
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `hybridLazyHandler` on a tag query with a free slot: sample a nonce, consult the cache at
+`((tag, sid), nonce)` via `idealCacheStep`, advance the session counter, record the draw. -/
+private lemma hybridLazyHandler_tag_run_of_lt (tag : TagId)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (hslot : sH.1.sessionsUsed tag < sessionsPerTag) :
+    (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) sH =
+      ($ᵗ Nonce) >>= fun nonce =>
+        idealCacheStep sH.2 ((tag, ⟨sH.1.sessionsUsed tag, hslot⟩), nonce) >>= fun r =>
+          pure (some (⟨nonce, r.1⟩ : TagTranscript Nonce Digest),
+            ({ sessionsUsed :=
+                Function.update sH.1.sessionsUsed tag (sH.1.sessionsUsed tag + 1)
+               drawMap := Function.update sH.1.drawMap (tag, nonce)
+                (some ⟨sH.1.sessionsUsed tag, hslot⟩) } :
+              HybridState TagId Nonce sessionsPerTag), r.2) := by
+  show (if h : sH.1.sessionsUsed tag < sessionsPerTag then
+      ($ᵗ Nonce) >>= fun nonce =>
+        idealCacheStep sH.2 ((tag, ⟨sH.1.sessionsUsed tag, h⟩), nonce) >>= fun r =>
+          pure (_, _, r.2)
+      else pure (none, sH)) = _
+  rw [dif_pos hslot]
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `hybridLazyHandler` on a reader query: deterministic draw-map acceptance read off the cache,
+state untouched. -/
+private lemma hybridLazyHandler_reader_run (transcript : TagTranscript Nonce Digest)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
+    (hybridLazyHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) sH =
+      pure (ReaderReply.ofBool (hybridCacheAccepts (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) sH.2 sH.1.drawMap transcript),
+        sH) := by
+  rfl
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
