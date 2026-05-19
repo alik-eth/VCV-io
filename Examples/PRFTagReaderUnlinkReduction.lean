@@ -5357,9 +5357,32 @@ both worlds eagerized (the multiple-side instrumented handler `multipleBadTableH
 probability plus the bad-event probability plus the per-reader-query slack.
 
 The two table samples are coupled cell-by-cell: an outer uniform draw of the hybrid table `gH`
-already determines, at every drawn hybrid cell `((tag,sid),n)`, the multiple value `gM(tag,n)`
-(the multiple table is recovered from the hybrid table by projection). Proved by induction on the
-adversary, threading the reader budget `qR` exactly as `hybridCoupled_le_singleIdeal_add_readerSlack_aux`. -/
+determines, at every drawn hybrid cell `((tag,sid),n)`, the multiple value `gM(tag,n)` — the
+multiple table being recovered from the hybrid table along the injective `couplingEmbed`
+(see `evalDist_couplingProject_uniformSample`). The induction threads the reader budget `qR`
+exactly as `hybridCoupled_le_singleIdeal_add_readerSlack_aux`.
+
+### Open obligation (the two `query_bind` cases)
+
+The `tag` and `reader` steps are unproven. The proof architecture above is sound, and the
+supporting lemmas (`couplingEmbed`, `chooseSid`, `couplingEmbed_injective`,
+`evalDist_couplingProject_uniformSample`, `probEvent_bind_le_add_bad_disagree`,
+`evalDist_uniformSample_patchList`) are in place; what is missing is a draw-ordering bridge.
+
+`couplingEmbed sn (tag,n) = ((tag, chooseSid sn tag n), n)` selects the session that drew `n`, so
+recovering `gM` from `gH` requires `sn` to be *the run's own session-nonce map*. But `sn` is a
+random variable: each tag query samples its nonce by `$ᵗ Nonce`, so `sn` is realized only as the
+induction proceeds, whereas the table draws `gM`/`gH` sit at the top of each `Pr[…]` term and the
+induction hypothesis re-draws them per continuation. `evalDist_couplingProject_uniformSample`
+needs a *constant* `sn`.
+
+The naive remedy — hoist every `$ᵗ Nonce` draw above the table draw to fix the whole trace first
+— is unsound for an *adaptive* adversary: the adversary branches on the digests it observes, so
+the number and positions of nonce draws themselves depend on the sampled table. A correct closure
+must instead couple incrementally — patching the single hybrid cell `((tag, sid), n)` at the
+moment that query's nonce `n` is drawn (via `evalDist_uniformSample_bind_update`, the cell being
+fresh off the bad event), rather than projecting a pre-sampled global table through a fixed
+`couplingEmbed sn`. This per-query local patch is the genuine remaining content of both cases. -/
 private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
