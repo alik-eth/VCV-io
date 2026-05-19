@@ -4517,6 +4517,190 @@ private lemma HopARel_init :
       ((UnlinkState.init, ∅), UnlinkBadState.init) (HybridState.init, ∅) :=
   HopACoupling_init
 
+omit [Fintype TagId] [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest]
+  [NeZero sessionsPerTag] in
+/-- **Hop A, reader-step coupling stability.** A multiple-session reader query folds
+`idealCacheStep` over its cells, extending the multiple cache `sM.2` to some `r.2` while leaving
+the session counters, the hybrid state and the bad-world state untouched. Because `idealCacheStep`
+only fills `none` cells — never overwriting an already-cached cell — and every tag-written cell is
+already cached (clause `hcorr` together with the hybrid cache/session-nonce consistency), the
+reader-extended state still satisfies `HopACoupling`. This is the precise sense in which the
+reader-aware invariant is stable across reader queries. -/
+private lemma HopACoupling_reader_step
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : HopACoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (cells : List (TagId × Nonce))
+    (r : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) cells sM.2)) :
+    HopACoupling (sessionsPerTag := sessionsPerTag) (sM.1, r.2) sH sB := by
+  obtain ⟨hcnt1, hcnt2, hbad, hbadcol, hcorr, hcolfree, hwo, hhyb1, hhyb2⟩ := hInv
+  refine ⟨hcnt1, hcnt2, hbad, hbadcol, ?_, hcolfree, hwo, hhyb1, hhyb2⟩
+  intro tag sid n hsn
+  have hcell : (sM.2 (tag, n)).isSome := by
+    rw [hcorr tag sid n hsn]
+    exact hhyb2 tag sid n hsn
+  rw [idealCacheMapM_cache_off cells sM.2 r hr (tag, n) hcell]
+  exact hcorr tag sid n hsn
+
+omit [Fintype TagId] [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest]
+  [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Hop A, off-collision tag-step coupling stability.** Given `HopACoupling sM sH sB`, a free
+slot `hslot`, an off-collision nonce `n` (`sM.2 (tag, n) = none`) and a digest `u`, the three
+post-states produced by the off-collision tag step — the multiple, hybrid and bad worlds all
+caching the fresh digest `u` for tag `tag` at nonce `n` — again satisfy `HopACoupling`.
+
+Off-collision means no session of `tag` had drawn `n` before, so the new draw both extends the
+session-nonce map at the fresh slot `sid` and writes a fresh bad-world `responses` entry; the
+reader-aware clause `hbadcol` is preserved because both the new session record and the new
+bad-world entry sit at the same cell `(tag, n)`. -/
+private lemma HopACoupling_tag_step
+    (tag : TagId) (n : Nonce) (u : Digest)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : HopACoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (hslot : sM.1.sessionsUsed tag < sessionsPerTag)
+    (hfresh : sM.2 (tag, n) = none) :
+    HopACoupling (sessionsPerTag := sessionsPerTag)
+      ({ sM.1 with sessionsUsed :=
+          Function.update sM.1.sessionsUsed tag (sM.1.sessionsUsed tag + 1) },
+        sM.2.cacheQuery (tag, n) u)
+      (({ sessionsUsed :=
+            Function.update sH.1.sessionsUsed tag (sH.1.sessionsUsed tag + 1),
+          sessionNonce := Function.update sH.1.sessionNonce
+            (tag, ⟨sM.1.sessionsUsed tag, hslot⟩) (some n) } :
+          HybridState TagId Nonce sessionsPerTag),
+        sH.2.cacheQuery ((tag, ⟨sM.1.sessionsUsed tag, hslot⟩), n) u)
+      ({ sessionsUsed :=
+            Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1),
+          responses := sB.responses.cacheQuery (tag, n)
+            (u :: Option.getD (sB.responses (tag, n)) []),
+          bad := sB.bad || (sB.responses (tag, n)).isSome } :
+          UnlinkBadState TagId Nonce Digest) := by
+  obtain ⟨hcMH, hcMB, hbad, hbadcol, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
+  set sid : Fin sessionsPerTag := ⟨sM.1.sessionsUsed tag, hslot⟩ with hsid
+  -- no session of `tag` had drawn `n` before (else the multiple cell would be cached)
+  have hnodrawn : ∀ sid', sH.1.sessionNonce (tag, sid') ≠ some n := by
+    intro sid' hsn'
+    have := hcorr tag sid' n hsn'
+    rw [hfresh] at this
+    exact absurd (hcons tag sid' n hsn') (by rw [← this]; simp)
+  -- the bad-world `responses` cell `(tag, n)` is empty off-collision
+  have hBfresh : sB.responses (tag, n) = none := by
+    rw [← Option.not_isSome_iff_eq_none, hbadcol tag n, not_exists]
+    intro sid' hsn'
+    exact hnodrawn sid' hsn'
+  refine ⟨?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_, ?_⟩
+  · dsimp only [HybridState.sessionsUsed]; rw [hcMH]
+  · dsimp only; rw [hcMB]
+  · rw [hbad, hBfresh]; rfl
+  · -- bad-world / session-nonce correspondence
+    intro tag' n'
+    dsimp only
+    by_cases hkey : (tag', n') = (tag, n)
+    · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hkey
+      rw [QueryCache.cacheQuery_self]
+      exact ⟨fun _ => ⟨sid, Function.update_self _ _ _⟩, fun _ => rfl⟩
+    · rw [QueryCache.cacheQuery_of_ne _ _ hkey, hbadcol tag' n']
+      constructor
+      · rintro ⟨sid', hsn'⟩
+        refine ⟨sid', ?_⟩
+        have hts : (tag', sid') ≠ (tag, sid) := by
+          rintro h
+          obtain ⟨htg, hsd⟩ := Prod.mk.inj h
+          rw [htg, hsd, hwo tag sid (by rw [← hcMH, hsid])] at hsn'
+          exact absurd hsn' (by simp)
+        rw [Function.update_of_ne hts]; exact hsn'
+      · rintro ⟨sid', hsn'⟩
+        by_cases hts : (tag', sid') = (tag, sid)
+        · obtain ⟨htg, hsd⟩ := Prod.mk.inj hts
+          rw [htg, hsd, Function.update_self] at hsn'
+          exact absurd (Prod.ext htg (Option.some.inj hsn').symm) hkey
+        · rw [Function.update_of_ne hts] at hsn'
+          exact ⟨sid', hsn'⟩
+  · -- multiple/hybrid cache correspondence
+    intro tag' sid' n' hsn'
+    dsimp only at hsn' ⊢
+    by_cases hts : (tag', sid') = (tag, sid)
+    · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hts
+      rw [Function.update_self] at hsn'
+      obtain rfl : n' = n := (Option.some.inj hsn').symm
+      rw [QueryCache.cacheQuery_self, QueryCache.cacheQuery_self]
+    · rw [Function.update_of_ne hts] at hsn'
+      by_cases hmkey : (tag', n') = (tag, n)
+      · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hmkey
+        exact absurd hsn' (hnodrawn sid')
+      · rw [QueryCache.cacheQuery_of_ne _ _ hmkey]
+        have hhkey : ((tag', sid'), n') ≠ ((tag, sid), n) := fun h => hts (congrArg Prod.fst h)
+        rw [QueryCache.cacheQuery_of_ne _ _ hhkey]
+        exact hcorr tag' sid' n' hsn'
+  · -- collision-freeness
+    intro tag' s₁ s₂ n' h₁ h₂
+    dsimp only at h₁ h₂
+    by_cases ht1 : (tag', s₁) = (tag, sid)
+    · obtain ⟨htg, hs₁⟩ := Prod.mk.inj ht1
+      subst hs₁; subst htg
+      rw [Function.update_self] at h₁
+      obtain rfl : n' = n := (Option.some.inj h₁).symm
+      by_cases ht2 : (tag', s₂) = (tag', sid)
+      · exact ((Prod.mk.inj ht2).2).symm
+      · rw [Function.update_of_ne ht2] at h₂
+        exact absurd h₂ (hnodrawn s₂)
+    · rw [Function.update_of_ne ht1] at h₁
+      by_cases ht2 : (tag', s₂) = (tag, sid)
+      · obtain ⟨htg, hs₂⟩ := Prod.mk.inj ht2
+        subst hs₂; subst htg
+        rw [Function.update_self] at h₂
+        obtain rfl : n' = n := (Option.some.inj h₂).symm
+        exact absurd h₁ (hnodrawn s₁)
+      · rw [Function.update_of_ne ht2] at h₂
+        exact hcollfree tag' s₁ s₂ n' h₁ h₂
+  · -- write-once
+    intro tag' sid' hle
+    dsimp only at hle ⊢
+    by_cases htag : tag' = tag
+    · subst htag
+      rw [Function.update_self] at hle
+      have hne : sid' ≠ sid := by
+        intro h; rw [h, hsid] at hle; rw [← hcMH] at hle; simp only [Fin.val] at hle; omega
+      rw [Function.update_of_ne (by simp [Prod.ext_iff, hne])]
+      exact hwo tag' sid' (by omega)
+    · rw [Function.update_of_ne htag] at hle
+      rw [Function.update_of_ne (by simp [htag])]
+      exact hwo tag' sid' hle
+  · -- cache-recorded
+    intro tag' sid' n' hsome
+    dsimp only at hsome ⊢
+    by_cases hhkey : ((tag', sid'), n') = ((tag, sid), n)
+    · obtain ⟨hkk, rfl⟩ := Prod.mk.inj hhkey
+      obtain ⟨rfl, rfl⟩ := Prod.mk.inj hkk
+      rw [Function.update_self]
+    · rw [QueryCache.cacheQuery_of_ne _ _ hhkey] at hsome
+      have hsn := hrec tag' sid' n' hsome
+      have hts : (tag', sid') ≠ (tag, sid) := by
+        intro h
+        rw [h] at hsn
+        rw [hwo tag sid (by rw [← hcMH, hsid])] at hsn
+        exact absurd hsn (by simp)
+      rw [Function.update_of_ne hts]
+      exact hsn
+  · -- cache-consistency
+    intro tag' sid' n' hsn'
+    dsimp only at hsn' ⊢
+    by_cases hts : (tag', sid') = (tag, sid)
+    · obtain ⟨rfl, rfl⟩ := Prod.mk.inj hts
+      rw [Function.update_self] at hsn'
+      obtain rfl : n' = n := (Option.some.inj hsn').symm
+      rw [QueryCache.cacheQuery_self]; simp
+    · rw [Function.update_of_ne hts] at hsn'
+      have hhkey : ((tag', sid'), n') ≠ ((tag, sid), n) := fun h => hts (congrArg Prod.fst h)
+      rw [QueryCache.cacheQuery_of_ne _ _ hhkey]
+      exact hcons tag' sid' n' hsn'
+
 /-! ### Open obligation: the multiple-vs-single cache coupling
 
 The two `sorry`-carrying lemmas below — `multipleIdeal_tag_step_le_single_add_bad` and
