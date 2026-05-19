@@ -3913,6 +3913,60 @@ theorem hybrid_le_singleIdeal_add_readerSlack [Fintype Nonce] [Fintype Digest]
     ((hasDistinctUnlinkReaderNonces_iff adversary).mp hdist)
     (hybridWriteOnce_init) (hybridColFresh_init adversary HybridState.init)
 
+/-! ### Hop A: the multiple-vs-hybrid cache coupling
+
+Hop A couples the multiple-session ideal handler `multipleIdealQueryImpl` (a lazy random oracle
+over `TagId × Nonce`, whose tag oracle reuses the cell `(tag, nonce)` whenever two sessions of one
+tag draw the same nonce) against the per-session-fresh hybrid handler `hybridLazyHandler` (a lazy
+random oracle over `(TagId × Fin sessionsPerTag) × Nonce`, whose tag oracle always consults a fresh
+session slot `(tag, sid)`). Off the within-tag nonce collision the two worlds produce the same
+fresh-uniform digest, so the gap is charged to two terms: the collision goes into the bad-world
+probability `Pr[bad]` and the reader-cell asymmetry goes into the reader-slack
+`qReader * |TagId| / |Digest|`.
+
+The coupling is threaded by `MHBInv`, a state relation on the three handler states (the multiple
+cache, the hybrid cache + session-nonce map, and the bad-world `responses` cache). -/
+
+/-- **Hop A coupling invariant.** Relates a multiple-session ideal state `sM`, a hybrid-world state
+`sH`, and a bad-event state `sB`. It records that:
+
+* the three worlds' session counters agree (reader-stable, untouched by reader queries);
+* the bad flag has not yet fired;
+* the multiple cache and the bad-world `responses` cache have the same support — a `(tag, nonce)`
+  pair is cached in the multiple world exactly when it has a recorded random-function response in
+  the bad world (off `bad`, the bad world has drawn each cached pair exactly once, so its response
+  list is a singleton);
+* the multiple cache cell at a *tag-drawn* nonce mirrors the corresponding per-session hybrid cell:
+  whenever a hybrid session `(tag, sid)` recorded the draw `sn (tag, sid) = some nonce`, the
+  multiple cell `(tag, nonce)` and the hybrid cell `((tag, sid), nonce)` carry the same digest;
+* the hybrid session-nonce map is collision-free per tag: at most one session of each tag has
+  drawn any given nonce (this is exactly the off-collision regime). -/
+private def MHBInv
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) : Prop :=
+  sM.1.sessionsUsed = sH.1.sessionsUsed ∧
+    sM.1.sessionsUsed = sB.sessionsUsed ∧
+    sB.bad = false ∧
+    (∀ tag n, (sM.2 (tag, n)).isSome ↔ (sB.responses (tag, n)).isSome) ∧
+    (∀ tag sid n, sH.1.sessionNonce (tag, sid) = some n →
+      sM.2 (tag, n) = sH.2 ((tag, sid), n)) ∧
+    (∀ tag sid₁ sid₂ n, sH.1.sessionNonce (tag, sid₁) = some n →
+      sH.1.sessionNonce (tag, sid₂) = some n → sid₁ = sid₂)
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The three initial states satisfy the hop-A coupling invariant: counters are all zero, the bad
+flag is unset, all caches and the session-nonce map are empty. -/
+private lemma MHBInv_init :
+    MHBInv (TagId := TagId) (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+      (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init := by
+  refine ⟨rfl, rfl, rfl, ?_, ?_, ?_⟩
+  · intro tag n; simp [UnlinkBadState.init]
+  · intro tag sid n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
+  · intro tag sid₁ sid₂ n h; exact absurd h (by simp [HybridState.init, HybridSessionNonce.init])
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
