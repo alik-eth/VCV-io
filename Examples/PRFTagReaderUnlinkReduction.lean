@@ -2884,6 +2884,84 @@ private lemma probEvent_idealCacheMapM_mem_le {D : Type} [DecidableEq D] [Fintyp
           · exact h
         · rw [hrcache d' hd']; exact hfresh d' (Or.inr hd')
 
+/-! #### Hop B, deliverable 3: the coupled reader step and the coupling theorem
+
+`hybridCoupledHandler` is the hybrid world run *in lockstep* with the single-session ideal handler:
+its tag oracle is the lazy hybrid tag oracle and its reader oracle folds `idealCacheStep` over the
+whole column of cells — exactly as the single reader does, so the two threads keep an identical
+random-oracle cache — but its acceptance bit is the draw-map bit `hybridCacheAccepts` read off the
+*pre-extension* cache. The two handlers therefore differ only in the reader's output bit, and the
+per-reader-query disagreement is bounded by `probEvent_idealCacheMapM_mem_le`. -/
+
+/-- The column of single-session cells inspected by a reader query at `transcript.nonce`. -/
+private noncomputable def hybridReaderCells (transcript : TagTranscript Nonce Digest) :
+    List ((TagId × Fin sessionsPerTag) × Nonce) :=
+  (Finset.univ : Finset (TagId × Fin sessionsPerTag)).toList.map
+    (fun slot => (slot, transcript.nonce))
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The reader-cell column is duplicate-free: `Finset.univ.toList` is `Nodup` and pairing each slot
+with the fixed nonce is injective. -/
+private lemma hybridReaderCells_nodup (transcript : TagTranscript Nonce Digest) :
+    (hybridReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) transcript).Nodup := by
+  unfold hybridReaderCells
+  refine (Finset.univ : Finset (TagId × Fin sessionsPerTag)).nodup_toList.map ?_
+  intro a b hab
+  simpa using hab
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The reader-cell column has `|TagId| * sessionsPerTag` cells. -/
+private lemma hybridReaderCells_length (transcript : TagTranscript Nonce Digest) :
+    (hybridReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) transcript).length
+      = Fintype.card TagId * sessionsPerTag := by
+  unfold hybridReaderCells
+  rw [List.length_map, Finset.length_toList, Finset.card_univ, Fintype.card_prod,
+    Fintype.card_fin]
+
+omit [Nonempty TagId] [SampleableType Nonce] in
+/-- **Per-reader-query coupled disagreement bound.** Fix a cache `c` in which every cached
+column-`transcript.nonce` cell is recorded in the draw map `dm` (the column-freshness invariant
+guaranteed, at the current reader query, by `HasDistinctUnlinkReaderNonces`). Folding
+`idealCacheStep` over the whole column, the probability that the single-session acceptance bit
+(some inspected digest equals the authenticator) exceeds the hybrid draw-map bit
+`hybridCacheAccepts c dm transcript` is at most `|TagId| * sessionsPerTag / |Digest|`: the only way
+they disagree is a fresh draw at an undrawn cell hitting the authenticator, and
+`probEvent_idealCacheMapM_mem_le` bounds that. -/
+private lemma probEvent_coupledReader_disagree_le [Fintype Digest]
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (dm : HybridDrawMap TagId Nonce sessionsPerTag)
+    (transcript : TagTranscript Nonce Digest)
+    (hcol : ∀ (tag : TagId) (sid : Fin sessionsPerTag),
+      (c ((tag, sid), transcript.nonce)).isSome →
+        dm (tag, transcript.nonce) = some sid) :
+    Pr[fun rs : List Digest × (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache =>
+        decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧
+          hybridCacheAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) c dm transcript = false |
+        idealCacheMapM (hybridReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) transcript) c] ≤
+      (Fintype.card TagId * sessionsPerTag : ℕ) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  rw [← hybridReaderCells_length (TagId := TagId) (Digest := Digest) transcript]
+  push_cast
+  refine le_trans (probEvent_mono fun rs _ hrs => ?_)
+    (probEvent_idealCacheMapM_mem_le _
+      (hybridReaderCells_nodup (TagId := TagId) (Digest := Digest) transcript) c transcript.auth)
+  obtain ⟨haccept, hreject⟩ := hrs
+  rw [decide_eq_true_eq] at haccept
+  refine ⟨haccept.1, fun cell hcell hcc => ?_⟩
+  -- A cached cell holding `transcript.auth` is a drawn cell, so the hybrid reader would accept.
+  obtain ⟨slot, rfl⟩ : ∃ slot, cell = (slot, transcript.nonce) := by
+    unfold hybridReaderCells at hcell
+    rw [List.mem_map] at hcell
+    obtain ⟨slot, _, rfl⟩ := hcell
+    exact ⟨slot, rfl⟩
+  have hdrawn := hcol slot.1 slot.2 (by rw [hcc]; rfl)
+  rw [hybridCacheAccepts, decide_eq_false_iff_not] at hreject
+  exact hreject ⟨slot.1, slot.2, hdrawn, hcc⟩
+
 end EagerComposed
 
 /-! ### Open obligation: the multiple-vs-single cache coupling
