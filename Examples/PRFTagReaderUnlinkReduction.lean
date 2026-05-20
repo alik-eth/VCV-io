@@ -5497,6 +5497,14 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                 pure (some (⟨n, gS ((tag, sidH), n)⟩ : TagTranscript Nonce Digest), advH n) := by
           intro gS
           rw [hybridTableHandler_tag_run_of_lt gS tag sH.1 hslotH, ← hsidH]
+        -- **Open.** Next: lift `hMstep`/`hHstep` into the goal, bind-flatten under each outer
+        -- table draw, and commute `gM`/`gH` past the inner `($ᵗ Nonce)` via
+        -- `evalDist_probComp_bind_comm` so the nonce draw is outermost. Bind commutativity is
+        -- only distributional — work at `evalDist`/`Pr[=true]` level, not syntactic. Then apply
+        -- `probEvent_bind_le_add_bad_of_disagree'` with shared `mx := $ᵗ Nonce`, disagreement
+        -- set `D n := ∃ sid, sH.1.sessionNonce (tag, sid) = some n`. Bad branch closes by an
+        -- eager-table analogue of `multipleBadQueryImpl_step_preserves_bad`; fresh branch uses
+        -- two `evalDist_uniformSample_bind_update` applications + `HopACoupling_tag_step` + `ih`.
         sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
