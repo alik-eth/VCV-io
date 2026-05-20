@@ -6185,13 +6185,52 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
             have hu := hIh u
             simp only [← probEvent_eq_eq_probOutput] at hu
             exact hu
-          · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
-            -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
-            -- makes 0 reader queries at nonce `n`, so the off-collision reader path is closed and
-            -- the multi-side read is deterministic (`tableExtending sM.2 gM (tag, n) = d`).
-            -- The hybrid side still draws a fresh `u`, so this branch needs a separate
-            -- `evalDist_uniformSample_bind_update_map` argument on the hybrid side together
-            -- with the constancy of the multi-side residual continuation in `gM (tag, n)`.
+          · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.**
+            -- Extract `d` from the cell, the constant multi-side cell read, and the freshness
+            -- bound for the residual continuation `f (some ⟨n, d⟩)`.
+            have hMcellSome : (sM.2 (tag, n)).isSome := by
+              rw [Option.isSome_iff_ne_none]; exact hMcellNone
+            obtain ⟨d, hMcellEq⟩ : ∃ d, sM.2 (tag, n) = some d := Option.isSome_iff_exists.mp hMcellSome
+            have hMcellReadB : ∀ gM : TagId × Nonce → Digest,
+                OracleComp.tableExtending sM.2 gM (tag, n) = d := by
+              intro gM
+              simp [OracleComp.tableExtending, hMcellEq]
+            -- `hfreshf (some ⟨n, d⟩)` gives `HopAColFresh (f (some ⟨n, d⟩)) sH sM.2`; applied at
+            -- the off-collision multi cell, this exhausts the reader budget at nonce `n`.
+            have hPReaderZero :
+                OracleComp.IsQueryBoundP (f (some (⟨n, d⟩ : TagTranscript Nonce Digest)))
+                  (pReaderNonce n) 0 := by
+              refine hfreshf (some (⟨n, d⟩ : TagTranscript Nonce Digest)) n tag hMcellSome ?_
+              intro sid hsn
+              exact hncoll ⟨sid, hsn⟩
+            -- **Open obligation (Sub-B coupling).** Closing this branch requires charging the
+            -- per-tag-step Sub-B mismatch against the `qR * |TagId| / |Digest|` slack:
+            --
+            -- Multi side reads `d` deterministically:
+            --   `multi-LHS = Pr[= true | gM ← $ᵗ; ... (f (some ⟨n, d⟩)) ... (advM, mbAdv tag sB (some ⟨n, d⟩))]`
+            -- which is independent of `gM (tag, n)` since `sM.2 (tag, n)` overrides via
+            -- `tableExtending`.
+            --
+            -- Hybrid side draws fresh `u` at `((tag, sidH), n)`:
+            --   `hybrid-RHS = Pr[= true | gH ← $ᵗ; ... (f (some ⟨n, gH ((tag,sidH),n)⟩)) ... (advH _)]`
+            -- which is uniform in the cell value.
+            --
+            -- The standard `HopACoupling_tag_step` does NOT apply (it requires
+            -- `sM.2 (tag, n) = none`). Strategy options:
+            --   (a) Define a Sub-B-aware coupling that allows the multi cache to already hold
+            --       `d` and requires the hybrid draw to land on `d` (prob `1/|Digest|`); charge
+            --       the off-coupling probability into the running slack.
+            --   (b) Bound multi-LHS ≤ |Digest| * (hybrid-RHS at u = d) ≤ |Digest| * hybrid-RHS,
+            --       impractical since |Digest| is large.
+            --   (c) Use `hPReaderZero` more aggressively: since the residual makes no further
+            --       reader queries at `n`, the multi-hybrid difference is only via tag-step
+            --       cache reads — bound by `(sessionsPerTag * |TagId|) / |Nonce|`. Doesn't
+            --       match the existing slack shape `qR * |TagId| / |Digest|`.
+            --
+            -- Approach (a) appears closest but requires extending `HopACoupling` with a
+            -- "tolerated cell-state mismatch" clause and a corresponding slack accounting in
+            -- the inductive bound. This may be cleaner to land as a separate refinement of
+            -- the bound statement.
             sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
