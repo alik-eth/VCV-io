@@ -5425,12 +5425,52 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
     simp only [multipleBadTable_run_query_bind', hybridTable_run'_query_bind', map_bind]
     cases t with
     | inl tag =>
-      -- **Tag step (open).** Unfold both table-handler tag queries to their nonce-sampling forms
-      -- (`multipleTableHandler_tag_run_of_lt` / `hybridTableHandler_tag_run_of_lt`), couple the two
-      -- independent uniform table draws `gM`/`gH` so the nonce-sampled cell reads agree, and
-      -- recurse via `ih`. A within-tag repeated nonce is charged to `Pr[bad]` via
-      -- `probEvent_bind_le_add_bad_of_disagree'`.
-      sorry
+      -- Continuation query-bound facts: a tag query is neither charged by `isRight` nor by
+      -- `pReaderNonce`, so all three budgets pass straight through to every continuation.
+      have hqRf : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight = true) qR := by
+        intro u
+        have := hqR
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa using this.2 u
+      have hdistf : ∀ u, ∀ n, OracleComp.IsQueryBoundP (f u) (pReaderNonce n) 1 := by
+        intro u n
+        have := hdist n
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa [pReaderNonce] using this.2 u
+      have hfreshf : ∀ u, HopAColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (f u) sH sM.2 := by
+        intro u n tg hsome hns
+        have hb := hfresh n tg hsome hns
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+        simpa [pReaderNonce] using hb.2 u
+      by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
+      · -- **Tag step (open).** Unfold both table-handler tag queries to their nonce-sampling forms
+        -- (`multipleTableHandler_tag_run_of_lt` / `hybridTableHandler_tag_run_of_lt`), couple the
+        -- two independent uniform table draws `gM`/`gH` so the nonce-sampled cell reads agree, and
+        -- recurse via `ih`. A within-tag repeated nonce is charged to `Pr[bad]` via
+        -- `probEvent_bind_le_add_bad_of_disagree'`.
+        sorry
+      · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
+        -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
+        have hnotH : ¬ sH.1.sessionsUsed tag < sessionsPerTag := by
+          rw [← congrFun hInv.1 tag]; exact hslot
+        have hM : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM.1, sB)
+            = pure (none, sM.1, sB) := by
+          intro g
+          change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) sM.1
+              >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1)) = pure (none, sM.1, sB)
+          rw [multipleTableHandler_tag_run_of_not_lt g tag sM.1 hslot]
+          rfl
+        have hH : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) sH.1
+            = pure (none, sH.1) :=
+          fun gS => hybridTableHandler_tag_run_of_not_lt gS tag sH.1 hnotH
+        simp only [hM, hH]
+        exact ih none qR sM sH sB hInv (hqRf none) (hdistf none) (hfreshf none)
     | inr transcript =>
       -- **Reader step (open).** Both table handlers fold the same column deterministically; the
       -- multiple reader may speculatively accept where the hybrid rejects. Charge the per-query
