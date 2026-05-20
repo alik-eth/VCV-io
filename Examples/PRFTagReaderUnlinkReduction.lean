@@ -5740,6 +5740,25 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
           -- via two `evalDist_uniformSample_bind_update` applications, then advance the coupling
           -- by `HopACoupling_tag_step` and recurse with `ih`.
           intro n _ hncoll
+          -- **Structural facts derivable from `hInv` at the off-collision nonce `n`:**
+          -- the bad-world `responses` cell is unfilled, and the new hybrid cell `((tag, sidH), n)`
+          -- is fresh (since `sidH` is the next-to-allocate slot and `hwo` / `hhyb1` rule out
+          -- recorded sessions there).
+          have hBfresh : sB.responses (tag, n) = none := by
+            rw [← Option.not_isSome_iff_eq_none, hInv.2.2.2.1]
+            exact hncoll
+          have hSnNone : sH.1.sessionNonce (tag, sidH) = none := by
+            -- `sidH.val = sH.1.sessionsUsed tag`, so by `hInv.hwo` (clause 7) the session-nonce is
+            -- `none`.
+            exact hInv.2.2.2.2.2.2.1 tag sidH (le_refl _)
+          have hHcellNone : sH.2 ((tag, sidH), n) = none := by
+            -- Contrapositive of `hhyb1` (clause 8): if the hybrid cache cell were some, the
+            -- session-nonce would be `some n`, contradicting `hSnNone`.
+            rw [← Option.not_isSome_iff_eq_none]
+            intro hsome
+            have hsn := hInv.2.2.2.2.2.2.2.1 tag sidH n hsome
+            rw [hSnNone] at hsn
+            cases hsn
           sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
