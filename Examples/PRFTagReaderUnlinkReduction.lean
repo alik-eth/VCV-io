@@ -6060,24 +6060,24 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
               rw [← OracleComp.tableExtending_update_of_none sH.2 gH hHcellNone u,
                 ← OracleComp.tableExtending_cacheQuery sH.2 gH ((tag, sidH), n) u]
             set contH : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → Digest →
-                ProbComp (Bool × HybridState TagId Nonce sessionsPerTag) :=
+                ProbComp Bool :=
               fun gH u =>
                 (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
                   (Digest := Digest) (sessionsPerTag := sessionsPerTag)
                   (OracleComp.tableExtending sH.2 gH))
-                  (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)
+                  (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' (advH n)
               with hcontH
             have hRHS_lift :
                 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                    Prod.fst <$> contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
+                    contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
                 = 𝒟[($ᵗ Digest) >>= fun u =>
                     ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                    Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u] := by
+                    contH (Function.update gH ((tag, sidH), n) u) u] := by
               have hStep1 :
                   𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                      Prod.fst <$> contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
+                      contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
                   = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                      Prod.fst <$> contH gH (gH ((tag, sidH), n))] := by
+                      contH gH (gH ((tag, sidH), n))] := by
                 refine evalDist_bind_congr_of_support _ _ _ fun gH _ => ?_
                 rw [hHcellRead gH]
               rw [hStep1]
@@ -6085,27 +6085,25 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                 ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
               exact evalDist_uniformSample_bind_cell_extract (R := Digest)
                 (D := (TagId × Fin sessionsPerTag) × Nonce) ((tag, sidH), n)
-                (fun gH u => Prod.fst <$> contH gH u)
+                (fun gH u => contH gH u)
             have hRHS_align :
                 𝒟[($ᵗ Digest) >>= fun u =>
                     ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                    Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u]
+                    contH (Function.update gH ((tag, sidH), n) u) u]
                 = 𝒟[($ᵗ Digest) >>= fun u =>
                     ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-                    Prod.fst <$>
                       (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
                         (Digest := Digest) (sessionsPerTag := sessionsPerTag)
                         (OracleComp.tableExtending (sH.2.cacheQuery ((tag, sidH), n) u) gH))
-                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)] := by
+                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' (advH n)] := by
               refine evalDist_bind_congr_of_support _ _ _ fun u _ => ?_
               refine evalDist_bind_congr_of_support _ _ _ fun gH _ => ?_
-              show 𝒟[Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u] = _
+              show 𝒟[contH (Function.update gH ((tag, sidH), n) u) u] = _
               rw [hcontH]
-              show 𝒟[Prod.fst <$>
-                  (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
-                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-                    (OracleComp.tableExtending sH.2 (Function.update gH ((tag, sidH), n) u)))
-                    (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)] = _
+              show 𝒟[(simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending sH.2 (Function.update gH ((tag, sidH), n) u)))
+                  (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' (advH n)] = _
               rw [hHpatchTable gH u]
             -- **Multi-side BAD cell-patch transformation.** Same `contM`/`hMcellRead`/`hMpatchTable`
             -- machinery as the LHS lift, just with the `(z.1, z.2.2)` projection.
@@ -6164,7 +6162,29 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                     (advM, multipleBadAdvance tag sB
                       (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] = _
               rw [hMpatchTable gM u]
-            sorry
+            -- **Final integration step.** Rewrite the goal using the three cell-patch lifts to
+            -- expose a shared outer `u ← $ᵗ Digest`; apply the disagreement-free pointwise bind
+            -- bound (`D := fun _ => False`) with `hIh u` as the pointwise per-`u` inequality.
+            -- Unfold `contM`/`contH` in the lift hypotheses to match the goal's syntactic form
+            -- (the `set`-introduced abbreviations are propositional, not definitional, so the
+            -- goal does not see them after subsequent tactics).
+            simp only [hcontM, hcontH]
+              at hLHS_lift hLHS_align hRHS_lift hRHS_align hBAD_lift hBAD_align
+            rw [show probEvent _ _ = _ from
+                probEvent_congr' (fun _ _ => Iff.rfl) (hLHS_lift.trans hLHS_align),
+              show probEvent _ _ = _ from
+                probEvent_congr' (fun _ _ => Iff.rfl) (hRHS_lift.trans hRHS_align),
+              show probEvent _ _ = _ from
+                probEvent_congr' (fun _ _ => Iff.rfl) (hBAD_lift.trans hBAD_align)]
+            refine probEvent_bind_le_add_bad_of_disagree'
+              (D := fun _ : Digest => False)
+              (fun u _ hF => absurd hF id)
+              (fun u _ _ => ?_)
+            -- The pointwise inequality is `hIh u`, with `Pr[= true | ·]` normalized to
+            -- `probEvent (· = true) ·` by `← probEvent_eq_eq_probOutput`.
+            have hu := hIh u
+            simp only [← probEvent_eq_eq_probOutput] at hu
+            exact hu
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
             -- makes 0 reader queries at nonce `n`, so the off-collision reader path is closed and
