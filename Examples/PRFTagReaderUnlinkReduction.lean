@@ -5364,25 +5364,39 @@ exactly as `hybridCoupled_le_singleIdeal_add_readerSlack_aux`.
 
 ### Open obligation (the two `query_bind` cases)
 
-The `tag` and `reader` steps are unproven. The proof architecture above is sound, and the
-supporting lemmas (`couplingEmbed`, `chooseSid`, `couplingEmbed_injective`,
-`evalDist_couplingProject_uniformSample`, `probEvent_bind_le_add_bad_disagree`,
-`evalDist_uniformSample_patchList`) are in place; what is missing is a draw-ordering bridge.
+The `tag` slot-exhausted branch is closed (both handlers return `pure (none, …)` with state
+untouched, so the step collapses to the continuation `f none` and the goal is exactly `ih`). The
+two remaining `sorry`s are:
 
-`couplingEmbed sn (tag,n) = ((tag, chooseSid sn tag n), n)` selects the session that drew `n`, so
-recovering `gM` from `gH` requires `sn` to be *the run's own session-nonce map*. But `sn` is a
-random variable: each tag query samples its nonce by `$ᵗ Nonce`, so `sn` is realized only as the
-induction proceeds, whereas the table draws `gM`/`gH` sit at the top of each `Pr[…]` term and the
-induction hypothesis re-draws them per continuation. `evalDist_couplingProject_uniformSample`
-needs a *constant* `sn`.
+1. The **tag step, slot-available branch.** With `hslot : sM.1.sessionsUsed tag < sessionsPerTag`,
+   both handlers unfold to `nonce ← $ᵗ Nonce` followed by a fresh per-cell read:
+   `tableExtending sM.2 gM (tag, nonce)` on the multiple side, `tableExtending sH.2 gH ((tag,sid),
+   nonce)` on the hybrid side, where `sid = ⟨sM.1.sessionsUsed tag, hslot⟩` is statically known.
+   The cleanest split is on collision rather than on the global `couplingEmbed`: at each tag step
+   the eager caches `sM.2`/`sH.2` carry only *tag-drawn* cells (the eager reader does not write
+   them; only the `ih`-recording at past tag draws does), so a cell `sM.2 (tag, nonce)` being
+   `some w` means a past session of `tag` already drew `nonce` — exactly the bad event. Hence:
 
-The naive remedy — hoist every `$ᵗ Nonce` draw above the table draw to fix the whole trace first
-— is unsound for an *adaptive* adversary: the adversary branches on the digests it observes, so
-the number and positions of nonce draws themselves depend on the sampled table. A correct closure
-must instead couple incrementally — patching the single hybrid cell `((tag, sid), n)` at the
-moment that query's nonce `n` is drawn (via `evalDist_uniformSample_bind_update`, the cell being
-fresh off the bad event), rather than projecting a pre-sampled global table through a fixed
-`couplingEmbed sn`. This per-query local patch is the genuine remaining content of both cases. -/
+   * **Bad branch** (`∃ sid', sH.1.sessionNonce (tag, sid') = some nonce`): `multipleBadAdvance`
+     fires `bad`, the monotone lemma `multipleBadQueryImpl_step_preserves_bad` propagates it to
+     the output, and the whole branch is absorbed into the `Pr[·.2.bad]` term via
+     `probEvent_bind_le_add_bad_of_disagree'`.
+   * **Fresh branch** (off-collision): `sM.2 (tag, nonce) = none` and
+     `sH.2 ((tag,sid), nonce) = none` (by `HopACoupling`'s `hcons`+`hwo`), so the two cell reads
+     are independent uniform draws of `gM` and `gH`. Couple them via two applications of
+     `evalDist_uniformSample_bind_update` (one per table) sharing a single fresh `u ← $ᵗ Digest`;
+     record `(tag, nonce) ↦ u` into both caches, advance the multiple/hybrid/bad components by
+     `HopACoupling_tag_step`, and recurse with `ih` at the extended cache.
+
+2. The **reader step.** Both readers fold over the column at `transcript.nonce`. Per-cell
+   coupling from the tag-step patching maintains `tableExtending sM.2 gM (tag, n) =
+   tableExtending sH.2 gH ((tag, chosen-sid), n)` for every tag-drawn `(tag, n)`. For non-recorded
+   `(tag, n)`, the multiple reads a fresh `gM (tag, n)` which can spuriously match the
+   authenticator with probability `1 / |Digest|`, but the hybrid skips that slot — so the
+   disagreement set carries mass `|TagId| / |Digest|` per reader query, charged once via
+   `probEvent_multipleReader_disagree_le` + `multipleReader_accepts_of_hybridCacheAccepts`, then
+   `hdist` rules out a future reader query at the same nonce so the bookkeeping does not double-
+   count; recurse with `qR' = qR - 1` and an updated `HopAColFresh`. -/
 private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
