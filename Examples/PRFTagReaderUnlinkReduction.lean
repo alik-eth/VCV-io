@@ -5759,7 +5759,28 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
             have hsn := hInv.2.2.2.2.2.2.2.1 tag sidH n hsome
             rw [hSnNone] at hsn
             cases hsn
-          sorry
+          by_cases hMcellNone : sM.2 (tag, n) = none
+          · -- **Sub-case A (principal): the multi cache is unfilled at `(tag, n)`.** Couple the
+            -- two outer table draws `gM, gH` via two `evalDist_uniformSample_bind_update_map`
+            -- applications sharing one fresh `u ← $ᵗ Digest`: after patching,
+            -- `tableExtending sM.2 (gM_patched) (tag, n) = u` (by `tableExtending_update_of_none`
+            -- and `hMcellNone`) and `tableExtending sH.2 (gH_patched) ((tag, sidH), n) = u`
+            -- (by `hHcellNone`). The advanced multi state `mbAdv tag sB (some ⟨n, u⟩)` has
+            -- `bad = false || (sB.responses (tag, n)).isSome = false || false = false` (by
+            -- `hBfresh`), so the new `HopACoupling_tag_step tag n u … hMcellNone` holds and
+            -- `ih (some ⟨n, u⟩) qR (advM, sM.2.cacheQuery (tag, n) u)
+            --     (advH n_with_session, sH.2.cacheQuery ((tag, sidH), n) u)
+            --     (mbAdv tag sB (some ⟨n, u⟩))` provides the inductive bound at the patched
+            -- states.
+            sorry
+          · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
+            -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
+            -- makes 0 reader queries at nonce `n`, so the off-collision reader path is closed and
+            -- the multi-side read is deterministic (`tableExtending sM.2 gM (tag, n) = d`).
+            -- The hybrid side still draws a fresh `u`, so this branch needs a separate
+            -- `evalDist_uniformSample_bind_update_map` argument on the hybrid side together
+            -- with the constancy of the multi-side residual continuation in `gM (tag, n)`.
+            sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
         have hnotH : ¬ sH.1.sessionsUsed tag < sessionsPerTag := by
