@@ -5507,7 +5507,7 @@ two remaining `sorry`s are:
    `hdist` rules out a future reader query at the same nonce so the bookkeeping does not double-
    count; recurse with `qR' = qR - 1` and an updated `HopAColFresh`. -/
 private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
-    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT : ℕ)
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (sH : HybridState TagId Nonce sessionsPerTag ×
       (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
@@ -5536,9 +5536,9 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
             (Digest := Digest) (sessionsPerTag := sessionsPerTag)
             (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
   classical
-  induction oa using OracleComp.inductionOn generalizing qR qT sM sH sB with
+  induction oa using OracleComp.inductionOn generalizing qR qT qRInit sM sH sB with
   | pure b =>
     simp only [simulateQ_pure, StateT.run_pure, StateT.run'_eq, map_pure, bind_pure_comp]
     have h1 : Pr[= true | (fun _ => b) <$> ($ᵗ (TagId × Nonce → Digest))] =
@@ -5967,9 +5967,9 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                           (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] +
                   ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
                     (Fintype.card Digest : ℝ≥0∞) +
-                  ((qR * qT' : ℕ) : ℝ≥0∞) /
+                  ((qRInit * qT' : ℕ) : ℝ≥0∞) /
                     (Fintype.card Nonce : ℝ≥0∞) := fun u =>
-              ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
+              ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT' qRInit
                 (advM, sM.2.cacheQuery (tag, n) u)
                 (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
                 (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
@@ -6275,10 +6275,10 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
             = pure (none, sH.1) :=
           fun gS => hybridTableHandler_tag_run_of_not_lt gS tag sH.1 hnotH
         simp only [hM, hH, pure_bind]
-        -- Weaken the IH's `qR * qT' / |Nonce|` slack to the head's `qR * (qT' + 1) / |Nonce|`.
-        -- The `pure_bind` simp lets the goal expose its plain-IH shape; the `gcongr` subgoals on
-        -- the success/bad terms are reflexive after that, and only the slack weakening remains.
-        refine (ih none qR qT' sM sH sB hInv (hqRf none) (hqTf none) (hdistf none)
+        -- Weaken the IH's `qRInit * qT' / |Nonce|` slack to the head's
+        -- `qRInit * (qT' + 1) / |Nonce|`. `pure_bind` simp aligns the do-block shape; `gcongr`
+        -- decomposes the +-chain, leaving only the slack weakening.
+        refine (ih none qR qT' qRInit sM sH sB hInv (hqRf none) (hqTf none) (hdistf none)
             (hfreshf none)).trans ?_
         gcongr <;> first | rfl | omega
     | inr transcript =>
@@ -6299,7 +6299,7 @@ is bounded by the lazy hybrid handler's plus the bad-event probability plus the 
 `evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`); the resulting deterministic runs are
 coupled cell-by-cell by `multipleBadEager_le_hybridEager_aux`. -/
 private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Fintype Digest]
-    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT : ℕ)
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (sH : HybridState TagId Nonce sessionsPerTag ×
       (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
@@ -6318,7 +6318,7 @@ private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Finty
         (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
           (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
   classical
   -- **Eager route, step A.** Eagerize all three `Pr` terms with the landed equivalences, then
   -- discharge the resulting eager-coupled bound by `multipleBadEager_le_hybridEager_aux`.
@@ -6406,7 +6406,7 @@ private lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Finty
     rw [show ((sH.1, sH.2) : HybridState TagId Nonce sessionsPerTag × _) = sH from rfl] at this
     rw [this]
   rw [hMsucc, hHsucc, hMbad]
-  exact multipleBadEager_le_hybridEager_aux oa qR qT sM sH sB hInv hqR hqT hdist hfresh
+  exact multipleBadEager_le_hybridEager_aux oa qR qT qRInit sM sH sB hInv hqR hqT hdist hfresh
 
 /-- **Hop A.** Under `HasDistinctUnlinkReaderNonces` and a reader-query bound `qReader`, the
 multiple-session ideal world succeeds with probability at most that of the hybrid world plus the
@@ -6430,7 +6430,7 @@ theorem multipleIdeal_le_hybrid_add_bad [Fintype Nonce] [Fintype Digest]
       ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
   rw [← probOutput_multipleBad_run'_eq_multipleIdeal adversary (UnlinkState.init, ∅)
     UnlinkBadState.init]
-  exact multipleBad_le_hybrid_add_bad_add_slack_aux adversary qReader qTag
+  exact multipleBad_le_hybrid_add_bad_add_slack_aux adversary qReader qTag qReader
     (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init
     HopACoupling_init hqReader hqTag
     ((hasDistinctUnlinkReaderNonces_iff adversary).mp hdist)
