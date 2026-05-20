@@ -6107,6 +6107,63 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                     (OracleComp.tableExtending sH.2 (Function.update gH ((tag, sidH), n) u)))
                     (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)] = _
               rw [hHpatchTable gH u]
+            -- **Multi-side BAD cell-patch transformation.** Same `contM`/`hMcellRead`/`hMpatchTable`
+            -- machinery as the LHS lift, just with the `(z.1, z.2.2)` projection.
+            have hBAD_lift :
+                𝒟[($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$>
+                      contM gM (OracleComp.tableExtending sM.2 gM (tag, n))]
+                = 𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$> contM (Function.update gM (tag, n) u) u] := by
+              have hStep1 :
+                  𝒟[($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        contM gM (OracleComp.tableExtending sM.2 gM (tag, n))]
+                  = 𝒟[($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$> contM gM (gM (tag, n))] := by
+                refine evalDist_bind_congr_of_support _ _ _ fun gM _ => ?_
+                rw [hMcellRead gM]
+              rw [hStep1]
+              haveI : Nonempty Digest :=
+                ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+              exact evalDist_uniformSample_bind_cell_extract (R := Digest)
+                (D := TagId × Nonce) (tag, n)
+                (fun gM u =>
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      (z.1, z.2.2)) <$> contM gM u)
+            have hBAD_align :
+                𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$> contM (Function.update gM (tag, n) u) u]
+                = 𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$>
+                      (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending (sM.2.cacheQuery (tag, n) u) gM))
+                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] := by
+              refine evalDist_bind_congr_of_support _ _ _ fun u _ => ?_
+              refine evalDist_bind_congr_of_support _ _ _ fun gM _ => ?_
+              show 𝒟[(fun z => (z.1, z.2.2)) <$>
+                  contM (Function.update gM (tag, n) u) u] = _
+              rw [hcontM]
+              show 𝒟[(fun z => (z.1, z.2.2)) <$>
+                  (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending sM.2 (Function.update gM (tag, n) u)))
+                    (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                    (advM, multipleBadAdvance tag sB
+                      (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] = _
+              rw [hMpatchTable gM u]
             sorry
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
