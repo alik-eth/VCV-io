@@ -6045,6 +6045,68 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                     (advM, multipleBadAdvance tag sB
                       (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] = _
               rw [hMpatchTable gM u]
+            -- **Hybrid-side cell-patch transformation.** Same shape as the multi side, with the
+            -- hybrid cell `((tag, sidH), n)`, the hybrid handler `hybridTableHandler`, and the
+            -- hybrid post-state `advH n`. The cell-is-none hypothesis is `hHcellNone`.
+            have hHcellRead : ∀ gH : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                OracleComp.tableExtending sH.2 gH ((tag, sidH), n) = gH ((tag, sidH), n) := by
+              intro gH
+              simp [OracleComp.tableExtending, hHcellNone]
+            have hHpatchTable :
+                ∀ (gH : (TagId × Fin sessionsPerTag) × Nonce → Digest) (u : Digest),
+                  OracleComp.tableExtending sH.2 (Function.update gH ((tag, sidH), n) u)
+                    = OracleComp.tableExtending (sH.2.cacheQuery ((tag, sidH), n) u) gH := by
+              intro gH u
+              rw [← OracleComp.tableExtending_update_of_none sH.2 gH hHcellNone u,
+                ← OracleComp.tableExtending_cacheQuery sH.2 gH ((tag, sidH), n) u]
+            set contH : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → Digest →
+                ProbComp (Bool × HybridState TagId Nonce sessionsPerTag) :=
+              fun gH u =>
+                (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending sH.2 gH))
+                  (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)
+              with hcontH
+            have hRHS_lift :
+                𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                    Prod.fst <$> contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
+                = 𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                    Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u] := by
+              have hStep1 :
+                  𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                      Prod.fst <$> contH gH (OracleComp.tableExtending sH.2 gH ((tag, sidH), n))]
+                  = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                      Prod.fst <$> contH gH (gH ((tag, sidH), n))] := by
+                refine evalDist_bind_congr_of_support _ _ _ fun gH _ => ?_
+                rw [hHcellRead gH]
+              rw [hStep1]
+              haveI : Nonempty Digest :=
+                ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+              exact evalDist_uniformSample_bind_cell_extract (R := Digest)
+                (D := (TagId × Fin sessionsPerTag) × Nonce) ((tag, sidH), n)
+                (fun gH u => Prod.fst <$> contH gH u)
+            have hRHS_align :
+                𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                    Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u]
+                = 𝒟[($ᵗ Digest) >>= fun u =>
+                    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+                    Prod.fst <$>
+                      (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending (sH.2.cacheQuery ((tag, sidH), n) u) gH))
+                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)] := by
+              refine evalDist_bind_congr_of_support _ _ _ fun u _ => ?_
+              refine evalDist_bind_congr_of_support _ _ _ fun gH _ => ?_
+              show 𝒟[Prod.fst <$> contH (Function.update gH ((tag, sidH), n) u) u] = _
+              rw [hcontH]
+              show 𝒟[Prod.fst <$>
+                  (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending sH.2 (Function.update gH ((tag, sidH), n) u)))
+                    (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run (advH n)] = _
+              rw [hHpatchTable gH u]
             sorry
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
