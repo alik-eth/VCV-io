@@ -1569,6 +1569,63 @@ private lemma evalDist_idealCacheStep_bind_uniformTable {D : Type} [DecidableEq 
   · dsimp only
     rw [pure_bind]
 
+omit [DecidableEq Digest] in
+/-- **Single-cell extraction at the bind level.** Drawing a uniform function table `g : D → R` and
+then running an arbitrary continuation that depends on `g` and on the cell value `g t` is
+distributionally equal to drawing the cell value `u : R` uniformly first, then drawing `g`, then
+running the continuation against the `t`-update of `g` (whose `t`-cell is `u`).
+
+This is the bind-level lift of `evalDist_uniformSample_bind_update_map`: instead of carrying a
+`pure (ψ g)`-only continuation, the result is parametric over an arbitrary `ProbComp β`-valued
+continuation, exposing the cell read `g t` outside the table draw. It is the reusable
+cell-extraction step underlying the cell-patch coupling in the hop-A fresh tag-step branch. -/
+private lemma evalDist_uniformSample_bind_cell_extract {D R : Type}
+    [Finite D] [DecidableEq D] [Finite R] [Nonempty R]
+    [SampleableType R] [SampleableType (D → R)] (t : D) {β : Type}
+    (cont : (D → R) → R → ProbComp β) :
+    𝒟[do let g ← $ᵗ (D → R); cont g (g t)] =
+      𝒟[do let u ← $ᵗ R; let g ← $ᵗ (D → R); cont (Function.update g t u) u] := by
+  classical
+  -- Factor both sides through a `pure (g, g t)` / `pure (Function.update g t u, u)` pair, then
+  -- apply `evalDist_uniformSample_bind_update_map` on the inner pure layer.
+  have hLeq :
+      (do let g ← $ᵗ (D → R); cont g (g t))
+        = ((do let g ← $ᵗ (D → R); pure (g, g t)) >>= fun p : (D → R) × R => cont p.1 p.2) := by
+    simp [bind_assoc, pure_bind]
+  have hReq :
+      (do let u ← $ᵗ R; let g ← $ᵗ (D → R); cont (Function.update g t u) u)
+        = ((do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u, u))
+            >>= fun p : (D → R) × R => cont p.1 p.2) := by
+    simp [bind_assoc, pure_bind]
+  rw [hLeq, hReq]
+  have hpureEq : ∀ (g : D → R) (u : R),
+      (Function.update g t u, u)
+        = ((fun g' : D → R => (g', g' t)) (Function.update g t u)) := by
+    intro g u
+    show (Function.update g t u, u)
+        = (Function.update g t u, (Function.update g t u) t)
+    have hself : (Function.update g t u) t = u := Function.update_self (β := fun _ => R) t u g
+    rw [hself]
+  have hcore :
+      𝒟[do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u, u)]
+        = 𝒟[do let g ← $ᵗ (D → R); pure (g, g t)] := by
+    have hrw :
+        (do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u, u))
+          = (do let u ← $ᵗ R; let g ← $ᵗ (D → R);
+                pure ((fun g' : D → R => (g', g' t)) (Function.update g t u))) := by
+      refine bind_congr fun u => bind_congr fun g => ?_
+      rw [hpureEq g u]
+    rw [hrw]
+    exact OracleComp.evalDist_uniformSample_bind_update_map (R := R) t
+      (fun g' => (g', g' t))
+  -- Lift `hcore` through the outer continuation `fun p => cont p.1 p.2`.
+  refine evalDist_ext fun y => ?_
+  rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
+  refine tsum_congr fun p => ?_
+  rw [show Pr[= p | (do let g ← $ᵗ (D → R); pure (g, g t))]
+        = Pr[= p | (do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u, u))]
+      from probOutput_congr rfl hcore.symm]
+
 /-! #### Milestone 1: the reader table-iteration lemma
 
 `idealCacheMapM` folds the lazy random-oracle lookup `idealCacheStep` over a list of cache cells —
