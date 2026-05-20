@@ -5859,6 +5859,47 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                     rw [Function.update_of_ne hts]
                     exact hsn
                 exact hfreshf (some (⟨n, u⟩ : TagTranscript Nonce Digest)) n' tag' hcell' hns'
+            -- **Per-`u` inductive hypothesis.** All preconditions of `ih` are now in scope at
+            -- the cacheQuery-extended states. The remaining work is to relate the goal's outer
+            -- `gM`/`gH` draws (where the patched cell is read from `tableExtending sM.2 gM` /
+            -- `tableExtending sH.2 gH`) to this `ih` shape (where the cell read from
+            -- `tableExtending (sM.2.cacheQuery (tag, n) u) gM` / `tableExtending (...) gH` is
+            -- deterministically `u`), via `evalDist_uniformSample_bind_update_map` and
+            -- `tableExtending_update_of_none` at each side.
+            have hIh : ∀ u : Digest,
+                Pr[= true | do
+                    let gM ← $ᵗ (TagId × Nonce → Digest)
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        z.1) <$>
+                      (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending (sM.2.cacheQuery (tag, n) u) gM))
+                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] ≤
+                  Pr[= true | do
+                    let gH ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending (sH.2.cacheQuery ((tag, sidH), n) u) gH))
+                      (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' (advH n)] +
+                  Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true | do
+                    let gM ← $ᵗ (TagId × Nonce → Digest)
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$>
+                      (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending (sM.2.cacheQuery (tag, n) u) gM))
+                        (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, u⟩ : TagTranscript Nonce Digest)))] +
+                  ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
+                    (Fintype.card Digest : ℝ≥0∞) := fun u =>
+              ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR
+                (advM, sM.2.cacheQuery (tag, n) u)
+                (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
+                (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+                (hInvNew u) (hqRf _) (hdistf _) (hFreshNew u)
             sorry
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
