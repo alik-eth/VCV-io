@@ -5458,11 +5458,13 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
         rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
         simpa [pReaderNonce] using hb.2 u
       by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
-      · -- **Tag step (open).** Unfold both table-handler tag queries to their nonce-sampling forms
-        -- (`multipleTableHandler_tag_run_of_lt` / `hybridTableHandler_tag_run_of_lt`), couple the
-        -- two independent uniform table draws `gM`/`gH` so the nonce-sampled cell reads agree, and
-        -- recurse via `ih`. A within-tag repeated nonce is charged to `Pr[bad]` via
-        -- `probEvent_bind_le_add_bad_of_disagree'`.
+      · -- **Slot-available tag step (open).** Unfold both table handlers to their nonce-sampling
+        -- forms, commute the table and nonce draws so the nonce is outermost, then case-split on
+        -- collision via `probEvent_bind_le_add_bad_of_disagree'`: on collision, multi's bad fires
+        -- and the branch is absorbed into `Pr[bad]`; off collision, both cells are fresh uniforms
+        -- — couple them via a shared `u ← $ᵗ Digest` (two `evalDist_uniformSample_bind_update`
+        -- applications), record into both caches, advance by `HopACoupling_tag_step`, recurse
+        -- via `ih`.
         sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
