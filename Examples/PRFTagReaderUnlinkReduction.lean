@@ -5766,12 +5766,61 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
             -- `tableExtending sM.2 (gM_patched) (tag, n) = u` (by `tableExtending_update_of_none`
             -- and `hMcellNone`) and `tableExtending sH.2 (gH_patched) ((tag, sidH), n) = u`
             -- (by `hHcellNone`). The advanced multi state `mbAdv tag sB (some ⟨n, u⟩)` has
-            -- `bad = false || (sB.responses (tag, n)).isSome = false || false = false` (by
-            -- `hBfresh`), so the new `HopACoupling_tag_step tag n u … hMcellNone` holds and
+            -- `bad = false` (by `hBfresh`), so `HopACoupling_tag_step` holds at every `u` and
             -- `ih (some ⟨n, u⟩) qR (advM, sM.2.cacheQuery (tag, n) u)
             --     (advH n_with_session, sH.2.cacheQuery ((tag, sidH), n) u)
             --     (mbAdv tag sB (some ⟨n, u⟩))` provides the inductive bound at the patched
             -- states.
+            --
+            -- **Per-`u` post-state bad flag.** With `sB.responses (tag, n) = none`,
+            -- `multipleBadAdvance` does not flip `bad`, so the post-bad-state is `false`-flagged at
+            -- every `u`.
+            have hPostBad : ∀ u : Digest,
+                (multipleBadAdvance tag sB
+                  (some (⟨n, u⟩ : TagTranscript Nonce Digest))).bad = false := by
+              intro u
+              simp [multipleBadAdvance, hInv.2.2.1, hBfresh]
+            -- **Per-`u` post-state coupling.** With both multi and hybrid caches unfilled at the
+            -- target cell, `HopACoupling_tag_step` packages the advance of all three states.
+            -- We reshape `advH n` and `multipleBadAdvance tag sB (some ⟨n, u⟩)` into the
+            -- canonical post-state form expected by the lemma.
+            have hcMH' : sM.1.sessionsUsed tag = sH.1.sessionsUsed tag := congrFun hInv.1 tag
+            have hsidEq : (⟨sM.1.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag) = sidH := by
+              apply Fin.eq_of_val_eq; exact hcMH'
+            have hInvNew : ∀ u : Digest,
+                HopACoupling (sessionsPerTag := sessionsPerTag)
+                  ({ sM.1 with sessionsUsed :=
+                        Function.update sM.1.sessionsUsed tag (sM.1.sessionsUsed tag + 1) },
+                    sM.2.cacheQuery (tag, n) u)
+                  (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
+                  (multipleBadAdvance tag sB
+                    (some (⟨n, u⟩ : TagTranscript Nonce Digest))) := by
+              intro u
+              have hstep := HopACoupling_tag_step (sessionsPerTag := sessionsPerTag)
+                tag n u sM sH sB hInv hslot hMcellNone
+              -- `HopACoupling_tag_step` produces post-hybrid state with `⟨sM.1.sessionsUsed tag, hslot⟩`
+              -- as the new session index; rewrite to the user-defined `sidH`.
+              rw [hsidEq] at hstep
+              -- Reshape `multipleBadAdvance tag sB (some ⟨n, u⟩)` to the explicit record form.
+              have hBadEq :
+                  multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest))
+                  = ({ sessionsUsed :=
+                          Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1),
+                       responses := sB.responses.cacheQuery (tag, n)
+                         (u :: Option.getD (sB.responses (tag, n)) []),
+                       bad := sB.bad || (sB.responses (tag, n)).isSome } :
+                      UnlinkBadState TagId Nonce Digest) := by
+                simp [multipleBadAdvance]
+              rw [hBadEq]
+              -- Reshape `advH n` to the explicit `HybridState` record form used by the lemma.
+              have hadvHEq : advH n
+                  = ({ sessionsUsed :=
+                          Function.update sH.1.sessionsUsed tag (sH.1.sessionsUsed tag + 1),
+                       sessionNonce := Function.update sH.1.sessionNonce (tag, sidH) (some n) } :
+                      HybridState TagId Nonce sessionsPerTag) := by
+                rw [hadvH]
+              rw [hadvHEq]
+              exact hstep
             sorry
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
