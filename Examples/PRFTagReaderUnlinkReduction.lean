@@ -5458,13 +5458,45 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
         rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
         simpa [pReaderNonce] using hb.2 u
       by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
-      · -- **Slot-available tag step (open).** Unfold both table handlers to their nonce-sampling
-        -- forms, commute the table and nonce draws so the nonce is outermost, then case-split on
-        -- collision via `probEvent_bind_le_add_bad_of_disagree'`: on collision, multi's bad fires
-        -- and the branch is absorbed into `Pr[bad]`; off collision, both cells are fresh uniforms
-        -- — couple them via a shared `u ← $ᵗ Digest` (two `evalDist_uniformSample_bind_update`
-        -- applications), record into both caches, advance by `HopACoupling_tag_step`, recurse
-        -- via `ih`.
+      · -- **Slot-available tag step.** Unfold both table handlers to their nonce-sampling forms;
+        -- the per-cell coupling at a fresh nonce is delegated to `evalDist_uniformSample_bind_update`
+        -- on each side. The bad/fresh split charges collisions into `Pr[·.2.bad]` and discharges
+        -- the fresh case by `HopACoupling_tag_step` + `ih`.
+        have hslotH : sH.1.sessionsUsed tag < sessionsPerTag := by
+          rw [← congrFun hInv.1 tag]; exact hslot
+        set sidH : Fin sessionsPerTag := ⟨sH.1.sessionsUsed tag, hslotH⟩ with hsidH
+        set advM : UnlinkState TagId :=
+          { sM.1 with sessionsUsed :=
+              Function.update sM.1.sessionsUsed tag (sM.1.sessionsUsed tag + 1) } with hadvM
+        set advH : Nonce → HybridState TagId Nonce sessionsPerTag := fun n =>
+          ({ sessionsUsed :=
+                Function.update sH.1.sessionsUsed tag (sH.1.sessionsUsed tag + 1),
+             sessionNonce := Function.update sH.1.sessionNonce (tag, sidH) (some n) } :
+            HybridState TagId Nonce sessionsPerTag) with hadvH
+        -- Multiple-handler unfold at a free slot: sample a nonce, look up the table, advance
+        -- multi/bad. The `← hadvM` rewrite is what lets `simp only [bind_assoc, pure_bind]`
+        -- match (see the parallel proof at line 5189).
+        have hMstep : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM.1, sB)
+            = ($ᵗ Nonce) >>= fun n =>
+                pure (some (⟨n, g (tag, n)⟩ : TagTranscript Nonce Digest),
+                  advM, multipleBadAdvance tag sB
+                    (some (⟨n, g (tag, n)⟩ : TagTranscript Nonce Digest))) := by
+          intro g
+          change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) sM.1
+              >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1)) = _
+          rw [multipleTableHandler_tag_run_of_lt g tag sM.1 hslot, ← hadvM]
+          exact bind_assoc ..
+        -- Hybrid-handler unfold at a free slot.
+        have hHstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) sH.1
+            = ($ᵗ Nonce) >>= fun n =>
+                pure (some (⟨n, gS ((tag, sidH), n)⟩ : TagTranscript Nonce Digest), advH n) := by
+          intro gS
+          rw [hybridTableHandler_tag_run_of_lt gS tag sH.1 hslotH, ← hsidH]
         sorry
       · -- Slot exhausted: both table handlers return `none` with state untouched, so the step
         -- collapses to the continuation `f none` and the goal is exactly the induction hypothesis.
