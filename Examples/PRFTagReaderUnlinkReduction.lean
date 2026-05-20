@@ -5821,6 +5821,44 @@ private lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Diges
                 rw [hadvH]
               rw [hadvHEq]
               exact hstep
+            -- **Per-`u` `HopAColFresh` stability.** The advanced multi cache adds the cell
+            -- `(tag, n)`; the advanced hybrid session-nonce map adds `(tag, sidH) ↦ some n`.
+            -- A cached cell `(tag', n')` with no recorded session in the advanced map either
+            -- coincides with the new entry (contradicting the no-session hypothesis at `n'`) or
+            -- lifts the pre-advance freshness witness `hfreshf (some ⟨n, u⟩)` at `(tag', n')`.
+            have hFreshNew : ∀ u : Digest,
+                HopAColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+                  (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
+                  (sM.2.cacheQuery (tag, n) u) := by
+              intro u n' tag' hcell hns
+              -- Split on whether `(tag', n')` is the freshly cached cell.
+              by_cases hkey : (tag', n') = (tag, n)
+              · -- The advanced session-nonce map sends `(tag, sidH)` to `some n` = `some n'`,
+                -- contradicting the universal `≠ some n'` hypothesis at `sidH`.
+                obtain ⟨htag, hnn⟩ := Prod.mk.inj hkey
+                refine absurd ?_ (hns sidH)
+                show (advH n).sessionNonce (tag', sidH) = some n'
+                rw [hadvH, htag, hnn]
+                exact Function.update_self _ _ _
+              · -- The freshly cached cell is elsewhere; reduce to the pre-advance witness.
+                have hcell' : (sM.2 (tag', n')).isSome := by
+                  rwa [QueryCache.cacheQuery_of_ne _ _ hkey] at hcell
+                have hns' : ∀ sid, sH.1.sessionNonce (tag', sid) ≠ some n' := by
+                  intro sid hsn
+                  -- The pre-advance session-nonce at `(tag', sid)` equals the post-advance
+                  -- value unless `(tag', sid) = (tag, sidH)`; rule out the latter and conclude.
+                  by_cases hts : (tag', sid) = (tag, sidH)
+                  · obtain ⟨htg, hsd⟩ := Prod.mk.inj hts
+                    rw [htg, hsd, hInv.2.2.2.2.2.2.1 tag sidH (le_refl _)] at hsn
+                    cases hsn
+                  · refine hns sid ?_
+                    show (advH n).sessionNonce (tag', sid) = some n'
+                    rw [hadvH]
+                    show Function.update sH.1.sessionNonce (tag, sidH) (some n) (tag', sid) = some n'
+                    rw [Function.update_of_ne hts]
+                    exact hsn
+                exact hfreshf (some (⟨n, u⟩ : TagTranscript Nonce Digest)) n' tag' hcell' hns'
             sorry
           · -- **Sub-case B: the multi cache holds `(tag, n)` from a prior reader query.** By
             -- `hfreshf (some ⟨n, d⟩)` (HopAColFresh) and `hncoll`, the continuation `f (some ⟨n, d⟩)`
