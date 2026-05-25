@@ -531,6 +531,34 @@ def unlinkBadExp
 
 end BadEvent
 
+section AdversaryPredicates
+
+variable {TagId Nonce Digest : Type}
+  [DecidableEq TagId] [DecidableEq Nonce] [DecidableEq Digest]
+  {sessionsPerTag : ℕ}
+
+/-- Predicate marking reader queries whose transcript carries a given `nonce`. The unlinkability
+reduction's reader-side coupling bound is stated against this finer query class, so each reader
+oracle query is charged at most once per nonce. -/
+def pReaderNonce (n : Nonce) : (UnlinkOracleSpec TagId Nonce Digest).Domain → Prop
+  | Sum.inl _ => False
+  | Sum.inr transcript => transcript.nonce = n
+
+instance instDecidablePredPReaderNonce (n : Nonce) :
+    DecidablePred (pReaderNonce (TagId := TagId) (Digest := Digest) n) := fun
+  | Sum.inl _ => isFalse not_false
+  | Sum.inr transcript => decEq transcript.nonce n
+
+/-- The adversary's reader queries carry pairwise-distinct nonces: across the whole computation, no
+two reader queries share a nonce. Formally, for every nonce `n`, the adversary makes at most one
+query in `pReaderNonce n`. This is the standard reader-side restriction in unlinkability proofs:
+the adversary cannot replay the same nonce against the reader, which is what lets the per-cell
+disagreement bound integrate to `qReader · |TagId| / |Digest|` rather than `qReader · qTag`. -/
+def HasDistinctUnlinkReaderNonces (adversary : UnlinkAdversary TagId Nonce Digest) : Prop :=
+  ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pReaderNonce n) 1
+
+end AdversaryPredicates
+
 section Theorems
 
 variable {TagId Nonce Digest K : Type}
