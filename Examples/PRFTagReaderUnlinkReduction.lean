@@ -30,7 +30,9 @@ proven `unlinkBadExp_le_sessionCollisionBound` then gives the explicit session-c
 The bulk of the proof is broken into the dependency chain
 
 ```
-PRFReductions → Table → Hybrid → HopB → HopASetup → HopAEager → MultipleBadCollision
+PRFReductions → Table → Hybrid → HybridToSingle → MultipleToHybrid.Setup
+  → MultipleToHybrid.EagerSetup → MultipleToHybrid.EagerReader
+  → MultipleToHybrid.Eager → MultipleBadCollision
 ```
 
 this top-level module composes those modules into the headline theorems.
