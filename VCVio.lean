@@ -74,6 +74,7 @@ import VCVio.EvalDist.Instances.OptionT
 import VCVio.EvalDist.Instances.ReaderT
 import VCVio.EvalDist.List
 import VCVio.EvalDist.Monad.Basic
+import VCVio.EvalDist.Monad.Disagreement
 import VCVio.EvalDist.Monad.Map
 import VCVio.EvalDist.Monad.Seq
 import VCVio.EvalDist.Option
