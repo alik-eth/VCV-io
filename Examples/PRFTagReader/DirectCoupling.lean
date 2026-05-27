@@ -36,6 +36,10 @@ sub-table of the single-session one.
   multiple-side reader cells `{(tag, nonce) | tag ∈ TagId}` embed (via `slotZeroEmbed`) into the
   single-side reader cells `{((tag, sid), nonce) | tag ∈ TagId, sid ∈ Fin sessionsPerTag}` — the
   cell-level inclusion that underlies the slack-free reader-side bound in subsequent sessions.
+* `mReader_accepts_imp_sReader_accepts` — deterministic reader-side coupling: whenever the
+  multiple-session reader accepts a transcript against the sub-table `slotZeroSubTable gS`, the
+  single-session reader accepts the same transcript against the full table `gS`. The witness
+  `tag` for the multiple side lifts to the witness `(tag, 0)` for the single side.
 
 The `slotZeroEmbed` and `slotZeroSubTable` names are thin, intent-naming aliases over the
 established sibling `projectTable`; the distribution and cell-subset lemmas re-derive the
@@ -181,6 +185,39 @@ lemma card_sReaderCellsFinset (transcript : TagTranscript Nonce Digest) :
     Fintype.card_prod, Fintype.card_fin]
 
 end ReaderCells
+
+/-! ### Reader-side coupling: M acceptance implies S acceptance -/
+
+section ReaderCoupling
+
+variable [Fintype TagId] [DecidableEq Digest]
+
+/-- **Reader-side coupling, deterministic half.** Under the cell-identification embedding
+`slotZeroEmbed`, whenever the multiple-session reader (running against the sub-table
+`slotZeroSubTable gS`) accepts a transcript, the single-session reader (running against the full
+table `gS`) accepts the same transcript.
+
+The proof is purely structural: any multiple-side witness tag `tag` lifts to the single-side
+witness `(tag, 0)`, since `slotZeroSubTable gS (tag, n) = gS ((tag, 0), n)` by definition. This is
+the first half of the off-bad bound `Pr[M_ideal accept ∧ ¬bad] ≤ Pr[S_ideal accept ∧ ¬bad]` in
+the direct M_ideal/S_ideal coupling; no probability or slack is involved. -/
+lemma mReader_accepts_imp_sReader_accepts
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (hM : unlinkReaderAccepts (Slot := TagId)
+      (fun tag nonce =>
+        slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS (tag, nonce))
+      (multiplePattern (TagId := TagId) sessionsPerTag) transcript = true) :
+    unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+      (fun slot nonce => gS (slot, nonce))
+      (singlePattern (TagId := TagId) sessionsPerTag) transcript = true := by
+  unfold unlinkReaderAccepts tagAccepts multiplePattern at hM
+  unfold unlinkReaderAccepts tagAccepts singlePattern
+  simp only [decide_eq_true_eq] at hM ⊢
+  obtain ⟨tag, _, hcell⟩ := hM
+  exact ⟨tag, (0 : Fin sessionsPerTag), hcell⟩
+
+end ReaderCoupling
 
 /-! ### Compatibility with the sibling eager-form -/
 
