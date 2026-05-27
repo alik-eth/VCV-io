@@ -229,6 +229,71 @@ direct-coupling statements into the established sibling phrasing in `Table.lean`
       projectTable (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) gS p := rfl
 
+/-! ### Tag-side coupling: first-session pointwise equality -/
+
+section TagCoupling
+
+variable [DecidableEq TagId] [Fintype TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [DecidableEq Digest]
+
+omit [DecidableEq Nonce] in
+/-- **Tag-step first-session pointwise equality.** When the queried tag has no prior sessions
+(`s.sessionsUsed tag = 0`), the eager-table tag-handler outputs of the multiple-session world
+(running against the sub-table `slotZeroSubTable gS`) and the single-session world (running against
+the full table `gS`) are equal as `ProbComp` values: both sample a fresh nonce uniformly, look up
+the **same** cell `((tag, 0), nonce)` of `gS`, and advance the session counter for `tag` by one.
+
+This is the structural primitive driving the off-bad inequality in the direct M_ideal/S_ideal
+coupling. On the first session of a tag, the multiple-side cell `(tag, nonce)` (under the
+sub-table view) and the single-side cell `((tag, 0), nonce)` (under the full table) coincide, so
+the per-query handler distributions are identical — no probability slack and no bad-event branch.
+Subsequent sessions (`sessionsUsed tag ≥ 1`) instead read disjoint cells on the two sides; the
+"bad" branch captures precisely that disagreement and is handled separately. -/
+lemma multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hzero : s.sessionsUsed tag = 0) :
+    (multipleTableHandler (sessionsPerTag := sessionsPerTag)
+      (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS) (Sum.inl tag) s) =
+      singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) gS
+        (Sum.inl tag) s := by
+  have hslot : s.sessionsUsed tag < sessionsPerTag := by
+    rw [hzero]; exact Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)
+  rw [multipleTableHandler_tag_run_of_lt _ tag s hslot,
+      singleTableHandler_tag_run_of_lt gS tag s hslot]
+  refine bind_congr fun nonce => ?_
+  -- Both sides sample the same nonce; the cell reads coincide because `sessionsUsed tag = 0`
+  -- makes the single-side slot `⟨0, _⟩`, matching the slot-zero embed used by the sub-table.
+  have hsid : (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag) =
+      (0 : Fin sessionsPerTag) := Fin.ext hzero
+  have hcell : gS ((tag, ⟨s.sessionsUsed tag, hslot⟩), nonce) =
+      slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS (tag, nonce) := by
+    rw [slotZeroSubTable_apply, hsid]
+  rw [hcell]
+
+omit [DecidableEq Nonce] in
+/-- **Tag-step first-session pointwise equality, distribution form.** The distribution-level
+restatement of the pointwise equality: under `s.sessionsUsed tag = 0`, the two eager-table tag
+handlers — run on the sub-table `slotZeroSubTable gS` (multiple side) and on the full table `gS`
+(single side) — produce the same output distribution at every fixed `gS`.
+
+This is the per-sample identical-until-bad bind primitive: in a bind chain
+`($ᵗ gS) >>= fun gS => multipleTableHandler ... tag s >>= continuation`, the multiple-side bind
+is interchangeable with the single-side bind whenever the queried tag has no prior sessions. -/
+lemma evalDist_multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero
+    (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hzero : s.sessionsUsed tag = 0) :
+    𝒟[multipleTableHandler (sessionsPerTag := sessionsPerTag)
+        (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS) (Sum.inl tag) s] =
+      𝒟[singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) gS
+          (Sum.inl tag) s] :=
+  congrArg evalDist
+    (multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero
+      gS tag s hzero)
+
+end TagCoupling
+
 end DirectCoupling
 
 end PRFTagReader
