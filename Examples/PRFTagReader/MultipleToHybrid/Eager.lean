@@ -2399,12 +2399,42 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_family [Fintype Nonce] [Fin
           rfl
         simp only [hstep]
         exact ih none qR sM_fam sB_fam (hqRk' none)
-      · -- Slot-availability VARIES across g (some g have slot, others don't). The family aux
-        -- handles this through the structural recursion, but the proof requires the
-        -- marginalization machinery (TODO Session 12c).
+      · -- Slot-availability VARIES across g (mixed slot pattern).
+        -- The slot pattern `g ↦ (sM_fam g).sessionsUsed tag < sessionsPerTag` partitions Pi
+        -- into two sets. On the slot-available subset, the step samples nonce + g(tag,nonce);
+        -- on the exhausted subset, step is `pure (none, ...)`. We can split LHS into the two
+        -- subset contributions, each of which is a "homogeneous" goal.
+        --
+        -- For the headline (constant families), `sM_fam` is constant in `g`, so the slot check
+        -- is uniform — this branch never triggers. Open as Session 12c for the fully general
+        -- family case.
         sorry
     | inr transcript =>
-      -- Reader query — substantive proof (TODO Session 12d).
+      -- **Reader query** — substantive obstacle remains.
+      --
+      -- After unfolding `multipleTableHandler_reader_run`, the step is
+      --   `pure (replyBool g, sM_fam g, multipleBadReaderAdvanceEager transcript g (sB_fam g))`
+      -- with `replyBool g = ReaderReply.ofBool (unlinkReaderAccepts (fun tag n => g(tag, n))
+      -- ... transcript)` — fully g-deterministic. After `pure_bind`, the LHS becomes
+      --   `Pr[event | do g ← uniform; (sim handler g (k (replyBool g))).run (sM_fam g, advSB g)]`
+      -- where `advSB g = multipleBadReaderAdvanceEager transcript g (sB_fam g)`.
+      --
+      -- The IH (for fixed `u`) gives:
+      --   `Pr[... (k u) ...] ≤ Pr_g[(sB_fam'(g)).bR] + (qR-1) · slack`
+      -- but our LHS has `k (replyBool g)` — `oa` depends on `g`.
+      --
+      -- **Splitting on `replyBool g`** (`u ∈ {true, false}`) gives a factor-2 inflation
+      -- (`LHS ≤ 2 · K`), which breaks the `|TagId|/|Digest|` budget.
+      --
+      -- **The clean resolution**: prove the bound via a UNION over FLIP EVENTS (one per reader
+      -- query) — not via structural induction on `oa`. Specifically:
+      --   1. `badReader@final = sB.badReader ∨ (∃ q ≤ qR, flip at q-th reader query)`.
+      --   2. `Pr[union] ≤ Pr[sB.badReader] + ∑_q Pr[flip at q-th] ≤ start_indicator + qR · slack`.
+      --   3. Per `q`, `Pr[flip at q-th reader query] ≤ |TagId|/|Digest|` via marginal
+      --      independence of `g(_, n)` at non-session cells.
+      --
+      -- This requires a "reader query trace" abstraction (the q-th reader query event, given
+      -- the adversary structure + `IsQueryBoundP`). Open as Session 12d.
       sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
