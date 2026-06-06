@@ -2257,21 +2257,46 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager [Fintype Nonce] [Fintype Di
     by_cases hbR : sB.badReader = true
     · simp [hbR]
     · simp [hbR]
-  | query_bind i k _ih =>
-    -- TODO Session 11 continuation: structural induction.
-    -- Tag query: pull `g` outside the step via `bind_assoc`, apply `multipleTableHandler_tag_run_*`
-    --   to expose the nonce sample, then re-apply IH at the same `qR` (tag queries don't decrement
-    --   `·.isRight`-budget).
-    -- Reader query: budget decrements to `qR - 1`. The step is fully deterministic in `g` (see
-    --   `multipleTableHandler_reader_run` + `multipleBadReaderAdvanceEager` def). The post-step
-    --   bad flag is `sB.badReader || (readerTouched n && ∃ tag : g(tag,n) = auth ∧ ...)`. Bound:
-    --   * `sB.badReader = true`: trivial.
-    --   * `sB.badReader = false ∧ readerTouched n = false`: no flip; IH at `qR-1` closes.
-    --   * `sB.badReader = false ∧ readerTouched n = true`: bound
-    --     `Pr_g[∃ tag : g(tag,n) = auth ∧ responses (tag,n) = none] ≤ |TagId|/|Digest|`
-    --     via `evalDist_uniformSample_bind_update` (marginal independence of `g(tag, n)`) and a
-    --     union over `tag ∈ TagId`. Plus IH at `qR-1` for the continuation.
-    sorry
+  | query_bind i k ih =>
+    rw [OracleComp.isQueryBoundP_query_bind_iff] at _hqR
+    obtain ⟨hqR0, hqRk⟩ := _hqR
+    simp_rw [multipleBadTablePathA_run_query_bind']
+    cases i with
+    | inl tag =>
+      -- Tag query: `(inl tag).isRight = false`, so continuation budget stays `qR`.
+      have hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+        intro u; simpa using hqRk u
+      -- Slot dispatch: slot-exhausted is structurally trivial (step is `pure (none, sM, sB)`),
+      -- slot-available involves the nonce-sample + marginalization argument.
+      by_cases hslot : sM.sessionsUsed tag < sessionsPerTag
+      · -- Slot available: nonce sample + g(tag, nonce) lookup.
+        -- TODO Session 11b: marginalization via `evalDist_uniformSample_bind_update` on
+        -- `(tag, nonce)` to replace `g(tag, nonce)` with an independent uniform `u`, then IH.
+        sorry
+      · -- Slot exhausted: `multipleTableHandler_tag_run_of_not_lt` collapses the step to
+        -- `pure (none, sM, sB)` (since `multipleBadAdvance tag sB none = sB` by definition).
+        -- The bind then collapses to `(sim handler g (k none)).run (sM, sB)`, exactly IH-shaped.
+        have hstep : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM, sB) =
+              pure ((none : Option (TagTranscript Nonce Digest)), sM, sB) := by
+          intro g
+          show (multipleTableHandler g (Sum.inl tag)) sM >>=
+            (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1)) = _
+          rw [multipleTableHandler_tag_run_of_not_lt _ tag sM hslot]
+          rfl
+        simp only [hstep]
+        exact ih none qR sM sB (hqRk' none)
+    | inr transcript =>
+      -- Reader query: budget decrements (`(inr _).isRight = true`).
+      -- TODO Session 11c: the reader step is fully `g`-deterministic. Per the definition of
+      -- `multipleBadTableHandlerPathA`'s reader case, the bad state's `badReader` field becomes
+      -- `sB.badReader || (sB.readerTouched n && decide (∃ tag : g(tag,n) = auth ∧
+      -- sB.responses (tag,n) = none))`. Split on `sB.readerTouched transcript.nonce`:
+      --   * `false`: the gate kills the flip; IH at `qR-1` closes immediately.
+      --   * `true`: bound `Pr_g[∃ tag : g(tag,n) = auth ∧ ...] ≤ |TagId|/|Digest|` via marginal
+      --     independence of `g(_, n)`, plus IH at `qR-1` for the continuation.
+      sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
