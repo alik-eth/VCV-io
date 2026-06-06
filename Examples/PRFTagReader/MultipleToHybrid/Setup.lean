@@ -1247,6 +1247,22 @@ lemma multipleBad_run_query_bind' {α : Type}
   rw [simulateQ_query_bind, StateT.run_bind]
   rfl
 
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- Path-A `simulateQ` query-bind unfolding (lazy regime). -/
+lemma multipleBadPathA_run_query_bind' {α : Type}
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) :
+    (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) (liftM (OracleSpec.query t) >>= f)).run s =
+      (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t s) >>= fun p =>
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) (f p.1)).run p.2 := by
+  rw [simulateQ_query_bind, StateT.run_bind]
+  rfl
+
 
 end UnlinkReduction
 
