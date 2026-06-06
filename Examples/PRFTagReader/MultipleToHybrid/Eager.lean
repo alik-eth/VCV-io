@@ -1028,6 +1028,104 @@ theorem multipleIdeal_le_hybrid_add_bad [Fintype Nonce] [Fintype Digest]
   -- Initial multiple cache is empty, so the SubB-off-collision filter is empty.
   simp [QueryCache.empty_apply]
 
+/-! ### Path-A propagation (`hdist`-free headline)
+
+The next two declarations propagate the Session-5 Path-A eager equivalence
+(`evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending`) up to the unlinkability
+headline. The bound shape changes:
+
+* `HasDistinctUnlinkReaderNonces` is **dropped** from the hypotheses.
+* The bad term widens to `bad ∨ badReader`, with `badReader` charged by `multipleBadQueryImplPathA`'s
+  reader step. The union covers what `hdist` previously ruled out structurally: repeat reader
+  queries at the same nonce now flip `badReader` deterministically (gated by the `readerTouched`
+  shadow on `UnlinkBadState`), so the slack `qReader · |TagId| / |Digest|` from the first reader
+  query at each nonce composes with the `badReader` union to bound the multi-vs-hybrid gap.
+
+The Path-A aux `multipleBad_le_hybrid_add_bad_add_slack_aux_PathA` mirrors
+`multipleBad_le_hybrid_add_bad_add_slack_aux` with the same Eager-route plumbing
+(`Pr[…multipleIdealQueryImpl…]` collapses to `Pr[…multipleBadQueryImplPathA…]` via Session 4's
+`probOutput_multipleBadPathA_run'_eq_multipleIdeal`, both sides eagerize via the Session-5
+equivalences). Its body is the central induction
+`multipleBadEager_le_hybridEager_aux_PathA`, which is the Path-A analogue of
+`multipleBadEager_le_hybridEager_aux` and is left as the next milestone in the hdist-removal
+roadmap. -/
+
+/-- **Path-A multiple-to-hybrid, eager-coupled core (scaffold).** Path-A analogue of
+`multipleBad_le_hybrid_add_bad_add_slack_aux`: drops `hdist`, widens the bad-event term to
+`bad ∨ badReader`, and threads the Path-A coupling invariant `MultipleBadPathACoupling sM.2 sB`.
+
+The proof will mirror the original via the Path-A eager equivalence
+`evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` and a Path-A analogue of
+`multipleBadEager_le_hybridEager_aux`. Currently a scaffold pending the central induction. -/
+lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (_hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
+    (_hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
+    (_hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
+    (_hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
+    (_hCacheBound : ∀ tag : TagId,
+      (Finset.univ.filter (fun n : Nonce =>
+        (sM.2 (tag, n)).isSome ∧
+          ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
+        qRInit - qR)
+    (_hqRle : qR ≤ qRInit) :
+    Pr[= true | (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB)] ≤
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' sH] +
+      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+          z.2.2.bad ∨ z.2.2.badReader |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] +
+      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+  -- TODO Session 6 continuation: central induction
+  -- `multipleBadEager_le_hybridEager_aux_PathA`, using `MultipleBadPathACoupling` and the
+  -- Session-5 Path-A eager equivalence to remove `hdist` from the reader step. The shape of
+  -- this bound (drops `hdist`, unions `badReader` into the bad term) is finalised; the body is
+  -- the open obligation.
+  exact absurd hInv (by exact fun _ => sorry)
+
+/-- **Path-A multiple-to-hybrid (`hdist`-free) headline scaffold.** Drops the
+`HasDistinctUnlinkReaderNonces` hypothesis used by `multipleIdeal_le_hybrid_add_bad`; the slack
+absorbed by `hdist` is paid by the `badReader` flag on the Path-A handler, unioned with the
+original `bad` flag.
+
+Reduces (via the Session-4 equivalence `probOutput_multipleBadPathA_run'_eq_multipleIdeal`) to
+`multipleBad_le_hybrid_add_bad_add_slack_aux_PathA`, which is the open obligation. -/
+theorem multipleIdeal_le_hybrid_add_bad_PathA [Fintype Nonce] [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest) (qReader qTag : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
+    (hqTag : OracleComp.IsQueryBoundP adversary (·.isLeft) qTag) :
+    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (UnlinkState.init, ∅)] ≤
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (HybridState.init, ∅)] +
+      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+          z.2.2.bad ∨ z.2.2.badReader |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+          ((UnlinkState.init, ∅), UnlinkBadState.init)] +
+      ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+      ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+  rw [← probOutput_multipleBadPathA_run'_eq_multipleIdeal adversary (UnlinkState.init, ∅)
+    UnlinkBadState.init]
+  refine multipleBad_le_hybrid_add_bad_add_slack_aux_PathA adversary qReader qTag qReader
+    (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init
+    MultipleHybridCoupling_init MultipleBadPathACoupling_init hqReader hqTag
+    (multipleHybridColFresh_init adversary UnlinkBadState.init (HybridState.init, ∅)) ?_ le_rfl
+  intro tag
+  -- Initial multiple cache is empty, so the SubB-off-collision filter is empty.
+  simp [QueryCache.empty_apply]
+
 
 end UnlinkReduction
 
