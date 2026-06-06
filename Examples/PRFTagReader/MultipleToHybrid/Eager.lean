@@ -1050,14 +1050,24 @@ equivalences). Its body is the central induction
 `multipleBadEager_le_hybridEager_aux` and is left as the next milestone in the hdist-removal
 roadmap. -/
 
-/-- **Path-A multiple-to-hybrid, eager-coupled core (scaffold).** Path-A analogue of
-`multipleBad_le_hybrid_add_bad_add_slack_aux`: drops `hdist`, widens the bad-event term to
-`bad ∨ badReader`, and threads the Path-A coupling invariant `MultipleBadPathACoupling sM.2 sB`.
+/-- **Path-A eager-coupled core (scaffold).** Path-A analogue of
+`multipleBadEager_le_hybridEager_aux`: drops `hdist`, widens the bad-event term to
+`bad ∨ badReader`, threads `MultipleBadPathACoupling sM.2 sB`, and uses
+`multipleBadTableHandlerPathA` on the multiple side.
 
-The proof will mirror the original via the Path-A eager equivalence
-`evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` and a Path-A analogue of
-`multipleBadEager_le_hybridEager_aux`. Currently a scaffold pending the central induction. -/
-lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype Digest]
+The pure case is closed verbatim from the original. The `query_bind` cases are the open
+obligation:
+
+* **Tag step.** Verbatim port of the original tag-step branches; `multipleBadTableHandlerPathA`
+  agrees pointwise with `multipleBadTableHandler` on tag queries (the Path-A divergence is
+  reader-only), so the inner per-cell coupling, the bad-vs-fresh split, and
+  `MultipleHybridCoupling_tag_step` carry over unchanged. Coupling preservation:
+  `MultipleBadPathACoupling_tag_advance_{some,none}`.
+* **Reader step.** Path-A analogue of `multipleBadEager_reader_step`: replaces the
+  `hdist` argument (which ruled out future reader queries at the same nonce) with the
+  `badReader` charge under `MultipleBadPathACoupling`. Coupling preservation:
+  `MultipleBadPathACoupling_reader_step` (lazy → post-reader `c'`). -/
+lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
     (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (sH : HybridState TagId Nonce sessionsPerTag ×
@@ -1075,6 +1085,74 @@ lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype
           ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
         qRInit - qR)
     (_hqRle : qR ≤ qRInit) :
+    Pr[= true | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] ≤
+      Pr[= true | do
+        let gH ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending sH.2 gH)) oa).run' sH.1] +
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad ∨ z.2.badReader | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            (z.1, z.2.2)) <$>
+          (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] +
+      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+  classical
+  haveI : Nonempty Digest :=
+    ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  induction oa using OracleComp.inductionOn generalizing qR qT qRInit sM sH sB with
+  | pure b =>
+    -- **Pure case (verbatim port).** Both sides collapse to constant computations under uniform
+    -- table draws; the multi/hybrid difference vanishes by `probOutput_bind_const` +
+    -- `probFailure_uniformSample`.
+    simp only [simulateQ_pure, StateT.run_pure, StateT.run'_eq, map_pure, bind_pure_comp]
+    have h1 : Pr[= true | (fun _ => b) <$> ($ᵗ (TagId × Nonce → Digest))] =
+        Pr[= true | (fun _ => b) <$> ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+      rw [← bind_pure_comp, ← bind_pure_comp, probOutput_bind_const, probOutput_bind_const,
+        probFailure_uniformSample, probFailure_uniformSample]
+    exact le_add_right (le_add_right (le_add_right (le_of_eq h1)))
+  | query_bind t f _ih =>
+    -- TODO Session 7+: tag-step and reader-step query_bind cases.
+    -- Tag steps: verbatim port from `multipleBadEager_le_hybridEager_aux` (PathA agrees on tag
+    --   queries pointwise; coupling preservation via
+    --   `MultipleBadPathACoupling_tag_advance_{some,none}`).
+    -- Reader step: Path-A analogue of `multipleBadEager_reader_step` using
+    --   `MultipleBadPathACoupling_reader_step` + `multipleBadReaderAdvance_eq_Eager_of_coupling`
+    --   in place of `hdist`.
+    exact absurd hInv (by exact fun _ => sorry)
+
+/-- **Path-A multiple-to-hybrid, lazy-form slack bound.** Reduces (via the Session-5 Path-A eager
+equivalence `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` and the existing
+`evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending`) the lazy multi-vs-hybrid bound to
+the eager-coupled core `multipleBadEager_le_hybridEager_aux_PathA`. The reductions are
+mechanical map/bind rearrangements (mirroring the original
+`multipleBad_le_hybrid_add_bad_add_slack_aux`); the actual content lives in the eager-coupled
+core, which is the open obligation. -/
+lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
+    (sM : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hInv : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
+    (hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
+    (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
+    (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
+    (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
+    (hCacheBound : ∀ tag : TagId,
+      (Finset.univ.filter (fun n : Nonce =>
+        (sM.2 (tag, n)).isSome ∧
+          ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
+        qRInit - qR)
+    (hqRle : qR ≤ qRInit) :
     Pr[= true | (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB)] ≤
       Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
@@ -1085,12 +1163,90 @@ lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype
           (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
-  -- TODO Session 6 continuation: central induction
-  -- `multipleBadEager_le_hybridEager_aux_PathA`, using `MultipleBadPathACoupling` and the
-  -- Session-5 Path-A eager equivalence to remove `hdist` from the reader step. The shape of
-  -- this bound (drops `hdist`, unions `badReader` into the bad term) is finalised; the body is
-  -- the open obligation.
-  exact absurd hInv (by exact fun _ => sorry)
+  classical
+  have hM := evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending
+    (sessionsPerTag := sessionsPerTag) oa sM.1 sM.2 sB hAB
+  have hH := evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending oa sH.1 sH.2
+    hInv.2.2.2.2.2.2.2.2.2
+  -- Multiple-side success term: `run' = (·.1) <$> run`, factored through `(z.1,z.2.2) <$> run`.
+  have hMsucc :
+      Pr[= true | (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB)] =
+      Pr[= true | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] := by
+    rw [probOutput_def, probOutput_def]
+    have hlhs : (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' (sM, sB) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.1) <$>
+          ((fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => (z.1, z.2.2)) <$>
+            (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)) := by
+      rw [Functor.map_map]; rfl
+    have hrhs : (do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.1) <$>
+          (do
+            let gM ← $ᵗ (TagId × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)) := by
+      simp only [map_bind, Functor.map_map]
+    have hM' : (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+          (z.1, z.2.2)) <$>
+        𝒟[(simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)]
+        = 𝒟[do
+            let g ← $ᵗ (TagId × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending sM.2 g)) oa).run (sM.1, sB)] := by
+      rw [← evalDist_map]; exact hM
+    rw [hlhs, hrhs, evalDist_map, evalDist_map, evalDist_map, hM']
+  -- Multiple-side bad term: factored through `(z.1,z.2.2) <$> run`, with `bad ∨ badReader`.
+  have hMbad :
+      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+          z.2.2.bad ∨ z.2.2.badReader |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run (sM, sB)] =
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad ∨ z.2.badReader | do
+        let gM ← $ᵗ (TagId × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            (z.1, z.2.2)) <$>
+          (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] := by
+    have hbadev :
+        (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+            z.2.2.bad ∨ z.2.2.badReader) =
+        (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.2.bad ∨ w.2.badReader) ∘
+          (fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => (z.1, z.2.2)) := rfl
+    rw [hbadev, ← probEvent_map]
+    exact probEvent_congr' (fun _ _ => Iff.rfl) hM
+  -- Hybrid-side success term.
+  have hHsucc :
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run' sH] =
+      Pr[= true | do
+        let gH ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending sH.2 gH)) oa).run'
+          sH.1] := by
+    rw [probOutput_def, probOutput_def, ← hH]
+  rw [hMsucc, hHsucc, hMbad]
+  exact multipleBadEager_le_hybridEager_aux_PathA oa qR qT qRInit sM sH sB hInv hAB hqR hqT hfresh
+    hCacheBound hqRle
 
 /-- **Path-A multiple-to-hybrid (`hdist`-free) headline scaffold.** Drops the
 `HasDistinctUnlinkReaderNonces` hypothesis used by `multipleIdeal_le_hybrid_add_bad`; the slack
