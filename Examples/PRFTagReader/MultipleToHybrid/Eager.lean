@@ -2857,6 +2857,57 @@ theorem multipleIdeal_le_hybrid_add_bad_PathA_explicit [Fintype Nonce] [Fintype 
     _ = H + B + 2 * ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) /
             (Fintype.card Digest : ℝ≥0∞) + b := by rw [h2a]
 
+/-! ### Session 13 — trace-level union argument (post-codex-review)
+
+After codex review, the correct path is a TRACE-LEVEL union over the `qR` reader queries
+(rather than structural induction on `oa`, which factor-2-inflates at the reader step). The
+substantive bound chain:
+
+```
+Pr[badReader@final = true | run from init] ≤ E[flipCount@final | run]   (Markov, monotone)
+                                          = ∑_q Pr[flipFired at q-th reader query]
+                                          ≤ qR · |TagId|/|Digest|
+```
+
+where `flipCount@final` counts reader queries at which `multipleBadReaderAdvanceEager` would
+have set `badReader` (independent of whether `sB.badReader` was already set). The Markov
+step works because `flipCount ≥ 1 ↔ badReader@final = true` (badReader is monotone, and
+fires exactly when some `flipFired` event holds).
+
+The per-q bound is the substantive content:
+* `flipFired at q-th query` over uniform `g` is the marginal of the local flip predicate,
+  averaged over the random history.
+* By the GEOMETRIC argument (conditional on "no prior flip"), the q-th flip prob conditional
+  on past failures is `≤ |TagId| / (|Digest| - q + 1)` ≈ `|TagId|/|Digest|` for `qR ≪ |Digest|`.
+* Summing the geometric series: `∑_q ≤ qR · |TagId|/|Digest|` (with at most a constant inflation).
+
+**Implementation plan — writer-instrumented handler**:
+
+1. Lift `multipleBadTableHandlerPathA g` from `StateT σ ProbComp` to
+   `StateT σ (AddWriterT ℕ ProbComp)`. At each reader query, before the state transition,
+   `addTell (if flipFired then 1 else 0)`.
+
+2. State the substantive bound:
+   ```
+   expectedCostNat (simulateQ multipleBadTableHandlerPathAWriter oa).run ≤ qR · slack
+   ```
+   for any `oa` with `IsQueryBoundP oa (·.isRight) qR`.
+
+3. Bridge: `Pr[badReader@final = true] ≤ E[flipCount@final] ≤ qR · slack`. Closes via
+   the equivalence between writer-instrumented and uncost-instrumented final states + Markov.
+
+The substantive sub-lemma (open):
+```
+∀ q ≤ qR, Pr_{g, history}[flipFired_q(g, transcript_q, sB_q) = true] ≤ |TagId|/|Digest|
+```
+This is the conditional-uniformity argument needing the geometric trace analysis.
+
+Sketches above the writer handler definition; full implementation is multi-session work but
+the per-step content (`probEvent_eagerReaderFlip_le`) is already proved. -/
+
+-- TODO: writer-instrumented handler definition + expected-count theorem.
+-- See Session 13 plan in the docstring above.
+
 
 end UnlinkReduction
 
