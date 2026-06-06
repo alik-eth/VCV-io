@@ -2554,6 +2554,68 @@ lemma probEvent_eagerReaderFlip_le [Fintype Nonce] [Fintype Digest] [Nonempty Di
   rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul, ENNReal.div_eq_inv_mul,
       mul_comm]
 
+/-! ### Session 12e — WriterCost route: linearity-of-expectation breaks the factor-2
+
+The factor-2 obstacle in the structural reader case (Session 12d documentation) arises from
+bounding `Pr[badReader@final]` via IH applied independently to each `replyBool g ∈ {true, false}`:
+the IH is invoked twice but only one branch is "live" for any given `g`, so summing the bounds
+double-counts.
+
+The clean resolution: prove the bound on an *expected count* of badReader flips, not on a
+probability. By linearity of expectation, the expected count decomposes as a sum of per-step
+expected flip contributions, each bounded by `probEvent_eagerReaderFlip_le`. The final
+probability bound comes via Markov: `Pr[badReader@final = true] = Pr[count ≥ 1] ≤ E[count]`.
+
+The substantive new infrastructure required:
+
+1. **Conditioned IH** — strengthen the aux statement to track an arbitrary `g`-event `A`:
+   ```
+   E_g[1_A(g) · count@final(g)] ≤ E_g[1_A(g) · start_count(g)] + Pr_g[A] · qR · slack
+   ```
+   At the reader step, splitting on `replyBool g = u ∈ {true, false}` then composes via:
+   ```
+   E_g[count via (k(replyBool g))] = ∑_u E_g[1[replyBool g = u] · count via (k u)]
+                                  ≤ ∑_u (E_g[1[...] · advSB(g).count] + Pr[replyBool g = u] · (qR-1) · slack)
+                                  = E_g[advSB(g).count] + (qR-1) · slack    (by partition ∑_u 1[...] = 1)
+   ```
+   No factor-2: the partition `∑_u 1[replyBool g = u] = 1` makes the indicator weights collapse
+   exactly.
+
+2. **Flip count instrumentation** — augment the eager handler with a `ℕ` counter that increments
+   on each badReader flip. Two options:
+   * Add `flipCount : ℕ` field to `UnlinkBadState` (intrusive — touches existing lemmas).
+   * Define a parallel `multipleBadTableHandlerPathACounted` in
+     `StateT (... × ℕ) ProbComp` (non-intrusive, but doubles the per-step setup).
+
+3. **Markov bridge** — `Pr[badReader@final = true] ≤ E[flipCount@final]` when init has
+   `badReader = false` and `flipCount = 0`. Uses `flipCount ≥ 1 ↔ badReader = true` (monotone
+   relationship: each flip increments count and sets badReader; both are monotone).
+
+4. **Per-step expected-cost bound** — at a reader step,
+   `E_g[1[flip fires]] = Pr_g[flip] ≤ |TagId|/|Digest|`. Direct from
+   `probEvent_eagerReaderFlip_le`.
+
+Sketch of the writer-instrumented handler (placeholder):
+```
+noncomputable def multipleBadTableHandlerPathACounted
+    [Fintype Nonce] [Fintype Digest] (g : TagId × Nonce → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId × UnlinkBadState TagId Nonce Digest × ℕ) ProbComp) :=
+  fun q => fun s => match q with
+    | Sum.inl tag => -- tag query, no count change
+        (multipleBadTableHandlerPathA g (Sum.inl tag) (s.1, s.2.1)) >>= fun r =>
+          pure (r.1, r.2.1, r.2.2, s.2.2)
+    | Sum.inr transcript => -- reader query, increment if flip fires
+        let advSB := multipleBadReaderAdvanceEager transcript g s.2.1
+        let increment : ℕ := if advSB.badReader ∧ ¬ s.2.1.badReader then 1 else 0
+        pure (ReaderReply.ofBool (unlinkReaderAccepts (fun tag n => g (tag, n))
+              (multiplePattern sessionsPerTag) transcript), s.1, advSB, s.2.2 + increment)
+```
+
+This sketch is left as future work. The Session 12d `probEvent_eagerReaderFlip_le` is the
+substantive per-step content; closing the conditioned IH plus the handler instrumentation is
+mechanical bookkeeping that any of the three Session 12d routes shares. -/
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
