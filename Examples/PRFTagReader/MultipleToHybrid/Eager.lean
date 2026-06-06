@@ -5,6 +5,7 @@ Authors: Quang Dao
 -/
 
 import Examples.PRFTagReader.MultipleToHybrid.EagerReader
+import Examples.PRFTagReader.MultipleToHybrid.EagerReaderPathA
 
 /-!
 # PRF Tag/Reader Protocol — Multiple-to-hybrid eager coupling theorem
@@ -1874,11 +1875,14 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
             (hqRf none) (hqTf none) (hfreshf none) hCacheBound hqRle).trans ?_
         gcongr <;> first | rfl | omega
     | inr transcript =>
-      -- **Reader step (open obligation, Session 9).** PathA's reader handler advances the
-      -- bad-world component via `multipleBadReaderAdvanceEager`, gated by `readerTouched`;
-      -- the proof replaces `multipleBadEager_reader_step`'s `hdist`-based argument with
+      -- **Reader step (Path-A).** PathA's reader handler advances the bad-world component via
+      -- `multipleBadReaderAdvanceEager`, gated by `readerTouched`; the dedicated helper
+      -- `multipleBadEager_reader_step_PathA` replaces the original `hdist`-based argument with
       -- the `badReader` charge under `MultipleBadPathACoupling`.
-      exact absurd hInv (by exact fun _ => sorry)
+      exact multipleBadEager_reader_step_PathA transcript f
+        (liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+          (Sum.inr transcript)) >>= f) rfl qR qT qRInit sM sH sB hInv hAB hqR hqT hfresh
+        hCacheBound hqRle ih
 
 /-- **Path-A multiple-to-hybrid, lazy-form slack bound.** Reduces (via the Session-5 Path-A eager
 equivalence `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` and the existing
