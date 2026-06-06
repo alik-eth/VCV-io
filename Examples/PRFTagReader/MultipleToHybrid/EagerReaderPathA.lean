@@ -312,233 +312,332 @@ lemma multipleBadEager_reader_step_PathA [Fintype Nonce] [Fintype Digest]
       show probEvent _ _ = _ from probEvent_congr' (fun _ _ => Iff.rfl)
         (hBAD_fold ▸ hBAD_lazify)]
   rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
-  -- **Step 3.** Apply `probEvent_bind_le_add_bad_disagree` with the lazy
-  -- `mx := idealCacheMapM cells sM.2` and disagreement set
-  -- `D rs := decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧ bHconst = false`.
-  -- Off `D`: the multi reader bit equals `bHconst`, so we recurse via the IH.
-  -- On `D`: charged to `ε₁ := |TagId|/|Digest|` (via `probEvent_multipleReader_disagree_le`).
-  set D : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache → Prop :=
-    fun rs => decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧ bHconst = false with hD
-  have hslackeq :
-      (((qR' + 1) * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
-        = (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞)
-          + ((qR' * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
-    rw [← ENNReal.add_div]; congr 1; push_cast; ring
-  refine le_trans (probEvent_bind_le_add_bad_disagree
-    (mx := idealCacheMapM (Digest := Digest) cells sM.2)
-    (my := fun rs => ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-      MψLHS (OracleComp.tableExtending rs.2 gM))
-    (oc := fun _ => ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
-      (simulateQ (hybridTableHandler (OracleComp.tableExtending sH.2 gH))
-        (f (ReaderReply.ofBool bHconst))).run' sH.1)
-    (ob := fun rs => ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-      MψBAD (OracleComp.tableExtending rs.2 gM))
-    (q := fun b => b = true)
-    (r := fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true ∨ z.2.badReader = true)
-    (D := D)
-    (ε₁ := (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞))
-    (ε₂ := ((qR' * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞))
-    ?hDcl ?hcl) ?fin
-  case hDcl =>
-    -- **Path-A disagreement bound.** Without `hcol`, we use
-    -- `probEvent_multipleReader_disagree_le_relaxed`, which charges the stale-match indicator at
-    -- `1` and otherwise gives `|TagId|/|Digest|`. The stale-match case is absorbed in the
-    -- top-level case-split (open obligation `sorry` below).
-    sorry
-  case hcl =>
-    -- Off-`D` pointwise bound: recurse via IH on the post-reader state.
-    intro rs hrs hDrs
-    beta_reduce
-    have hr2_not_mem : ∀ d : TagId × Nonce, d ∉ cells → rs.2 d = sM.2 d :=
-      fun d hd => idealCacheMapM_cache_not_mem cells sM.2 rs hrs d hd
-    have hMbit_eq : ∀ gM : TagId × Nonce → Digest,
-        unlinkReaderAccepts
-          (fun tag nonce => OracleComp.tableExtending rs.2 gM (tag, nonce))
-          (multiplePattern (TagId := TagId) sessionsPerTag) transcript
-        = decide (∃ d ∈ rs.1, d = transcript.auth) := by
-      intro gM
-      have hrs1' := idealCacheMapM_support cells sM.2 rs hrs gM
-      unfold unlinkReaderAccepts tagAccepts multiplePattern
-      simp only [decide_eq_decide]
-      rw [hrs1']
-      simp only [hcells, multipleReaderCells, List.map_map, List.mem_map,
-        Finset.mem_toList, Finset.mem_univ, true_and, Function.comp, decide_eq_true_eq]
-      constructor
-      · rintro ⟨tag, _, hd⟩
-        exact ⟨_, ⟨tag, rfl⟩, hd⟩
-      · rintro ⟨d, ⟨tag, rfl⟩, hd⟩
-        exact ⟨tag, ⟨⟨0, Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)⟩, hd⟩⟩
-    have hhyb_to_multi : bHconst = true →
-        decide (∃ d ∈ rs.1, d = transcript.auth) = true := by
-      intro hbH
-      rw [hbHconst, hybridCacheAccepts, decide_eq_true_eq] at hbH
-      obtain ⟨tag, sid, hsn, hcell⟩ := hbH
-      have hmcell : sM.2 (tag, transcript.nonce) = some transcript.auth := by
-        rw [hInv.2.2.2.2.2.1 tag sid transcript.nonce hsn, hcell]
-      have hcellmem : (tag, transcript.nonce) ∈ cells := by
-        rw [hcells, multipleReaderCells, List.mem_map]
-        exact ⟨tag, Finset.mem_toList.mpr (Finset.mem_univ _), rfl⟩
-      exact decide_eq_true ⟨transcript.auth,
-        mem_drawn_of_cached_cell _ sM.2 rs hrs (tag, transcript.nonce) hcellmem
-          transcript.auth hmcell, rfl⟩
-    have hbit_const : decide (∃ d ∈ rs.1, d = transcript.auth) = bHconst := by
-      rcases hbHv : bHconst with _ | _
-      · rcases hmv : decide (∃ d ∈ rs.1, d = transcript.auth) with _ | _
-        · rfl
-        · exact absurd (hDrs ⟨hmv, hbHv⟩) id
-      · exact hhyb_to_multi hbHv
-    have hMbit_const : ∀ gM : TagId × Nonce → Digest,
-        unlinkReaderAccepts
-          (fun tag nonce => OracleComp.tableExtending rs.2 gM (tag, nonce))
-          (multiplePattern (TagId := TagId) sessionsPerTag) transcript = bHconst :=
-      fun gM => by rw [hMbit_eq gM, hbit_const]
-    have hMψLHS_rewrite : ∀ gM : TagId × Nonce → Digest,
-        MψLHS (OracleComp.tableExtending rs.2 gM)
-        = (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
-          (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
-            (OracleComp.tableExtending rs.2 gM))
-            (f (ReaderReply.ofBool bHconst))).run (sM.1, sB') := fun gM => by
-      rw [hMψLHS_def]; dsimp only; rw [hMbit_const gM]
-    have hMψBAD_rewrite : ∀ gM : TagId × Nonce → Digest,
-        MψBAD (OracleComp.tableExtending rs.2 gM)
-        = (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
-            (z.1, z.2.2)) <$>
-          (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
-            (OracleComp.tableExtending rs.2 gM))
-            (f (ReaderReply.ofBool bHconst))).run (sM.1, sB') := fun gM => by
-      rw [hMψBAD_def]; dsimp only; rw [hMbit_const gM]
-    have hInvNew : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) (sM.1, rs.2) sH sB' :=
-      sorry -- MultipleHybridCoupling_reader_step adapted for sB'
-    have hABNew : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-        (sM.1, rs.2).2 sB' :=
-      MultipleBadPathACoupling_reader_step sM.2 sB hAB transcript rs hrs
-    have hfreshNew : MultipleHybridColFreshPathA (sessionsPerTag := sessionsPerTag)
-        (f (ReaderReply.ofBool bHconst)) sB' sH rs.2 := by
-      intro n tag hsome hns
-      by_cases hnn : n = n₀
-      · -- **Path-A widened disjunct discharge at `n = n₀`.** The reader step always sets
-        -- `readerTouched n₀ = true`, so the second disjunct fires.
-        subst hnn
-        refine Or.inr (Or.inl ?_)
-        exact multipleBadReaderAdvance_readerTouched_self transcript sM.2 sB
-      · have hcellnotmem : (tag, n) ∉ cells := by
+  -- **Step 2.5 (Path-A).** Case-split on whether `sM.2` has a stale-match cell at `n₀`. The
+  -- stale-match condition determines whether the Path-A advance flips `badReader`.
+  by_cases hstale : ∃ tag : TagId, sM.2 (tag, n₀) = some transcript.auth ∧
+      ∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some n₀
+  · -- **Stale case.** `sB'.badReader = true` after the advance, so the inner sim preserves
+    -- `badReader = true` throughout the continuation: `Pr[bad ∨ badReader | BAD-term] = 1`,
+    -- which absorbs the LHS success probability without invoking the disagreement bound.
+    have hsB'_bR : sB'.badReader = true := by
+      rw [hsB'def]
+      change (sB.badReader ||
+        decide (∃ tag : TagId, sM.2 (tag, transcript.nonce) = some transcript.auth ∧
+          sB.responses (tag, transcript.nonce) = none)) = true
+      rw [Bool.or_eq_true]
+      refine Or.inr ?_
+      rw [decide_eq_true_eq]
+      obtain ⟨tag, hauth, hns⟩ := hstale
+      refine ⟨tag, hauth, ?_⟩
+      rw [← Option.not_isSome_iff_eq_none, hInv.2.2.2.2.1]
+      rintro ⟨sid, hsn⟩
+      exact hns sid hsn
+    -- **Express LHS as `Prod.fst <$> BAD`.** `MψLHS g` projects `(·.1)`; `MψBAD g` projects
+    -- `(·.1, ·.2.2)`; so `MψLHS g = Prod.fst <$> MψBAD g` (composition of projections).
+    have hLHS_eq_fst_BAD : ∀ g : TagId × Nonce → Digest,
+        MψLHS g = Prod.fst <$> MψBAD g := by
+      intro g
+      simp only [MψLHS, MψBAD, Functor.map_map]
+    -- **LHS_outer = `Prod.fst <$> BAD_outer`.** Apply pointwise + push the map through binds.
+    have hLHS_outer :
+        (do let rs ← idealCacheMapM (Digest := Digest) cells sM.2
+            let gM ← $ᵗ (TagId × Nonce → Digest)
+            MψLHS (OracleComp.tableExtending rs.2 gM))
+        = Prod.fst <$>
+            (do let rs ← idealCacheMapM (Digest := Digest) cells sM.2
+                let gM ← $ᵗ (TagId × Nonce → Digest)
+                MψBAD (OracleComp.tableExtending rs.2 gM)) := by
+      rw [map_bind]
+      refine bind_congr fun rs => ?_
+      rw [map_bind]
+      refine bind_congr fun gM => ?_
+      exact hLHS_eq_fst_BAD _
+    -- Now `Pr[(· = true) | LHS_outer] = Pr[w => w.1 = true | BAD_outer]`. Then `probEvent_mono`
+    -- closes: under stale, every output `w` of BAD_outer has `w.2.badReader = true`, so the
+    -- predicate `w.2.bad ∨ w.2.badReader` is forced true.
+    have hLHS_le_BAD :
+        Pr[(· = true) | do let rs ← idealCacheMapM (Digest := Digest) cells sM.2
+                           let gM ← $ᵗ (TagId × Nonce → Digest)
+                           MψLHS (OracleComp.tableExtending rs.2 gM)] ≤
+        Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest =>
+            z.2.bad = true ∨ z.2.badReader = true |
+          do let rs ← idealCacheMapM (Digest := Digest) cells sM.2
+             let gM ← $ᵗ (TagId × Nonce → Digest)
+             MψBAD (OracleComp.tableExtending rs.2 gM)] := by
+      rw [hLHS_outer, probEvent_map]
+      refine probEvent_mono ?_
+      intro w hw _
+      refine Or.inr ?_
+      -- `w ∈ support BAD_outer`, so unfold: w = (z.1, z.2.2) for some z ∈ support sim.run.
+      rw [mem_support_bind_iff] at hw
+      obtain ⟨rs, _, hw⟩ := hw
+      rw [mem_support_bind_iff] at hw
+      obtain ⟨gM, _, hw⟩ := hw
+      simp only [MψBAD] at hw
+      rw [support_map, Set.mem_image] at hw
+      obtain ⟨z, hz, hzeq⟩ := hw
+      subst hzeq
+      exact multipleBadTableHandlerPathA_run_preserves_badReader
+        (OracleComp.tableExtending rs.2 gM) _ (sM.1, sB') hsB'_bR z hz
+    -- Conclude: LHS ≤ BAD ≤ RHS.
+    refine hLHS_le_BAD.trans ?_
+    exact (le_add_self.trans le_self_add).trans le_self_add
+  · -- **Non-stale case.** Proceed with the original disagreement argument.
+    set D : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache → Prop :=
+      fun rs => decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧ bHconst = false with hD
+    have hslackeq :
+        (((qR' + 1) * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
+          = (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞)
+            + ((qR' * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+      rw [← ENNReal.add_div]; congr 1; push_cast; ring
+    refine le_trans (probEvent_bind_le_add_bad_disagree
+      (mx := idealCacheMapM (Digest := Digest) cells sM.2)
+      (my := fun rs => ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+        MψLHS (OracleComp.tableExtending rs.2 gM))
+      (oc := fun _ => ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gH =>
+        (simulateQ (hybridTableHandler (OracleComp.tableExtending sH.2 gH))
+          (f (ReaderReply.ofBool bHconst))).run' sH.1)
+      (ob := fun rs => ($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+        MψBAD (OracleComp.tableExtending rs.2 gM))
+      (q := fun b => b = true)
+      (r := fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true ∨ z.2.badReader = true)
+      (D := D)
+      (ε₁ := (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞))
+      (ε₂ := ((qR' * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+        ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞))
+      ?hDcl ?hcl) ?fin
+    case hDcl =>
+      -- **Path-A disagreement bound (non-stale case).** Use the relaxed disagree lemma; under
+      -- `¬hstale` the stale-match indicator is `0`, so the bound reduces to `|TagId|/|Digest|`.
+      have hrelaxed := probEvent_multipleReader_disagree_le_relaxed (TagId := TagId)
+        (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+        sM.2 sH.2 sH.1.sessionNonce transcript hInv.2.2.2.2.2.1
+      have hstale_false : (if (∃ tag : TagId,
+          sM.2 (tag, transcript.nonce) = some transcript.auth ∧
+            ∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some transcript.nonce)
+          then (1 : ℝ≥0∞) else 0) = 0 := by
+        rw [if_neg]
+        exact hstale
+      rw [hstale_false, add_zero] at hrelaxed
+      refine le_trans (probEvent_mono ?_) hrelaxed
+      intro rs _ hDrs
+      exact ⟨hDrs.1, by rw [← hbHconst]; exact hDrs.2⟩
+    case hcl =>
+      -- Off-`D` pointwise bound: recurse via IH on the post-reader state.
+      intro rs hrs hDrs
+      beta_reduce
+      have hr2_not_mem : ∀ d : TagId × Nonce, d ∉ cells → rs.2 d = sM.2 d :=
+        fun d hd => idealCacheMapM_cache_not_mem cells sM.2 rs hrs d hd
+      have hMbit_eq : ∀ gM : TagId × Nonce → Digest,
+          unlinkReaderAccepts
+            (fun tag nonce => OracleComp.tableExtending rs.2 gM (tag, nonce))
+            (multiplePattern (TagId := TagId) sessionsPerTag) transcript
+          = decide (∃ d ∈ rs.1, d = transcript.auth) := by
+        intro gM
+        have hrs1' := idealCacheMapM_support cells sM.2 rs hrs gM
+        unfold unlinkReaderAccepts tagAccepts multiplePattern
+        simp only [decide_eq_decide]
+        rw [hrs1']
+        simp only [hcells, multipleReaderCells, List.map_map, List.mem_map,
+          Finset.mem_toList, Finset.mem_univ, true_and, Function.comp, decide_eq_true_eq]
+        constructor
+        · rintro ⟨tag, _, hd⟩
+          exact ⟨_, ⟨tag, rfl⟩, hd⟩
+        · rintro ⟨d, ⟨tag, rfl⟩, hd⟩
+          exact ⟨tag, ⟨⟨0, Nat.pos_of_ne_zero (NeZero.ne sessionsPerTag)⟩, hd⟩⟩
+      have hhyb_to_multi : bHconst = true →
+          decide (∃ d ∈ rs.1, d = transcript.auth) = true := by
+        intro hbH
+        rw [hbHconst, hybridCacheAccepts, decide_eq_true_eq] at hbH
+        obtain ⟨tag, sid, hsn, hcell⟩ := hbH
+        have hmcell : sM.2 (tag, transcript.nonce) = some transcript.auth := by
+          rw [hInv.2.2.2.2.2.1 tag sid transcript.nonce hsn, hcell]
+        have hcellmem : (tag, transcript.nonce) ∈ cells := by
           rw [hcells, multipleReaderCells, List.mem_map]
-          rintro ⟨_, _, h⟩
-          exact hnn (congrArg Prod.snd h).symm
-        rw [hr2_not_mem (tag, n) hcellnotmem] at hsome
-        -- Path-A widened disjunction: dispatch the 3 branches.
-        rcases hfresh n tag hsome hns with hbR | hRT | hb
-        · -- sB.badReader = true ⟹ sB'.badReader = true.
-          refine Or.inl ?_
-          exact multipleBadReaderAdvance_badReader_of_set transcript sM.2 sB hbR
-        · -- sB.readerTouched n = true ⟹ sB'.readerTouched n = true (n ≠ n₀, preserved).
-          refine Or.inr (Or.inl ?_)
-          rwa [multipleBadReaderAdvance_readerTouched_of_ne transcript sM.2 sB hnn]
-        · -- Residual = 0 in `oa`; propagate to continuation since head reader is at n₀ ≠ n.
-          refine Or.inr (Or.inr ?_)
-          rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
-          have hpf : ¬ pReaderNonce (TagId := TagId) (Digest := Digest) n
-              (Sum.inr transcript) := fun h => hnn h.symm
-          simpa [hpf] using hb.2 (ReaderReply.ofBool bHconst)
-    have hCacheBoundNew : ∀ tag : TagId,
-        (Finset.univ.filter (fun n : Nonce =>
-          (rs.2 (tag, n)).isSome ∧
-            ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
-          qRInit - qR' := by
-      intro tag
-      have hsub :
-          (Finset.univ.filter (fun n : Nonce =>
-            (rs.2 (tag, n)).isSome ∧
-              ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n))
-          ⊆ insert n₀ (Finset.univ.filter (fun n : Nonce =>
-            (sM.2 (tag, n)).isSome ∧
-              ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)) := by
-        intro n hn
-        simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hn
-        obtain ⟨hsome, hns⟩ := hn
+          exact ⟨tag, Finset.mem_toList.mpr (Finset.mem_univ _), rfl⟩
+        exact decide_eq_true ⟨transcript.auth,
+          mem_drawn_of_cached_cell _ sM.2 rs hrs (tag, transcript.nonce) hcellmem
+            transcript.auth hmcell, rfl⟩
+      have hbit_const : decide (∃ d ∈ rs.1, d = transcript.auth) = bHconst := by
+        rcases hbHv : bHconst with _ | _
+        · rcases hmv : decide (∃ d ∈ rs.1, d = transcript.auth) with _ | _
+          · rfl
+          · exact absurd (hDrs ⟨hmv, hbHv⟩) id
+        · exact hhyb_to_multi hbHv
+      have hMbit_const : ∀ gM : TagId × Nonce → Digest,
+          unlinkReaderAccepts
+            (fun tag nonce => OracleComp.tableExtending rs.2 gM (tag, nonce))
+            (multiplePattern (TagId := TagId) sessionsPerTag) transcript = bHconst :=
+        fun gM => by rw [hMbit_eq gM, hbit_const]
+      have hMψLHS_rewrite : ∀ gM : TagId × Nonce → Digest,
+          MψLHS (OracleComp.tableExtending rs.2 gM)
+          = (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+            (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending rs.2 gM))
+              (f (ReaderReply.ofBool bHconst))).run (sM.1, sB') := fun gM => by
+        rw [hMψLHS_def]; dsimp only; rw [hMbit_const gM]
+      have hMψBAD_rewrite : ∀ gM : TagId × Nonce → Digest,
+          MψBAD (OracleComp.tableExtending rs.2 gM)
+          = (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+              (z.1, z.2.2)) <$>
+            (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending rs.2 gM))
+              (f (ReaderReply.ofBool bHconst))).run (sM.1, sB') := fun gM => by
+        rw [hMψBAD_def]; dsimp only; rw [hMbit_const gM]
+      have hsB'_bR_false : sB'.badReader = false := by
+        rw [hsB'def]
+        change (sB.badReader ||
+          decide (∃ tag : TagId, sM.2 (tag, transcript.nonce) = some transcript.auth ∧
+            sB.responses (tag, transcript.nonce) = none)) = false
+        rw [Bool.or_eq_false_iff]
+        refine ⟨hInv.2.2.2.1, ?_⟩
+        rw [decide_eq_false_iff_not]
+        rintro ⟨tag, hauth, hresp⟩
+        refine hstale ⟨tag, hauth, fun sid hsn => ?_⟩
+        have hSome : (sB.responses (tag, transcript.nonce)).isSome = true := by
+          rw [hInv.2.2.2.2.1]; exact ⟨sid, hsn⟩
+        rw [hresp] at hSome
+        exact absurd hSome (by simp)
+      have hInvNew : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag)
+          (sM.1, rs.2) sH sB' := by
+        have hCoup_sB := MultipleHybridCoupling_reader_step sM sH sB hInv cells rs hrs
+        obtain ⟨h1, h2, hbad, _, h5, h6, h7, h8, h9, h10⟩ := hCoup_sB
+        refine ⟨h1, ?_, hbad, hsB'_bR_false, ?_, h6, h7, h8, h9, h10⟩
+        · -- sM.1.sessionsUsed = sB'.sessionsUsed (advance preserves sessionsUsed).
+          rw [hsB'def, multipleBadReaderAdvance_sessionsUsed]; exact h2
+        · -- sB'.responses = sB.responses (advance preserves responses).
+          intro tag n
+          rw [hsB'def, multipleBadReaderAdvance_responses]
+          exact h5 tag n
+      have hABNew : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sM.1, rs.2).2 sB' :=
+        MultipleBadPathACoupling_reader_step sM.2 sB hAB transcript rs hrs
+      have hfreshNew : MultipleHybridColFreshPathA (sessionsPerTag := sessionsPerTag)
+          (f (ReaderReply.ofBool bHconst)) sB' sH rs.2 := by
+        intro n tag hsome hns
         by_cases hnn : n = n₀
-        · subst hnn; exact Finset.mem_insert_self _ _
-        · refine Finset.mem_insert_of_mem ?_
-          simp only [Finset.mem_filter, Finset.mem_univ, true_and]
-          have hcellnotmem : (tag, n) ∉ cells := by
+        · -- **Path-A widened disjunct discharge at `n = n₀`.** The reader step always sets
+          -- `readerTouched n₀ = true`, so the second disjunct fires.
+          subst hnn
+          refine Or.inr (Or.inl ?_)
+          exact multipleBadReaderAdvance_readerTouched_self transcript sM.2 sB
+        · have hcellnotmem : (tag, n) ∉ cells := by
             rw [hcells, multipleReaderCells, List.mem_map]
             rintro ⟨_, _, h⟩
             exact hnn (congrArg Prod.snd h).symm
-          exact ⟨by rwa [hr2_not_mem (tag, n) hcellnotmem] at hsome, hns⟩
-      calc (Finset.univ.filter (fun n : Nonce =>
+          rw [hr2_not_mem (tag, n) hcellnotmem] at hsome
+          -- Path-A widened disjunction: dispatch the 3 branches.
+          rcases hfresh n tag hsome hns with hbR | hRT | hb
+          · -- sB.badReader = true ⟹ sB'.badReader = true.
+            refine Or.inl ?_
+            exact multipleBadReaderAdvance_badReader_of_set transcript sM.2 sB hbR
+          · -- sB.readerTouched n = true ⟹ sB'.readerTouched n = true (n ≠ n₀, preserved).
+            refine Or.inr (Or.inl ?_)
+            rwa [multipleBadReaderAdvance_readerTouched_of_ne transcript sM.2 sB hnn]
+          · -- Residual = 0 in `oa`; propagate to continuation since head reader is at n₀ ≠ n.
+            refine Or.inr (Or.inr ?_)
+            rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+            have hpf : ¬ pReaderNonce (TagId := TagId) (Digest := Digest) n
+                (Sum.inr transcript) := fun h => hnn h.symm
+            simpa [hpf] using hb.2 (ReaderReply.ofBool bHconst)
+      have hCacheBoundNew : ∀ tag : TagId,
+          (Finset.univ.filter (fun n : Nonce =>
             (rs.2 (tag, n)).isSome ∧
-              ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card
-          ≤ (insert n₀ (Finset.univ.filter (fun n : Nonce =>
+              ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
+            qRInit - qR' := by
+        intro tag
+        have hsub :
+            (Finset.univ.filter (fun n : Nonce =>
+              (rs.2 (tag, n)).isSome ∧
+                ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n))
+            ⊆ insert n₀ (Finset.univ.filter (fun n : Nonce =>
               (sM.2 (tag, n)).isSome ∧
-                ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n))).card :=
-            Finset.card_le_card hsub
-        _ ≤ (Finset.univ.filter (fun n : Nonce =>
-              (sM.2 (tag, n)).isSome ∧
-                ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card + 1 :=
-            Finset.card_insert_le _ _
-        _ ≤ qRInit - qR' := by
-            have hold := hCacheBound tag
-            omega
-    have hih := ih (ReaderReply.ofBool bHconst) qR' qT qRInit (sM.1, rs.2) sH sB'
-      hInvNew hABNew (hqRf _) (hqTf _) hfreshNew hCacheBoundNew
-      (Nat.le_of_succ_le hqRle)
-    have hLHS_inner :
-        (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-            MψLHS (OracleComp.tableExtending rs.2 gM))
-        = (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
-                z.1) <$>
-              (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
-                (OracleComp.tableExtending rs.2 gM))
-                (f (ReaderReply.ofBool bHconst))).run (sM.1, sB')) :=
-      bind_congr hMψLHS_rewrite
-    have hBAD_inner :
-        (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-            MψBAD (OracleComp.tableExtending rs.2 gM))
-        = (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
-            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
-                (z.1, z.2.2)) <$>
-              (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
-                (OracleComp.tableExtending rs.2 gM))
-                (f (ReaderReply.ofBool bHconst))).run (sM.1, sB')) :=
-      bind_congr hMψBAD_rewrite
-    have hLHS_pe := probEvent_congr' (q := fun b : Bool => b = true)
-      (fun _ _ => Iff.rfl) (congrArg evalDist hLHS_inner)
-    have hBAD_pe := probEvent_congr'
-      (q := fun z : Bool × UnlinkBadState TagId Nonce Digest =>
-        z.2.bad = true ∨ z.2.badReader = true)
-      (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_inner)
-    rw [hLHS_pe, hBAD_pe]
-    have hih' := hih
-    rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput] at hih'
-    simp only at hih'
-    -- The IH's bound matches the pointwise goal after reassociating `+ qR'_term + qRInit_term`
-    -- to `+ (qR'_term + qRInit_term)`.
-    refine hih'.trans ?_
-    rw [add_assoc, add_assoc]
-  case fin =>
-    -- The disagree-lemma's `oc := fun _ => P_hyb` produces `mx >>= (fun _ => P_hyb)` on
-    -- the RHS; `mx = idealCacheMapM cells sM.2` never fails so this equals `Pr[q | P_hyb]`.
-    have hPF : Pr[⊥ | idealCacheMapM (Digest := Digest) cells sM.2] = 0 := by
-      have hrec : ∀ {D : Type} [DecidableEq D] (l : List D)
-          (c : (D →ₒ Digest).QueryCache),
-          Pr[⊥ | idealCacheMapM (Digest := Digest) l c] = 0 := by
-        intro D _ l
-        induction l with
-        | nil => intro c; simp [idealCacheMapM]
-        | cons d ds ih =>
-          intro c
-          change Pr[⊥ | idealCacheStep c d >>= fun r =>
-            idealCacheMapM ds r.2 >>= fun rs => pure (r.1 :: rs.1, rs.2)] = 0
-          rw [probFailure_bind_eq_zero_iff]
-          refine ⟨by unfold idealCacheStep; rcases c d with _ | _ <;> simp, fun r _ => ?_⟩
-          rw [probFailure_bind_eq_zero_iff]
-          exact ⟨ih r.2, fun _ _ => by simp⟩
-      exact hrec cells sM.2
-    rw [probEvent_bind_const, hPF, tsub_zero, one_mul, hslackeq]
-    refine le_of_eq ?_
-    push_cast; ring
+                ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)) := by
+          intro n hn
+          simp only [Finset.mem_filter, Finset.mem_univ, true_and] at hn
+          obtain ⟨hsome, hns⟩ := hn
+          by_cases hnn : n = n₀
+          · subst hnn; exact Finset.mem_insert_self _ _
+          · refine Finset.mem_insert_of_mem ?_
+            simp only [Finset.mem_filter, Finset.mem_univ, true_and]
+            have hcellnotmem : (tag, n) ∉ cells := by
+              rw [hcells, multipleReaderCells, List.mem_map]
+              rintro ⟨_, _, h⟩
+              exact hnn (congrArg Prod.snd h).symm
+            exact ⟨by rwa [hr2_not_mem (tag, n) hcellnotmem] at hsome, hns⟩
+        calc (Finset.univ.filter (fun n : Nonce =>
+              (rs.2 (tag, n)).isSome ∧
+                ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card
+            ≤ (insert n₀ (Finset.univ.filter (fun n : Nonce =>
+                (sM.2 (tag, n)).isSome ∧
+                  ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n))).card :=
+              Finset.card_le_card hsub
+          _ ≤ (Finset.univ.filter (fun n : Nonce =>
+                (sM.2 (tag, n)).isSome ∧
+                  ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card + 1 :=
+              Finset.card_insert_le _ _
+          _ ≤ qRInit - qR' := by
+              have hold := hCacheBound tag
+              omega
+      have hih := ih (ReaderReply.ofBool bHconst) qR' qT qRInit (sM.1, rs.2) sH sB'
+        hInvNew hABNew (hqRf _) (hqTf _) hfreshNew hCacheBoundNew
+        (Nat.le_of_succ_le hqRle)
+      have hLHS_inner :
+          (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+              MψLHS (OracleComp.tableExtending rs.2 gM))
+          = (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  z.1) <$>
+                (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending rs.2 gM))
+                  (f (ReaderReply.ofBool bHconst))).run (sM.1, sB')) :=
+        bind_congr hMψLHS_rewrite
+      have hBAD_inner :
+          (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+              MψBAD (OracleComp.tableExtending rs.2 gM))
+          = (($ᵗ (TagId × Nonce → Digest)) >>= fun gM =>
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  (z.1, z.2.2)) <$>
+                (simulateQ (multipleBadTableHandlerPathA (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending rs.2 gM))
+                  (f (ReaderReply.ofBool bHconst))).run (sM.1, sB')) :=
+        bind_congr hMψBAD_rewrite
+      have hLHS_pe := probEvent_congr' (q := fun b : Bool => b = true)
+        (fun _ _ => Iff.rfl) (congrArg evalDist hLHS_inner)
+      have hBAD_pe := probEvent_congr'
+        (q := fun z : Bool × UnlinkBadState TagId Nonce Digest =>
+          z.2.bad = true ∨ z.2.badReader = true)
+        (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_inner)
+      rw [hLHS_pe, hBAD_pe]
+      have hih' := hih
+      rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput] at hih'
+      simp only at hih'
+      -- The IH's bound matches the pointwise goal after reassociating `+ qR'_term + qRInit_term`
+      -- to `+ (qR'_term + qRInit_term)`.
+      refine hih'.trans ?_
+      rw [add_assoc, add_assoc]
+    case fin =>
+      -- The disagree-lemma's `oc := fun _ => P_hyb` produces `mx >>= (fun _ => P_hyb)` on
+      -- the RHS; `mx = idealCacheMapM cells sM.2` never fails so this equals `Pr[q | P_hyb]`.
+      have hPF : Pr[⊥ | idealCacheMapM (Digest := Digest) cells sM.2] = 0 := by
+        have hrec : ∀ {D : Type} [DecidableEq D] (l : List D)
+            (c : (D →ₒ Digest).QueryCache),
+            Pr[⊥ | idealCacheMapM (Digest := Digest) l c] = 0 := by
+          intro D _ l
+          induction l with
+          | nil => intro c; simp [idealCacheMapM]
+          | cons d ds ih =>
+            intro c
+            change Pr[⊥ | idealCacheStep c d >>= fun r =>
+              idealCacheMapM ds r.2 >>= fun rs => pure (r.1 :: rs.1, rs.2)] = 0
+            rw [probFailure_bind_eq_zero_iff]
+            refine ⟨by unfold idealCacheStep; rcases c d with _ | _ <;> simp, fun r _ => ?_⟩
+            rw [probFailure_bind_eq_zero_iff]
+            exact ⟨ih r.2, fun _ _ => by simp⟩
+        exact hrec cells sM.2
+      rw [probEvent_bind_const, hPF, tsub_zero, one_mul, hslackeq]
+      refine le_of_eq ?_
+      push_cast; ring
 
 end UnlinkReduction
 
