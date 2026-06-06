@@ -432,6 +432,69 @@ def multipleBadAdvance (tag : TagId)
         bad := sB.bad || (sB.responses (tag, tr.nonce)).isSome
         badReader := sB.badReader }
 
+/-- Bad-world state advance on a reader query: flips `badReader` exactly when a non-session
+multi cell at `transcript.nonce` already holds `transcript.auth`. Leaves all other fields
+untouched.
+
+This is the Path-A replacement for the `HasDistinctUnlinkReaderNonces` hypothesis: the
+disagreement that the strict `hcol` of `probEvent_multipleReader_disagree_le` would have ruled
+out is instead detected here and charged into the bad event. The "non-session" check is
+internal to the bad-world state (`sB.responses (tag, transcript.nonce) = none`), which the
+coupling invariant `MultipleHybridCoupling.hbadcol` equates with "no hybrid session recorded at
+`transcript.nonce`". -/
+def multipleBadReaderAdvance
+    (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) : UnlinkBadState TagId Nonce Digest :=
+  { sB with
+    badReader := sB.badReader ||
+      decide (∃ tag : TagId, cM (tag, transcript.nonce) = some transcript.auth ∧
+        sB.responses (tag, transcript.nonce) = none) }
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` preserves the existing `bad` flag: only `badReader` can change. -/
+lemma multipleBadReaderAdvance_bad (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance transcript cM sB).bad = sB.bad := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` preserves the session counter. -/
+lemma multipleBadReaderAdvance_sessionsUsed (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance transcript cM sB).sessionsUsed = sB.sessionsUsed := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` preserves the `responses` cache. -/
+lemma multipleBadReaderAdvance_responses (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance transcript cM sB).responses = sB.responses := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` is monotone in `badReader`: if the flag is already set, it stays
+set after the advance. -/
+lemma multipleBadReaderAdvance_badReader_of_set (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) (hbR : sB.badReader = true) :
+    (multipleBadReaderAdvance transcript cM sB).badReader = true := by
+  simp [multipleBadReaderAdvance, hbR]
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` leaves `badReader` untouched when no stale-match exists. This is
+the case relevant to the coupling: while `MultipleHybridCoupling.hbadcol` ties `sB.responses` to
+the session-recorded cells, the right disjunct of `MultipleHybridColFresh` rules out the
+stale-match condition. -/
+lemma multipleBadReaderAdvance_badReader_of_no_stale
+    (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (hno_stale : ¬ ∃ tag : TagId, cM (tag, transcript.nonce) = some transcript.auth ∧
+      sB.responses (tag, transcript.nonce) = none) :
+    (multipleBadReaderAdvance transcript cM sB).badReader = sB.badReader := by
+  simp [multipleBadReaderAdvance, hno_stale]
+
 /-- `multipleIdealQueryImpl` re-targeted to the larger `MultipleBadState` monad: runs the
 multiple-ideal handler on the inner state component and threads the extra `UnlinkBadState`
 component through unchanged. This is the "base" handler that `multipleBadQueryImpl` instruments
