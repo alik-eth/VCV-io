@@ -1053,7 +1053,8 @@ lemma unlinkBadQueryImpl_tag_run_of_lt (tag : TagId)
                 Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1)
                responses := sB.responses.cacheQuery (tag, nonce)
                  (auth :: Option.getD (sB.responses (tag, nonce)) [])
-               bad := sB.bad || (sB.responses (tag, nonce)).isSome } :
+               bad := sB.bad || (sB.responses (tag, nonce)).isSome
+               badReader := sB.badReader } :
               UnlinkBadState TagId Nonce Digest)) := by
   unfold unlinkBadQueryImpl
   rw [QueryImpl.add_apply_inl]

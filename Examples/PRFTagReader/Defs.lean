@@ -133,11 +133,21 @@ structure UnlinkState (TagId : Type) where
   sessionsUsed : TagId → ℕ
 
 /-- Bad-world state for the multiple-session unlinkability proof: session counters, the list of
-random-function responses seen for each `(tag, nonce)` pair, and the bad-event flag. -/
+random-function responses seen for each `(tag, nonce)` pair, the within-tag nonce-collision flag,
+and the inter-reader-query interference flag.
+
+* `bad` fires when a tag query draws a nonce already used by another session of the same tag
+  (the classical within-tag collision tracked by `multipleBadAdvance`).
+* `badReader` fires when a reader-side lazy draw at `(tag, transcript.nonce)` happens to land on
+  the adversary's transcript authenticator, recording a collision against a future reader query.
+  Used in place of the `HasDistinctUnlinkReaderNonces` hypothesis: it absorbs the inter-query
+  cache-sharing case that would otherwise force the headline theorem to assume nonce-distinct
+  reader queries. -/
 structure UnlinkBadState (TagId Nonce Digest : Type) where
   sessionsUsed : TagId → ℕ
   responses : ((TagId × Nonce) →ₒ List Digest).QueryCache
   bad : Bool
+  badReader : Bool
 
 section UnlinkState
 
@@ -153,6 +163,7 @@ def UnlinkBadState.init : UnlinkBadState TagId Nonce Digest where
   sessionsUsed := fun _ => 0
   responses := ∅
   bad := false
+  badReader := false
 
 end UnlinkState
 
@@ -479,7 +490,8 @@ def unlinkBadTagQueryImpl :
           set
             ({ sessionsUsed := Function.update st.sessionsUsed tag (st.sessionsUsed tag + 1)
                responses := st.responses.cacheQuery (tag, nonce) outputs
-               bad := bad } : UnlinkBadState TagId Nonce Digest)
+               bad := bad
+               badReader := st.badReader } : UnlinkBadState TagId Nonce Digest)
           return some transcript
         else
           return none

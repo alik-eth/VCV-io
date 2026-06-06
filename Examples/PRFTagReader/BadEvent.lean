@@ -45,7 +45,8 @@ def unlinkBadTagNext
   { sessionsUsed := Function.update st.sessionsUsed tag (st.sessionsUsed tag + 1)
     responses := st.responses.cacheQuery (tag, nonce)
       (auth :: Option.getD (st.responses (tag, nonce)) [])
-    bad := st.bad || (st.responses (tag, nonce)).isSome }
+    bad := st.bad || (st.responses (tag, nonce)).isSome
+    badReader := st.badReader }
 
 omit [Fintype TagId] [Nonempty TagId] [DecidableEq TagId] [DecidableEq Nonce]
     [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest] [NeZero sessionsPerTag] in
