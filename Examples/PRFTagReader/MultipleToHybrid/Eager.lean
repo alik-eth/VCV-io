@@ -2329,6 +2329,84 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager [Fintype Nonce] [Fintype Di
       -- Both sub-cases depend on the Session-12+ g-dependent-family aux machinery.
       sorry
 
+/-! ### Session 12 — g-dependent family aux
+
+The eager aux above has a structural mismatch between its IH form (averaged over uniform `g`,
+fixed continuation argument `u`) and the actual continuation after a head step (which receives a
+g-dependent input — `g(tag, nonce)` for slot-available tag, `replyBool g` for reader). The
+following auxiliary generalizes the eager aux to allow the START STATE to be a g-DEPENDENT family
+`sM_fam, sB_fam : (TagId × Nonce → Digest) → ...`. This lets the IH apply directly to
+continuations whose state is g-dependent.
+
+The bound's indicator term changes from `(if sB.badReader then 1 else 0)` to
+`Pr_g[(sB_fam g).badReader = true | uniform g]` — i.e., the probability that the start-state
+badReader is set, averaged over `g`. Specialized at constant families (no g-dependence) this
+collapses to the original indicator.
+
+The continuation's INPUT mismatch (`k u` for varying `u`) is still present and is the
+substantive obstacle. The marginalization `evalDist_uniformSample_bind_update` is the key tool:
+replacing `g(tag, nonce)` with a fresh `u ← uniform Digest` (and using `Function.update g (tag,
+nonce) u` in the future handler) makes the continuation argument INDEPENDENT of `g`, at the cost
+of a slightly different future handler. The future handler agrees with the original on all but
+the `(tag, nonce)` cell, and that cell is excluded from future flip predicates (because
+`responses (tag, nonce) ≠ none` after the tag-write).
+
+Status: pure case proven; slot-exhausted tag case proven via the bind-tsum rewrite trick;
+slot-available tag + reader cases are sub-sorries requiring the marginalization + handler-update
+equality. -/
+lemma probEvent_multipleBadPathA_badReader_aux_eager_family [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (sM_fam : (TagId × Nonce → Digest) → UnlinkState TagId)
+    (sB_fam : (TagId × Nonce → Digest) → UnlinkBadState TagId Nonce Digest)
+    (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR) :
+    Pr[fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+        z.2.2.badReader |
+        do let g ← $ᵗ (TagId × Nonce → Digest)
+           (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run
+              (sM_fam g, sB_fam g)] ≤
+      Pr[fun g => (sB_fam g).badReader = true | ($ᵗ (TagId × Nonce → Digest))] +
+        ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR sM_fam sB_fam with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run_pure]
+    refine le_trans ?_ le_self_add
+    refine le_of_eq ?_
+    rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_indicator]
+    refine tsum_congr fun g => ?_
+    by_cases hbR : (sB_fam g).badReader = true
+    · simp [hbR, probEvent_pure, Set.indicator]
+    · simp [hbR, probEvent_pure, Set.indicator]
+  | query_bind i k ih =>
+    rw [OracleComp.isQueryBoundP_query_bind_iff] at hqR
+    obtain ⟨hqR0, hqRk⟩ := hqR
+    simp_rw [multipleBadTablePathA_run_query_bind']
+    cases i with
+    | inl tag =>
+      have hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+        intro u; simpa using hqRk u
+      by_cases hslot : ∀ g : TagId × Nonce → Digest, ¬ (sM_fam g).sessionsUsed tag < sessionsPerTag
+      · -- Slot exhausted UNIFORMLY across all g — step collapses to pure (none, ...) for all g.
+        have hstep : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM_fam g, sB_fam g) =
+              pure ((none : Option (TagTranscript Nonce Digest)), sM_fam g, sB_fam g) := by
+          intro g
+          show (multipleTableHandler g (Sum.inl tag)) (sM_fam g) >>=
+            (fun r => pure (r.1, r.2, multipleBadAdvance tag (sB_fam g) r.1)) = _
+          rw [multipleTableHandler_tag_run_of_not_lt _ tag (sM_fam g) (hslot g)]
+          rfl
+        simp only [hstep]
+        exact ih none qR sM_fam sB_fam (hqRk' none)
+      · -- Slot-availability VARIES across g (some g have slot, others don't). The family aux
+        -- handles this through the structural recursion, but the proof requires the
+        -- marginalization machinery (TODO Session 12c).
+        sorry
+    | inr transcript =>
+      -- Reader query — substantive proof (TODO Session 12d).
+      sorry
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
