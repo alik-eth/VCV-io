@@ -535,6 +535,29 @@ noncomputable def multipleBadQueryImpl :
         | Sum.inr _, _ => s) :
           StateT (MultipleBadState TagId Nonce Digest sessionsPerTag) ProbComp Unit))
 
+/-- Path-A variant of `multipleBadQueryImpl`. Identical to the original on tag queries and on the
+output bit, but on a reader query it additionally flips `badReader` via
+`multipleBadReaderAdvance` when a stale (non-session-recorded) cached cell at `transcript.nonce`
+already holds `transcript.auth`.
+
+This is the handler used by the relaxed reader-step proof that drops the
+`HasDistinctUnlinkReaderNonces` hypothesis: the bad-flag flip captures inter-reader-query
+interference that `hdist` would have ruled out structurally. The original
+`multipleBadQueryImpl` is kept unchanged for legacy callers (notably the auth-track derivations
+in `MultipleBadCollision.lean`). -/
+noncomputable def multipleBadQueryImplPathA :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (MultipleBadState TagId Nonce Digest sessionsPerTag) ProbComp) :=
+  fun q s => match q with
+    | Sum.inl tag =>
+        (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), multipleBadAdvance tag s.2 r.1)
+    | Sum.inr transcript =>
+        (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s.1 >>= fun r =>
+          pure (r.1, (r.2.1, r.2.2), multipleBadReaderAdvance transcript s.1.2 s.2)
+
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- `multipleIdealLiftedQueryImpl` on a query: explicit form as an inner-state bind with the extra
 state component preserved. -/
@@ -574,6 +597,73 @@ lemma multipleBadQueryImpl_reader_run (transcript : TagTranscript Nonce Digest)
   change (multipleIdealLiftedQueryImpl (Sum.inr transcript) s) >>= _ = _
   rw [multipleIdealLiftedQueryImpl_run, bind_assoc]
   refine bind_congr fun r => ?_; rw [pure_bind]; rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `multipleBadQueryImplPathA` on a tag query: identical to `multipleBadQueryImpl_tag_run`
+since the Path-A variant only differs on reader queries. -/
+lemma multipleBadQueryImplPathA_tag_run (tag : TagId)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) :
+    (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s =
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s.1 >>= fun r =>
+        pure (r.1, (r.2.1, r.2.2), multipleBadAdvance tag s.2 r.1) := rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- `multipleBadQueryImplPathA` on a reader query: the multiple-ideal reader step, bad-world
+component advanced by `multipleBadReaderAdvance` using the pre-step multi cache `s.1.2`. -/
+lemma multipleBadQueryImplPathA_reader_run (transcript : TagTranscript Nonce Digest)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) :
+    (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s =
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s.1 >>= fun r =>
+        pure (r.1, (r.2.1, r.2.2),
+          multipleBadReaderAdvance transcript s.1.2 s.2) := rfl
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- **Path-A per-query bad monotonicity.** The Path-A handler preserves the `bad` flag in the
+sense that an already-set `bad` stays set after any single query step. `multipleBadAdvance` only
+OR-s into the flag, and `multipleBadReaderAdvance` leaves it untouched. -/
+lemma multipleBadQueryImplPathA_step_preserves_bad
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) (hbad : s.2.bad = true) :
+    ∀ z ∈ support ((multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t) s), z.2.2.bad = true := by
+  intro z hz
+  cases t with
+  | inl tag =>
+    rw [multipleBadQueryImplPathA_tag_run tag s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz; subst hz
+    cases r.1 <;> simp [multipleBadAdvance, hbad]
+  | inr transcript =>
+    rw [multipleBadQueryImplPathA_reader_run transcript s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz; subst hz
+    rw [multipleBadReaderAdvance_bad]; exact hbad
+
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- **Path-A per-query `badReader` monotonicity.** Once `badReader` is set, every Path-A query
+step keeps it set. The reader case OR-s into the flag; the tag case preserves it via
+`multipleBadAdvance`'s explicit `badReader := sB.badReader` carry-over. -/
+lemma multipleBadQueryImplPathA_step_preserves_badReader
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (s : MultipleBadState TagId Nonce Digest sessionsPerTag) (hbR : s.2.badReader = true) :
+    ∀ z ∈ support ((multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) t) s), z.2.2.badReader = true := by
+  intro z hz
+  cases t with
+  | inl tag =>
+    rw [multipleBadQueryImplPathA_tag_run tag s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz; subst hz
+    cases r.1 <;> simp [multipleBadAdvance, hbR]
+  | inr transcript =>
+    rw [multipleBadQueryImplPathA_reader_run transcript s] at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz; subst hz
+    exact multipleBadReaderAdvance_badReader_of_set transcript s.1.2 s.2 hbR
 
 open OracleComp.ProgramLogic.Relational in
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
@@ -616,6 +706,54 @@ lemma probOutput_multipleBad_run'_eq_multipleIdeal
     | inr transcript =>
       change RelTriple ((multipleBadQueryImpl (Sum.inr transcript)) s₁) _ _
       rw [multipleBadQueryImpl_reader_run]
+      refine relTriple_of_evalDist_eq_right
+        (congrArg evalDist (bind_pure ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s₁.1))) ?_
+      refine relTriple_bind (relTriple_refl _) ?_
+      rintro a b rfl
+      exact relTriple_pure_pure ⟨rfl, rfl⟩
+  exact probOutput_eq_of_relTriple_eqRel hrt true
+
+open OracleComp.ProgramLogic.Relational in
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+/-- **Path-A output equivalence.** The Path-A handler produces the same output distribution as
+the plain `multipleIdealQueryImpl`: the `badReader` flip is a pure side-effect on the bad-world
+component and does not feed back into the output bit. -/
+lemma probOutput_multipleBadPathA_run'_eq_multipleIdeal
+    (adversary : UnlinkAdversary TagId Nonce Digest)
+    (s : UnlinkState TagId × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    Pr[= true | (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run' (s, sB)] =
+      Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run' s] := by
+  have hrt : RelTriple
+      ((simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) adversary).run' (s, sB))
+      ((simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag)) adversary).run' s)
+      (EqRel Bool) := by
+    refine relTriple_simulateQ_run'
+      (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag))
+      (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag))
+      (fun s₁ s₂ => s₁.1 = s₂) adversary ?_ (s, sB) s rfl
+    intro t s₁ s₂ hs
+    subst hs
+    cases t with
+    | inl tag =>
+      change RelTriple ((multipleBadQueryImplPathA (Sum.inl tag)) s₁) _ _
+      rw [multipleBadQueryImplPathA_tag_run]
+      refine relTriple_of_evalDist_eq_right
+        (congrArg evalDist (bind_pure ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (Sum.inl tag)) s₁.1))) ?_
+      refine relTriple_bind (relTriple_refl _) ?_
+      rintro a b rfl
+      exact relTriple_pure_pure ⟨rfl, rfl⟩
+    | inr transcript =>
+      change RelTriple ((multipleBadQueryImplPathA (Sum.inr transcript)) s₁) _ _
+      rw [multipleBadQueryImplPathA_reader_run]
       refine relTriple_of_evalDist_eq_right
         (congrArg evalDist (bind_pure ((multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
           (Digest := Digest) (sessionsPerTag := sessionsPerTag) (Sum.inr transcript)) s₁.1))) ?_
