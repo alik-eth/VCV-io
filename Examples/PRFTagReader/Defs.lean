@@ -148,6 +148,10 @@ structure UnlinkBadState (TagId Nonce Digest : Type) where
   responses : ((TagId × Nonce) →ₒ List Digest).QueryCache
   bad : Bool
   badReader : Bool
+  /-- Shadow set of nonces that have been the target of a reader query. Path-A's eager-side
+  signal for "this nonce has been visited before" — feeds the stale-cell detection in the
+  eager reader handler when the lazy cache `cM` isn't in scope. -/
+  readerTouched : Nonce → Bool
 
 section UnlinkState
 
@@ -164,6 +168,7 @@ def UnlinkBadState.init : UnlinkBadState TagId Nonce Digest where
   responses := ∅
   bad := false
   badReader := false
+  readerTouched := fun _ => false
 
 end UnlinkState
 
@@ -491,7 +496,8 @@ def unlinkBadTagQueryImpl :
             ({ sessionsUsed := Function.update st.sessionsUsed tag (st.sessionsUsed tag + 1)
                responses := st.responses.cacheQuery (tag, nonce) outputs
                bad := bad
-               badReader := st.badReader } : UnlinkBadState TagId Nonce Digest)
+               badReader := st.badReader
+               readerTouched := st.readerTouched } : UnlinkBadState TagId Nonce Digest)
           return some transcript
         else
           return none

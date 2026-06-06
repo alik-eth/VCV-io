@@ -376,7 +376,8 @@ lemma MHBInv_tag_step
           responses := sB.responses.cacheQuery (tag, n)
             (u :: Option.getD (sB.responses (tag, n)) []),
           bad := sB.bad || (sB.responses (tag, n)).isSome,
-          badReader := sB.badReader } :
+          badReader := sB.badReader,
+          readerTouched := sB.readerTouched } :
           UnlinkBadState TagId Nonce Digest) := by
   obtain ⟨hcMH, hcMB, hbad, hsupp, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
   -- the bad-world `responses` cell `(tag, n)` is empty off-collision
@@ -430,7 +431,8 @@ def multipleBadAdvance (tag : TagId)
         responses := sB.responses.cacheQuery (tag, tr.nonce)
           (tr.auth :: Option.getD (sB.responses (tag, tr.nonce)) [])
         bad := sB.bad || (sB.responses (tag, tr.nonce)).isSome
-        badReader := sB.badReader }
+        badReader := sB.badReader
+        readerTouched := sB.readerTouched }
 
 /-- Bad-world state advance on a reader query: flips `badReader` exactly when a non-session
 multi cell at `transcript.nonce` already holds `transcript.auth`. Leaves all other fields
@@ -449,7 +451,8 @@ def multipleBadReaderAdvance
   { sB with
     badReader := sB.badReader ||
       decide (∃ tag : TagId, cM (tag, transcript.nonce) = some transcript.auth ∧
-        sB.responses (tag, transcript.nonce) = none) }
+        sB.responses (tag, transcript.nonce) = none)
+    readerTouched := Function.update sB.readerTouched transcript.nonce true }
 
 omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- `multipleBadReaderAdvance` preserves the existing `bad` flag: only `badReader` can change. -/
@@ -494,6 +497,83 @@ lemma multipleBadReaderAdvance_badReader_of_no_stale
       sB.responses (tag, transcript.nonce) = none) :
     (multipleBadReaderAdvance transcript cM sB).badReader = sB.badReader := by
   simp [multipleBadReaderAdvance, hno_stale]
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` always sets `readerTouched` at `transcript.nonce` to `true`. -/
+lemma multipleBadReaderAdvance_readerTouched_self
+    (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance transcript cM sB).readerTouched transcript.nonce = true := by
+  simp [multipleBadReaderAdvance]
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- `multipleBadReaderAdvance` preserves `readerTouched` at any nonce other than
+`transcript.nonce`. -/
+lemma multipleBadReaderAdvance_readerTouched_of_ne
+    (transcript : TagTranscript Nonce Digest)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    {n : Nonce} (hne : n ≠ transcript.nonce) :
+    (multipleBadReaderAdvance transcript cM sB).readerTouched n = sB.readerTouched n := by
+  simp [multipleBadReaderAdvance, Function.update_of_ne hne]
+
+/-- Eager-regime bad-world advance on a reader query. Mirrors `multipleBadReaderAdvance` but uses
+the deterministic table `g` (the eager analog of the lazy cache) and consults
+`sB.readerTouched transcript.nonce` to gate the stale check: a cell of `g` only counts as "stale"
+when `transcript.nonce` has been visited by an earlier reader query.
+
+This is the function the eager-table reader handler will call. The flip fires exactly when:
+* `transcript.nonce` was touched by a previous reader query (`sB.readerTouched`), and
+* some `(tag, transcript.nonce)` cell in `g` holds `transcript.auth`, and
+* that cell is not session-recorded (`sB.responses (tag, _) = none`).
+
+After firing, `readerTouched transcript.nonce := true` is set unconditionally to track future
+queries at this nonce. -/
+def multipleBadReaderAdvanceEager
+    (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) : UnlinkBadState TagId Nonce Digest :=
+  { sB with
+    badReader := sB.badReader ||
+      (sB.readerTouched transcript.nonce &&
+        decide (∃ tag : TagId, g (tag, transcript.nonce) = transcript.auth ∧
+          sB.responses (tag, transcript.nonce) = none))
+    readerTouched := Function.update sB.readerTouched transcript.nonce true }
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+lemma multipleBadReaderAdvanceEager_bad (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvanceEager transcript g sB).bad = sB.bad := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+lemma multipleBadReaderAdvanceEager_sessionsUsed (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvanceEager transcript g sB).sessionsUsed = sB.sessionsUsed := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+lemma multipleBadReaderAdvanceEager_responses (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvanceEager transcript g sB).responses = sB.responses := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+lemma multipleBadReaderAdvanceEager_badReader_of_set (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) (sB : UnlinkBadState TagId Nonce Digest)
+    (hbR : sB.badReader = true) :
+    (multipleBadReaderAdvanceEager transcript g sB).badReader = true := by
+  simp [multipleBadReaderAdvanceEager, hbR]
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Eager-side untouched-nonce stability.** If `transcript.nonce` has never been the target of a
+reader query (`sB.readerTouched transcript.nonce = false`), the eager advance leaves `badReader`
+untouched. This is what makes the FIRST reader query at a fresh nonce a no-op for the bad flag:
+the stale check is gated by `readerTouched`. -/
+lemma multipleBadReaderAdvanceEager_badReader_of_untouched
+    (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) (sB : UnlinkBadState TagId Nonce Digest)
+    (hunt : sB.readerTouched transcript.nonce = false) :
+    (multipleBadReaderAdvanceEager transcript g sB).badReader = sB.badReader := by
+  simp [multipleBadReaderAdvanceEager, hunt]
 
 /-- `multipleIdealQueryImpl` re-targeted to the larger `MultipleBadState` monad: runs the
 multiple-ideal handler on the inner state component and threads the extra `UnlinkBadState`
@@ -1037,7 +1117,8 @@ lemma MultipleHybridCoupling_tag_step
           responses := sB.responses.cacheQuery (tag, n)
             (u :: Option.getD (sB.responses (tag, n)) []),
           bad := sB.bad || (sB.responses (tag, n)).isSome,
-          badReader := sB.badReader } :
+          badReader := sB.badReader,
+          readerTouched := sB.readerTouched } :
           UnlinkBadState TagId Nonce Digest) := by
   obtain ⟨hcMH, hcMB, hbad, hbadR, hbadcol, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
   set sid : Fin sessionsPerTag := ⟨sM.1.sessionsUsed tag, hslot⟩ with hsid
