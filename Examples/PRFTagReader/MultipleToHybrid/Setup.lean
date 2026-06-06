@@ -173,6 +173,65 @@ lemma probEvent_multipleReader_disagree_le [Fintype Digest]
   refine hreject ⟨tag, sid, hsid, ?_⟩
   rw [← hcorr tag sid transcript.nonce hsid, hcc]
 
+omit [Nonempty TagId] [SampleableType Nonce] in
+/-- **Per-reader-query disagreement bound, relaxed form.** Drops the structural `hcol` hypothesis
+of `probEvent_multipleReader_disagree_le` and instead charges its failure into an explicit
+indicator term: the disagreement mass is at most `|TagId| / |Digest|` plus `1` whenever a
+non-session-recorded cached cell at `transcript.nonce` already holds `transcript.auth`. This is
+the Path-A (`badReader`) replacement for `hdist`: the caller is expected to flip a bad flag on
+the indicator-firing condition and charge it via a separate union bound, so the indicator term
+contributes only when the bad flag has already paid for the step. -/
+lemma probEvent_multipleReader_disagree_le_relaxed [Fintype Digest]
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (cH : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sn : HybridSessionNonce TagId Nonce sessionsPerTag)
+    (transcript : TagTranscript Nonce Digest)
+    (hcorr : ∀ tag sid n, sn (tag, sid) = some n → cM (tag, n) = cH ((tag, sid), n)) :
+    Pr[fun rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache =>
+        decide (∃ d ∈ rs.1, d = transcript.auth) = true ∧
+          hybridCacheAccepts (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) cH sn transcript = false |
+        idealCacheMapM (multipleReaderCells (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          transcript) cM] ≤
+      (Fintype.card TagId : ℕ) / (Fintype.card Digest : ℝ≥0∞) +
+      (if (∃ tag : TagId, cM (tag, transcript.nonce) = some transcript.auth ∧
+          ∀ sid : Fin sessionsPerTag, sn (tag, sid) ≠ some transcript.nonce)
+        then (1 : ℝ≥0∞) else 0) := by
+  classical
+  by_cases hstale : ∃ tag : TagId, cM (tag, transcript.nonce) = some transcript.auth ∧
+      ∀ sid : Fin sessionsPerTag, sn (tag, sid) ≠ some transcript.nonce
+  · -- Bad-flag-charged branch: bound by `1` via `probEvent_le_one`, recover via `le_add_left`.
+    simp only [hstale, if_true]
+    exact le_trans probEvent_le_one (le_add_left le_rfl)
+  · -- No stale match: the `hcol` hypothesis of the strict form holds for cells with value `auth`,
+    -- so the original proof goes through.
+    refine le_trans ?_ (le_add_right le_rfl)
+    rw [← multipleReaderCells_length (TagId := TagId) (Digest := Digest) transcript]
+    push_cast
+    refine le_trans (probEvent_mono fun rs _ hrs => ?_)
+      (probEvent_idealCacheMapM_mem_le _
+        (multipleReaderCells_nodup (TagId := TagId) (Digest := Digest) transcript) cM
+        transcript.auth)
+    obtain ⟨haccept, hreject⟩ := hrs
+    rw [decide_eq_true_eq] at haccept
+    refine ⟨haccept.1, fun cell hcell hcc => ?_⟩
+    obtain ⟨tag, rfl⟩ : ∃ tag, cell = (tag, transcript.nonce) := by
+      unfold multipleReaderCells at hcell
+      rw [List.mem_map] at hcell
+      obtain ⟨tag, _, rfl⟩ := hcell
+      exact ⟨tag, rfl⟩
+    -- The cell `(tag, transcript.nonce)` holds `auth`; if it were non-session-recorded the
+    -- `hstale` condition would fire, contradicting the case assumption. So it IS session-recorded,
+    -- and `hcorr` ports the value into the hybrid cache — contradicting `hybrid rejects`.
+    have hcell_auth : cM (tag, transcript.nonce) = some transcript.auth := hcc
+    have hsid_ex : ∃ sid : Fin sessionsPerTag, sn (tag, sid) = some transcript.nonce := by
+      by_contra hne
+      exact hstale ⟨tag, hcell_auth, fun sid hsn => hne ⟨sid, hsn⟩⟩
+    obtain ⟨sid, hsid⟩ := hsid_ex
+    rw [hybridCacheAccepts, decide_eq_false_iff_not] at hreject
+    refine hreject ⟨tag, sid, hsid, ?_⟩
+    rw [← hcorr tag sid transcript.nonce hsid, hcc]
+
 omit [Fintype TagId] [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest]
   [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- Shared post-state clauses for the multiple-to-hybrid tag step: under the off-collision
