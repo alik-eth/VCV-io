@@ -132,6 +132,51 @@ lemma multipleBadEager_reader_step_PathA [Fintype Nonce] [Fintype Digest]
             (OracleComp.tableExtending sM.2 gM)) oa).run (sM.1, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+  -- **Open obligation — proof body port from `multipleBadEager_reader_step`.**
+  --
+  -- The port follows the original 420-line proof body closely, with the following structural
+  -- adaptations driven by Path A's drop of `hdist` and addition of `badReader`:
+  --
+  -- 1. **`hMstep` shape.** PathA's reader handler returns
+  --    `pure (bit, sM.1, multipleBadReaderAdvanceEager transcript g sB)` instead of
+  --    `pure (bit, sM.1, sB)`. The bit (`unlinkReaderAccepts (...) transcript`) is unchanged.
+  --
+  -- 2. **Eager→lazy advance rewrite.** Under `hAB : MultipleBadPathACoupling sM.2 sB`, the
+  --    identity `multipleBadReaderAdvance_eq_Eager_of_coupling` rewrites
+  --    `multipleBadReaderAdvanceEager transcript (tableExtending sM.2 gM) sB`
+  --    to the gM-independent lazy form `multipleBadReaderAdvance transcript sM.2 sB`. After
+  --    this rewrite, the post-reader bad state is determined entirely by `(sM.2, sB)`.
+  --
+  -- 3. **Disagreement decomposition.** Without `hdist`, the original `hcol` (no stale cells at
+  --    `n₀`) is unavailable. Replace the `probEvent_multipleReader_disagree_le` invocation with
+  --    a case-split on the stale-match boolean
+  --    `stale := ∃ tag, sM.2 (tag, transcript.nonce) = some transcript.auth ∧
+  --              sB.responses (tag, transcript.nonce) = none`.
+  --    * `stale = true`: by `MultipleBadPathACoupling.(a)`, `readerTouched n₀ = true`. Then the
+  --      lazy advance flips `badReader`; the post-reader `Pr[badReader = true | continuation]`
+  --      forces the widened `bad ∨ badReader` event to 1. Bound: LHS success ≤ 1 ≤ Pr[bad ∨
+  --      badReader | continuation].
+  --    * `stale = false`: by the contrapositive of `(a)` and the equivalence of stale-cell
+  --      conditions with the hybrid-coupling `hInv.2.2.2.2.1`, the original `hcol'` precondition
+  --      of `probEvent_multipleReader_disagree_le` holds. Disagreement bound applies as in the
+  --      original.
+  --
+  -- 4. **IH precondition `MultipleBadPathACoupling`.** Use `MultipleBadPathACoupling_reader_step`
+  --    to thread the coupling through the IH at the post-reader cache `rs.2` and the post-reader
+  --    bad state `multipleBadReaderAdvance transcript sM.2 sB`.
+  --
+  -- 5. **`hfreshNew`.** Without `hb0`, the `n = n₀` case of the freshness witness needs a
+  --    different argument. Use `MultipleHybridColFresh` at the head query and the right disjunct
+  --    via the standard `hfresh` unfolding (no continuation freshness needed at `n₀` because
+  --    the post-reader cache `rs.2` already covers all cells at `n₀`).
+  --
+  -- 6. **Bad event widening.** Every occurrence of `z.2.bad = true` in the original proof
+  --    becomes `z.2.bad ∨ z.2.badReader`; the `multipleBadTableHandlerPathA_run_preserves_bad`
+  --    + `Or.inl` adapter (as in the slot-available tag-step port) covers monotonicity arguments.
+  --
+  -- See the commit `b1b552d` for the slot-available tag-step port's adapter patterns, and
+  -- `multipleBadEager_reader_step` in `EagerReader.lean` for the original 420-line proof body
+  -- this should mirror with the above adaptations.
   sorry
 
 end UnlinkReduction
