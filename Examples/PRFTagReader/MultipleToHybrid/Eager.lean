@@ -2697,9 +2697,34 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_conditioned [Fintype Nonce]
         cases qR with
         | zero => simp at hqR0
         | succ n => simpa [Nat.succ_sub_one] using h
-      -- Open: the substantive composition. Per-u IH with A ∩ {replyBool g = u}, then sum via
-      -- partition `∑_u 1[replyBool g = u] = 1`. Adds `Pr_g[A ∧ flip(g)] ≤ Pr_g[A] · |TagId|/|Digest|`
-      -- (from `probEvent_eagerReaderFlip_le` after dropping the A constraint via monotonicity).
+      -- Open: substantive composition. Per-u IH with A ∩ {replyBool g = u}, sum via partition.
+      --
+      -- **Deeper finding** (Session 12e analysis): the partition step closes cleanly:
+      --   LHS = ∑_u Pr[A ∧ replyBool g = u ∧ final.bR | run from advSB(g) via (k u)]
+      --       ≤ ∑_u (Pr[A ∧ replyBool g = u ∧ advSB(g).bR] + Pr[A ∩ {…}] · (qR-1) · slack)
+      --       = Pr[A ∧ advSB(g).bR] + Pr[A] · (qR-1) · slack             (partition collapses)
+      -- BUT the residual step still has an obstacle:
+      --   Pr[A ∧ advSB(g).bR] ≤ Pr[A ∧ (sB_fam g).bR] + Pr[A ∧ flip(g) ∧ ¬ start.bR]
+      -- needs `Pr[A ∧ flip] ≤ Pr[A] · slack`. This requires `A` to be INDEPENDENT of the
+      -- flip event over `g`. The conditioned-IH form is exactly designed so that, by induction,
+      -- the `A` passed at each level is built from past `replyBool` constraints. Each past
+      -- `replyBool` depends on cells `g(?, n_prev)` for PAST nonces — disjoint from the current
+      -- step's `g(?, t.nonce)` cells if past nonces ≠ t.nonce (the hdist assumption!).
+      --
+      -- So the conditioned-IH STRUCTURALLY needs an `hdist`-like assumption (or weakening) to
+      -- close. This pushes us BACK toward the dropped-hdist boundary or a tighter formulation.
+      --
+      -- **Alternative resolution**: switch to the LAZY view via the existing bridge
+      -- `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending`. In the lazy view,
+      -- non-cached cells are sampled on-demand; the per-step flip bound is `|TagId|/|Digest|`
+      -- by direct fresh-sample uniformity, no `A`-conditioning required. This is the
+      -- ORIGINAL lazy-aux approach, but with a STRENGTHENED precondition that forbids stale
+      -- non-session entries in the starting cache (which the existing
+      -- `MultipleBadPathACoupling` mostly captures). Closes via structural induction on `oa`
+      -- with no factor-2 obstacle because cell-uniformity is per-query.
+      --
+      -- Recommended next step: strengthen the lazy aux's precondition + close via the
+      -- strengthened coupling, rather than continuing the eager conditioned-IH route.
       sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
