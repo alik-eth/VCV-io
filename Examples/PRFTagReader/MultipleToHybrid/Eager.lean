@@ -2670,11 +2670,25 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_conditioned [Fintype Nonce]
     cases i with
     | inl tag =>
       -- Tag query: continuation budget unchanged. Tag step preserves badReader.
-      have _hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+      have hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
         intro u; simpa using hqRk u
-      -- Open: apply IH with new state family `sB_fam' g = multipleBadAdvance tag (sB_fam g) r.1`;
-      -- since `(multipleBadAdvance ...).badReader = (sB_fam g).badReader`, the IH bound matches.
-      sorry
+      simp_rw [multipleBadTablePathA_run_query_bind']
+      by_cases hslot : ∀ g : TagId × Nonce → Digest, ¬ (sM_fam g).sessionsUsed tag < sessionsPerTag
+      · -- Slot exhausted uniformly: step collapses to `pure (none, sM_fam g, sB_fam g)` for all g.
+        have hstep : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM_fam g, sB_fam g) =
+              pure ((none : Option (TagTranscript Nonce Digest)), sM_fam g, sB_fam g) := by
+          intro g
+          show (multipleTableHandler g (Sum.inl tag)) (sM_fam g) >>=
+            (fun r => pure (r.1, r.2, multipleBadAdvance tag (sB_fam g) r.1)) = _
+          rw [multipleTableHandler_tag_run_of_not_lt _ tag (sM_fam g) (hslot g)]
+          rfl
+        simp only [hstep, pure_bind]
+        exact ih none qR sM_fam sB_fam (hqRk' none)
+      · -- Slot-availability varies across g (mixed slot pattern) — substantive sub-case.
+        -- For the headline (constant families), this branch never triggers.
+        sorry
     | inr transcript =>
       -- Reader query: continuation budget drops by 1.
       have _hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) (qR - 1) := by
