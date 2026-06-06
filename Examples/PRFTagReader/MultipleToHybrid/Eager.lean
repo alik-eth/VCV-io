@@ -2653,9 +2653,40 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_conditioned [Fintype Nonce]
       Pr[fun g => A g ∧ (sB_fam g).badReader = true | ($ᵗ (TagId × Nonce → Digest))] +
         Pr[A | ($ᵗ (TagId × Nonce → Digest))] *
           ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
-  -- See Session 12e plan: induction on `oa`, with reader step using `probEvent_eagerReaderFlip_le`
-  -- and partition `∑_u 1[replyBool g = u] = 1` to compose without factor-2 inflation.
-  sorry
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR sM_fam sB_fam with
+  | pure b =>
+    -- The simulation of `pure b` is `pure (b, sM_fam g, sB_fam g)`; the inner state is unchanged.
+    simp only [simulateQ_pure, StateT.run_pure, pure_bind, bind_pure_comp, map_pure]
+    refine le_trans ?_ le_self_add
+    -- LHS becomes `Pr[fun (g,z) => A g ∧ z.2.2.2.bR | (fun g => (g, b, sM g, sB g)) <$> unif]`
+    -- which via `probEvent_map` equals `Pr[fun g => A g ∧ (sB_fam g).bR | unif]`.
+    refine le_of_eq ?_
+    rw [probEvent_map]
+    rfl
+  | query_bind i k ih =>
+    rw [OracleComp.isQueryBoundP_query_bind_iff] at _hqR
+    obtain ⟨hqR0, hqRk⟩ := _hqR
+    cases i with
+    | inl tag =>
+      -- Tag query: continuation budget unchanged. Tag step preserves badReader.
+      have _hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+        intro u; simpa using hqRk u
+      -- Open: apply IH with new state family `sB_fam' g = multipleBadAdvance tag (sB_fam g) r.1`;
+      -- since `(multipleBadAdvance ...).badReader = (sB_fam g).badReader`, the IH bound matches.
+      sorry
+    | inr transcript =>
+      -- Reader query: continuation budget drops by 1.
+      have _hqRk' : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) (qR - 1) := by
+        intro u
+        have h := hqRk u
+        cases qR with
+        | zero => simp at hqR0
+        | succ n => simpa [Nat.succ_sub_one] using h
+      -- Open: the substantive composition. Per-u IH with A ∩ {replyBool g = u}, then sum via
+      -- partition `∑_u 1[replyBool g = u] = 1`. Adds `Pr_g[A ∧ flip(g)] ≤ Pr_g[A] · |TagId|/|Digest|`
+      -- (from `probEvent_eagerReaderFlip_le` after dropping the A constraint via monotonicity).
+      sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
