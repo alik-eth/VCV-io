@@ -2269,9 +2269,26 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager [Fintype Nonce] [Fintype Di
       -- Slot dispatch: slot-exhausted is structurally trivial (step is `pure (none, sM, sB)`),
       -- slot-available involves the nonce-sample + marginalization argument.
       by_cases hslot : sM.sessionsUsed tag < sessionsPerTag
-      · -- Slot available: nonce sample + g(tag, nonce) lookup.
-        -- TODO Session 11b: marginalization via `evalDist_uniformSample_bind_update` on
-        -- `(tag, nonce)` to replace `g(tag, nonce)` with an independent uniform `u`, then IH.
+      · -- **Slot available** (Session 11b): structural challenge.
+        --
+        -- After unfolding via `multipleTableHandler_tag_run_of_lt`, the step is
+        --   `($ᵗ Nonce) >>= fun nonce => pure (some ⟨nonce, g(tag, nonce)⟩, advU, advSB g nonce)`
+        -- where `advSB g nonce = multipleBadAdvance tag sB (some ⟨nonce, g(tag, nonce)⟩)` —
+        -- both the reply transcript AND the new bad state's `responses` cache depend on
+        -- `g(tag, nonce)`. After `pure_bind`, the continuation becomes
+        --   `do g ← uniform; do nonce ← uniform;
+        --      (sim handler g (k (some ⟨nonce, g(tag, nonce)⟩))).run (advU, advSB g nonce)`.
+        --
+        -- The IH form is `do g' ← uniform; (sim handler g' (k u)).run (sM', sB')` for a FIXED
+        -- continuation argument `u : Range (inl tag)` and FIXED state. Here neither is fixed:
+        -- both depend on `g`. Standard approaches (split on `u`, multiply by `Pr[u]`) introduce a
+        -- 2× factor (for the Bool reply case) or worse, breaking the |TagId|/|Digest| budget.
+        --
+        -- The clean resolution generalizes the aux to a g-DEPENDENT family
+        -- `oa_fam : (TagId × Nonce → Digest) → UnlinkAdversary ...` with bound preserved across
+        -- the bind. That generalization is the Session-12+ machinery (analogous to how
+        -- `multipleBad_le_hybrid_add_bad_add_slack_aux_PathA` threads g-dependence through its
+        -- proof via the eager-table equivalence at each step).
         sorry
       · -- Slot exhausted: `multipleTableHandler_tag_run_of_not_lt` collapses the step to
         -- `pure (none, sM, sB)` (since `multipleBadAdvance tag sB none = sB` by definition).
@@ -2288,14 +2305,28 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager [Fintype Nonce] [Fintype Di
         simp only [hstep]
         exact ih none qR sM sB (hqRk' none)
     | inr transcript =>
-      -- Reader query: budget decrements (`(inr _).isRight = true`).
-      -- TODO Session 11c: the reader step is fully `g`-deterministic. Per the definition of
-      -- `multipleBadTableHandlerPathA`'s reader case, the bad state's `badReader` field becomes
-      -- `sB.badReader || (sB.readerTouched n && decide (∃ tag : g(tag,n) = auth ∧
-      -- sB.responses (tag,n) = none))`. Split on `sB.readerTouched transcript.nonce`:
-      --   * `false`: the gate kills the flip; IH at `qR-1` closes immediately.
-      --   * `true`: bound `Pr_g[∃ tag : g(tag,n) = auth ∧ ...] ≤ |TagId|/|Digest|` via marginal
-      --     independence of `g(_, n)`, plus IH at `qR-1` for the continuation.
+      -- **Reader query** (Session 11c): same structural challenge as slot-available tag case.
+      --
+      -- The eager reader step (`multipleTableHandler_reader_run`) is fully `g`-deterministic:
+      --   step g = pure (replyBool g, sM, multipleBadReaderAdvanceEager transcript g sB)
+      -- where `replyBool g = ReaderReply.ofBool (unlinkReaderAccepts (fun tag n => g (tag, n))
+      -- ... transcript)` depends on `g`. After `pure_bind`, the continuation becomes
+      --   `do g ← uniform; (sim handler g (k (replyBool g))).run (sM, advSB g)`
+      -- with `advSB g = multipleBadReaderAdvanceEager transcript g sB`.
+      --
+      -- **Two sub-cases** (both blocked by the same g-dependence issue as slot-available tag):
+      --   * `sB.readerTouched n = false`: `advSB g = { sB with readerTouched := update }` is
+      --     constant in `g` (the `badReader` field becomes `sB.badReader || (false && _) =
+      --     sB.badReader`). But `replyBool g` still depends on `g`, so the IH form-mismatch
+      --     persists. With a g-dependent-family aux, this case would close via IH at `qR-1`
+      --     directly (no slack needed; the gate kills the flip).
+      --   * `sB.readerTouched n = true`: the flip CAN happen. Bound the conditional flip
+      --     probability `Pr_g[(sB.readerTouched n && decide(∃ tag : g(tag,n) = auth ∧
+      --     responses(tag,n) = none)) = true]` by `|TagId|/|Digest|` via
+      --     `evalDist_uniformSample_bind_update` (marginal independence of `g(tag, n)` for each
+      --     non-session tag), then union over `tag`. Plus IH at `qR-1`.
+      --
+      -- Both sub-cases depend on the Session-12+ g-dependent-family aux machinery.
       sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
