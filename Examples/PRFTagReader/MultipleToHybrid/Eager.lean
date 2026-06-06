@@ -1282,6 +1282,100 @@ theorem multipleIdeal_le_hybrid_add_bad_PathA [Fintype Nonce] [Fintype Digest]
   -- Initial multiple cache is empty, so the SubB-off-collision filter is empty.
   simp [QueryCache.empty_apply]
 
+/-! ### Path-A explicit-slack form (Session 10)
+
+The headline `multipleIdeal_le_hybrid_add_bad_PathA` carries `Pr[bad ∨ badReader]` as an abstract
+term. Two further simplifications turn that into an explicit numeric bound matching the original
+shape (modulo the documented Path-A constant-factor degradation):
+
+* Union-bound `Pr[bad ∨ badReader] ≤ Pr[bad] + Pr[badReader]`.
+* The reader-side `Pr[badReader on multipleBadQueryImplPathA] ≤ qR · |TagId| / |Digest|` from
+  the per-step uniformity of the eager table (Session-5 equivalence + a counting argument over
+  the `badReader` event's defining quantifier).
+
+The resulting headline `multipleIdeal_le_hybrid_add_bad_PathA_explicit` exposes a clean numeric
+bound: `Pr[hybrid] + Pr[bad on PathA] + 2 · qR · |TagId| / |Digest| + qR · qT / |Nonce|`. The
+constant-factor `2` is the Path-A cost of dropping `hdist`. -/
+
+/-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
+`multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
+stale cached cell matching the transcript authenticator, fires with total probability at most
+`qReader · |TagId| / |Digest|` over a run of `multipleBadQueryImplPathA`.
+
+Proof sketch (open): eagerize via `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending`;
+union-bound across reader queries; per query, the gate `readerTouched` does not reduce mass and
+the inner `∃ tag, g(tag, n) = transcript.auth ∧ …` event has uniform mass `≤ |TagId| / |Digest|`
+under the uniform-table draw. -/
+lemma probEvent_multipleBadPathA_badReader_le [Fintype Nonce] [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest) (qReader : ℕ)
+    (_hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader) :
+    Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.badReader |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+          ((UnlinkState.init, ∅), UnlinkBadState.init)] ≤
+      ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  -- TODO Session 10 continuation: per-step uniform-table union bound.
+  sorry
+
+/-- **Path-A multiple-to-hybrid, explicit-slack headline.** Union-bounds the abstract
+`Pr[bad ∨ badReader]` term of `multipleIdeal_le_hybrid_add_bad_PathA` into the original
+`Pr[bad]` term (now on the Path-A handler) plus an explicit numeric slack from
+`probEvent_multipleBadPathA_badReader_le`. The total slack against the
+`hdist`-using `multipleIdeal_le_hybrid_add_bad` is a factor-of-2 inflation of the
+`qReader · |TagId| / |Digest|` term: this is the Path-A cost of dropping the
+`HasDistinctUnlinkReaderNonces` hypothesis. -/
+theorem multipleIdeal_le_hybrid_add_bad_PathA_explicit [Fintype Nonce] [Fintype Digest]
+    (adversary : UnlinkAdversary TagId Nonce Digest) (qReader qTag : ℕ)
+    (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
+    (hqTag : OracleComp.IsQueryBoundP adversary (·.isLeft) qTag) :
+    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (UnlinkState.init, ∅)] ≤
+      Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+        (HybridState.init, ∅)] +
+      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+          ((UnlinkState.init, ∅), UnlinkBadState.init)] +
+      2 * ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+      ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+  have hA := multipleIdeal_le_hybrid_add_bad_PathA (sessionsPerTag := sessionsPerTag)
+    adversary qReader qTag hqReader hqTag
+  -- Abbreviate the recurring terms so the algebra below stays legible.
+  set H := Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
+      (HybridState.init, ∅)]
+  set B := Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
+    (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+      ((UnlinkState.init, ∅), UnlinkBadState.init)]
+  set BR := Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+      z.2.2.badReader |
+    (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+      ((UnlinkState.init, ∅), UnlinkBadState.init)]
+  set U := Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag =>
+      z.2.2.bad ∨ z.2.2.badReader |
+    (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
+      ((UnlinkState.init, ∅), UnlinkBadState.init)]
+  set a := ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
+  set b := ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
+  have hUnion : U ≤ B + BR := probEvent_or_le _ _ _
+  have hBR : BR ≤ a := probEvent_multipleBadPathA_badReader_le (sessionsPerTag := sessionsPerTag)
+    adversary qReader hqReader
+  have h2a : a + a = 2 * ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) /
+      (Fintype.card Digest : ℝ≥0∞) := by
+    simp only [a, ← two_mul, ENNReal.div_add_div_same, mul_div_assoc]
+  refine hA.trans ?_
+  calc H + U + a + b
+      ≤ H + (B + BR) + a + b := by gcongr
+    _ ≤ H + (B + a) + a + b := by gcongr
+    _ = H + B + (a + a) + b := by ring
+    _ = H + B + 2 * ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞) + b := by rw [h2a]
+
 
 end UnlinkReduction
 
