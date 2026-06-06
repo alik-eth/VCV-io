@@ -265,6 +265,132 @@ lemma multipleBadTableHandlerPathA_run_preserves_badReader {α : Type} (g : TagI
     obtain ⟨q, hq, hz⟩ := hz
     exact ih q.1 q.2 (multipleBadTableHandlerPathA_step_preserves_badReader g t p hbR q hq) z hz
 
+/-! ### Path-A coupling invariant linking the lazy cache and `readerTouched`
+
+For the Path-A eager equivalence to hold, the lazy cache `c` and the shadow `sB.readerTouched`
+must agree on which `(tag, n)` cells are "reader-written" (cached but not session-recorded). The
+predicate `MultipleBadPathACoupling c sB` packages the two directions of this agreement:
+
+* `Q`: every nonce in `readerTouched` has the full column cached in `c` (a reader query at `n`
+  writes all `|TagId|` cells `(tag, n)`);
+* `(a)`: every cached non-session cell `(tag, n)` has `readerTouched n = true` (the cell was
+  written by the reader query that marked `n`).
+
+The pair `(Q, (a))` is preserved by all per-query steps of the Path-A lazy handler and is what
+makes the lazy `multipleBadReaderAdvance transcript c sB` and the eager
+`multipleBadReaderAdvanceEager transcript (tableExtending c g) sB` produce the same bad-state
+update pointwise (independent of the eager-table draw `g`). -/
+
+/-- Path-A coupling invariant on the lazy cache `c` and the bad state `sB`. -/
+def MultipleBadPathACoupling
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest) : Prop :=
+  (∀ n : Nonce, sB.readerTouched n = true → ∀ tag : TagId, (c (tag, n)).isSome) ∧
+  (∀ (tag : TagId) (n : Nonce),
+    (c (tag, n)).isSome → sB.responses (tag, n) = none → sB.readerTouched n = true)
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+lemma MultipleBadPathACoupling_init :
+    MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (∅ : ((TagId × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init := by
+  refine ⟨?_, ?_⟩
+  · intro n hRT _; simp [UnlinkBadState.init] at hRT
+  · intro _ _ h1 _; simp at h1
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The Path-A coupling invariant survives the off-collision tag step: the new cell
+`(tag, tr.nonce)` is added to BOTH the cache and `sB.responses`, so `(a)`'s
+`responses = none` hypothesis fails for it; and `readerTouched` is preserved unchanged, so `Q`'s
+column condition is unchanged at every previously-touched nonce. -/
+lemma MultipleBadPathACoupling_tag_advance_some
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (h : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) c sB)
+    (tag : TagId) (tr : TagTranscript Nonce Digest) :
+    MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (c.cacheQuery (tag, tr.nonce) tr.auth) (multipleBadAdvance tag sB (some tr)) := by
+  obtain ⟨hQ, ha⟩ := h
+  refine ⟨?_, ?_⟩
+  · intro n hRT tag'
+    -- multipleBadAdvance for `some tr` preserves readerTouched
+    have hRT' : sB.readerTouched n = true := by
+      simpa [multipleBadAdvance] using hRT
+    have hcprev := hQ n hRT' tag'
+    -- `cacheQuery` only adds; preserves `isSome` at all other cells.
+    by_cases hkey : (tag', n) = (tag, tr.nonce)
+    · rw [hkey, QueryCache.cacheQuery_self]; rfl
+    · rwa [QueryCache.cacheQuery_of_ne _ _ hkey]
+  · intro tag' n h1 h2
+    -- multipleBadAdvance for `some tr`: responses' = responses.cacheQuery (tag, tr.nonce) (...)
+    by_cases hkey : (tag', n) = (tag, tr.nonce)
+    · -- new cell — responses' at this key is `some _`, contradicting `h2 : responses' = none`
+      exfalso
+      have hsome : (multipleBadAdvance tag sB (some tr)).responses (tag', n)
+          = some (tr.auth :: Option.getD (sB.responses (tag, tr.nonce)) []) := by
+        rw [hkey]
+        show (sB.responses.cacheQuery (tag, tr.nonce) _) (tag, tr.nonce) = _
+        rw [QueryCache.cacheQuery_self]
+      rw [hsome] at h2; cases h2
+    · -- old cell — both `c` and `responses` are unchanged at this key
+      have hc_eq : c.cacheQuery (tag, tr.nonce) tr.auth (tag', n) = c (tag', n) :=
+        QueryCache.cacheQuery_of_ne _ _ hkey
+      have hresp_eq : (sB.responses.cacheQuery (tag, tr.nonce)
+          (tr.auth :: Option.getD (sB.responses (tag, tr.nonce)) [])) (tag', n) =
+            sB.responses (tag', n) := QueryCache.cacheQuery_of_ne _ _ hkey
+      rw [hc_eq] at h1
+      have hresp_none : sB.responses (tag', n) = none := by
+        change (sB.responses.cacheQuery (tag, tr.nonce) _) (tag', n) = none at h2
+        rw [hresp_eq] at h2; exact h2
+      -- readerTouched on multipleBadAdvance preserves; apply (a) and rewrite back
+      change sB.readerTouched n = true
+      exact ha tag' n h1 hresp_none
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The Path-A coupling invariant is trivially preserved by the slot-exhausted tag step
+(`r.1 = none`): the cache is unchanged and `multipleBadAdvance tag sB none = sB`. -/
+lemma MultipleBadPathACoupling_tag_advance_none
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (h : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) c sB)
+    (tag : TagId) :
+    MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      c (multipleBadAdvance tag sB none) := h
+
+/-- **Path-A flip-event matching.** Under the coupling invariant `MultipleBadPathACoupling c sB`,
+the LAZY stale-match condition over `c` and the EAGER stale-match condition over
+`tableExtending c g` (gated by `readerTouched`) are equivalent — that is, the boolean OR-ed into
+`badReader` is the same on both sides. This is the load-bearing identity that lets the Path-A
+eager equivalence hold pointwise (not just in distribution). -/
+lemma multipleBadReaderAdvance_eq_Eager_of_coupling
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (h : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) c sB)
+    (transcript : TagTranscript Nonce Digest)
+    (g : TagId × Nonce → Digest) :
+    multipleBadReaderAdvance transcript c sB =
+      multipleBadReaderAdvanceEager transcript (OracleComp.tableExtending c g) sB := by
+  classical
+  obtain ⟨hQ, ha⟩ := h
+  unfold multipleBadReaderAdvance multipleBadReaderAdvanceEager
+  congr 1
+  -- only the `badReader` and `readerTouched` fields differ structurally; show the lazy and eager
+  -- flip booleans agree.
+  refine Bool.eq_iff_iff.mpr ?_
+  simp only [Bool.or_eq_true, Bool.and_eq_true, decide_eq_true_eq]
+  refine or_congr Iff.rfl ?_
+  constructor
+  · rintro ⟨tag, hcv, hresp⟩
+    refine ⟨ha tag transcript.nonce ?_ hresp, tag, ?_, hresp⟩
+    · rw [hcv]; rfl
+    · simp [OracleComp.tableExtending, hcv]
+  · rintro ⟨hRT, tag, hgv, hresp⟩
+    have hcsome := hQ transcript.nonce hRT tag
+    obtain ⟨v, hcv⟩ := Option.isSome_iff_exists.mp hcsome
+    have hg_eq : OracleComp.tableExtending c g (tag, transcript.nonce) = v := by
+      simp [OracleComp.tableExtending, hcv]
+    rw [hg_eq] at hgv
+    exact ⟨tag, hcv.trans (by rw [hgv]), hresp⟩
+
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution
 (output bit, multiple-ideal state and bad-world state) as sampling a full random-oracle table `g`,
