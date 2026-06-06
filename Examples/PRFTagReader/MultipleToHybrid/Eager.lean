@@ -2453,9 +2453,10 @@ The proof is purely a counting argument over `g`:
    `evalDist_uniformSample_bind_update`).
 5. Sum: `|TagId| · 1/|Digest| = |TagId|/|Digest|`.
 
-Once closed, this lemma serves both the structural induction (per-step bound) and the
-trace-based union argument (per-reader-query term in the union-on-flip-events bound). -/
-lemma probEvent_eagerReaderFlip_le [Fintype Nonce] [Fintype Digest]
+Serves both the structural induction (per-step bound) and the trace-based union argument
+(per-reader-query term in the union-on-flip-events bound). -/
+omit [Nonempty TagId] [SampleableType Nonce] in
+lemma probEvent_eagerReaderFlip_le [Fintype Nonce] [Fintype Digest] [Nonempty Digest]
     (transcript : TagTranscript Nonce Digest)
     (sB : UnlinkBadState TagId Nonce Digest) :
     Pr[fun g : TagId × Nonce → Digest =>
@@ -2463,14 +2464,89 @@ lemma probEvent_eagerReaderFlip_le [Fintype Nonce] [Fintype Digest]
         sB.badReader = false |
         ($ᵗ (TagId × Nonce → Digest))] ≤
       (Fintype.card TagId : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
-  -- Proof outline:
-  --   Pr_g[flip ∧ ¬ start.bR] ≤ Pr_g[∃ tag, g(tag, n) = auth]
-  --                          ≤ ∑_{tag : Finset.univ} Pr_g[g(tag, n) = auth]
-  --                          ≤ |TagId| · 1/|Digest|
-  --                          = |TagId|/|Digest|.
-  -- The third inequality uses the cell-uniformity of `g` via the marginal
-  -- `evalDist_uniformSample_bind_update`. Open as Session 12d-helper.
-  sorry
+  classical
+  -- Case 1: sB.badReader = true. The `sB.badReader = false` conjunct makes the event
+  -- empty everywhere; the LHS is 0.
+  by_cases hbR : sB.badReader = true
+  · refine le_of_eq_of_le (probEvent_eq_zero ?_) (zero_le _)
+    rintro g _ ⟨_, hfalse⟩
+    rw [hbR] at hfalse
+    cases hfalse
+  -- Case 2: sB.badReader = false. Drop the gate conjuncts via monotonicity and
+  -- reduce to `∃ tag, g(tag, n) = auth`.
+  have hbRf : sB.badReader = false := by
+    cases h : sB.badReader
+    · rfl
+    · exact absurd h hbR
+  refine le_trans (probEvent_mono (p := fun g : TagId × Nonce → Digest =>
+      (multipleBadReaderAdvanceEager transcript g sB).badReader = true ∧
+        sB.badReader = false)
+    (q := fun g : TagId × Nonce → Digest =>
+      ∃ tag : TagId, g (tag, transcript.nonce) = transcript.auth)
+    (mx := ($ᵗ (TagId × Nonce → Digest))) ?_) ?_
+  · rintro g _ ⟨hadv, _⟩
+    -- Unfold the eager advance under `sB.badReader = false`.
+    have hadv' : sB.readerTouched transcript.nonce = true ∧
+        ∃ tag : TagId, g (tag, transcript.nonce) = transcript.auth ∧
+                       sB.responses (tag, transcript.nonce) = none := by
+      have h0 := hadv
+      rw [multipleBadReaderAdvanceEager] at h0
+      simp only [hbRf, Bool.false_or, Bool.and_eq_true, decide_eq_true_iff] at h0
+      exact h0
+    exact hadv'.2.imp (fun _ h => h.1)
+  -- Now: `Pr_g[∃ tag, g(tag, n) = auth] ≤ |TagId|/|Digest|`.
+  -- Rewrite `∃ tag` to `∃ tag ∈ Finset.univ` to apply `probEvent_exists_finset_le_sum`.
+  have hrw : (fun g : TagId × Nonce → Digest =>
+        ∃ tag : TagId, g (tag, transcript.nonce) = transcript.auth) =
+      (fun g : TagId × Nonce → Digest =>
+        ∃ tag ∈ (Finset.univ : Finset TagId), g (tag, transcript.nonce) = transcript.auth) := by
+    funext g; simp
+  rw [hrw]
+  refine (probEvent_exists_finset_le_sum (Finset.univ : Finset TagId)
+    ($ᵗ (TagId × Nonce → Digest))
+    (fun tag g => g (tag, transcript.nonce) = transcript.auth)).trans ?_
+  -- Per-tag bound via cell-uniformity marginal:
+  -- `Pr_g[g(tag, n) = auth] = 1/|Digest|`. Then `∑_{tag : univ} 1/|Digest| = |TagId|/|Digest|`.
+  have hmarginal : ∀ tag : TagId,
+      Pr[fun g : TagId × Nonce → Digest => g (tag, transcript.nonce) = transcript.auth |
+          ($ᵗ (TagId × Nonce → Digest))] = (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+    intro tag
+    -- Convert to map form: `Pr[fun g => g (tag, n) = auth | mx] = Pr[(· = auth) | (fun g => g (tag, n)) <$> mx]`.
+    rw [show (fun g : TagId × Nonce → Digest => g (tag, transcript.nonce) = transcript.auth) =
+        ((· = transcript.auth) ∘ fun g : TagId × Nonce → Digest => g (tag, transcript.nonce))
+        from rfl, ← probEvent_map]
+    -- Reduce the map to the do-bind form so `evalDist_uniformSample_bind_update_map` applies.
+    rw [show ((fun g : TagId × Nonce → Digest => g (tag, transcript.nonce)) <$>
+            ($ᵗ (TagId × Nonce → Digest))) =
+        (do let g ← $ᵗ (TagId × Nonce → Digest); pure (g (tag, transcript.nonce)))
+        from (bind_pure_comp _ _).symm]
+    -- Use the cell-uniformity marginal: rewrite the do-bind as
+    -- `do u ← $ᵗ Digest; g ← $ᵗ; pure ((Function.update g (tag, n) u) (tag, n))`.
+    have hupdmap := evalDist_uniformSample_bind_update_map (R := Digest) (D := TagId × Nonce)
+      (tag, transcript.nonce) (fun g : TagId × Nonce → Digest => g (tag, transcript.nonce))
+    rw [probEvent_def, ← hupdmap, ← probEvent_def]
+    -- Goal: Pr[(· = auth) | do u ← $ᵗ; g ← $ᵗ; pure ((Function.update g (tag, n) u) (tag, n))]
+    --     = 1/|Digest|
+    -- Simplify `(Function.update g (tag, n) u) (tag, n) = u`.
+    simp only [Function.update_self]
+    -- Goal: Pr[(· = auth) | do u ← $ᵗ Digest; g ← $ᵗ; pure u] = 1/|Digest|
+    -- Expand the outer bind via `probEvent_bind_eq_sum_fintype`; the inner bind has constant
+    -- continuation `pure u` in `g`, so its `Pr` collapses via `probEvent_bind_const`.
+    rw [HasEvalSPMF.probEvent_bind_eq_sum_fintype]
+    -- Goal: ∑ u : Digest, Pr[= u | $ᵗ Digest] * Pr[(· = auth) | do g ← $ᵗ; pure u] = 1/|Digest|
+    -- Inner: Pr[(· = auth) | $ᵗ >>= fun _ => pure u] = Pr[(· = auth) | pure u] = if u = auth then 1 else 0
+    have hinner : ∀ u : Digest,
+        Pr[(· = transcript.auth) | (($ᵗ (TagId × Nonce → Digest)) >>= fun _ => pure u)]
+          = if u = transcript.auth then (1 : ℝ≥0∞) else 0 := by
+      intro u
+      rw [probEvent_bind_const, probFailure_uniformSample, tsub_zero, one_mul, probEvent_pure]
+    simp_rw [hinner, probOutput_uniformSample, mul_ite, mul_one, mul_zero]
+    -- Goal: ∑ u : Digest, (if u = auth then |Digest|⁻¹ else 0) = |Digest|⁻¹
+    rw [Finset.sum_ite_eq' Finset.univ transcript.auth (fun _ : Digest => (Fintype.card Digest : ℝ≥0∞)⁻¹)]
+    simp
+  refine (Finset.sum_le_sum (fun tag _ => le_of_eq (hmarginal tag))).trans ?_
+  rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul, ENNReal.div_eq_inv_mul,
+      mul_comm]
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
