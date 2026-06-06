@@ -2437,6 +2437,41 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_family [Fintype Nonce] [Fin
       -- the adversary structure + `IsQueryBoundP`). Open as Session 12d.
       sorry
 
+/-! ### Session 12d — single-step flip building block
+
+A focused per-step bound: over a uniform draw of the eager table `g`, a single application of
+`multipleBadReaderAdvanceEager` flips `badReader` from `false` to `true` with probability at
+most `|TagId|/|Digest|`. This is the substantive cell-uniformity fact behind the `|TagId|/|Digest|`
+slack in the multi-query bound — any structural-induction OR trace-based proof of the headline
+must invoke an instance of this lemma at every reader step.
+
+The proof is purely a counting argument over `g`:
+1. The flip predicate is `sB.readerTouched n && ∃ tag, g(tag, n) = auth ∧ resp(tag,n) = none`.
+2. Drop the gate conjuncts: `Pr_g[flip] ≤ Pr_g[∃ tag, g(tag, n) = auth]`.
+3. Union bound: `≤ ∑_{tag} Pr_g[g(tag, n) = auth]`.
+4. Marginal evaluation: `Pr_g[g(tag, n) = auth] = 1/|Digest|` (cell uniformity from
+   `evalDist_uniformSample_bind_update`).
+5. Sum: `|TagId| · 1/|Digest| = |TagId|/|Digest|`.
+
+Once closed, this lemma serves both the structural induction (per-step bound) and the
+trace-based union argument (per-reader-query term in the union-on-flip-events bound). -/
+lemma probEvent_eagerReaderFlip_le [Fintype Nonce] [Fintype Digest]
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    Pr[fun g : TagId × Nonce → Digest =>
+        (multipleBadReaderAdvanceEager transcript g sB).badReader = true ∧
+        sB.badReader = false |
+        ($ᵗ (TagId × Nonce → Digest))] ≤
+      (Fintype.card TagId : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  -- Proof outline:
+  --   Pr_g[flip ∧ ¬ start.bR] ≤ Pr_g[∃ tag, g(tag, n) = auth]
+  --                          ≤ ∑_{tag : Finset.univ} Pr_g[g(tag, n) = auth]
+  --                          ≤ |TagId| · 1/|Digest|
+  --                          = |TagId|/|Digest|.
+  -- The third inequality uses the cell-uniformity of `g` via the marginal
+  -- `evalDist_uniformSample_bind_update`. Open as Session 12d-helper.
+  sorry
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
