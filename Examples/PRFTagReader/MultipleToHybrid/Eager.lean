@@ -2239,35 +2239,35 @@ lemma probEvent_multipleBadPathA_badReader_aux [Fintype Nonce] [Fintype Digest]
       -- compatible with the coupling. This is the `randomOracle` semantics applied to the
       -- bad-state coupling — Session 13's substantive work.
       --
-      -- ⚠️ **Session 13 deeper finding — the Path-A bound `qR · |TagId|/|Digest|` is**
-      -- ⚠️ **INCORRECT without hdist.** Concrete binary-search attack:
-      --   * Adversary makes ~log|Digest| reader queries at the SAME nonce `n`,
-      --     binary-searching to find some `g(tag, n)`. Each query reveals 1 bit
-      --     (`decide (∃ tag, g(tag, n) = auth_q)`).
-      --   * After ~log|Digest| queries, adversary knows `g(tag, n)` for at least one tag.
-      --   * One final query with `auth = that known value` triggers `badReader = true` with
-      --     probability 1.
-      --   * Total queries: `qR = log|Digest| + 1`. Path-A bound `qR · |TagId|/|Digest|`
-      --     ≈ `log|Digest| · |TagId|/|Digest|` is NEGLIGIBLE for large |Digest|, but the
-      --     actual `Pr[badReader = true]` is 1.
+      -- **Session 13 finding (REVISED after codex review)**: the headline bound
+      -- `qR · |TagId|/|Digest|` IS correct (independent codex verification + my re-analysis).
+      -- My earlier "binary-search counterexample" was wrong: `replyBool g = decide (∃ tag,
+      -- g(tag, n) = auth)` is an EXACT-match query, not a range/comparison query. There is
+      -- no comparison operator on `Digest`, so the adversary cannot binary-search to narrow
+      -- a single cell's value.
       --
-      -- The marginal-per-query argument `Pr[flip at q-th] ≤ |TagId|/|Digest|` only holds
-      -- when `n_q ≠ all past nonces` — which is exactly `hdist`. With repeated-nonce
-      -- attacks, past `replyBool g` outputs at nonce `n_q` leak info about `g(?, n_q)`
-      -- cells, breaking the per-query independence the slack term assumes.
+      -- The correct adaptive analysis:
+      --   * At query q, adversary picks `auth_q` (history-determined). The marginal flip
+      --     prob `Pr_g[flip at q-th]` ≤ `|TagId|/|Digest|` by the cell-uniformity lemma
+      --     `probEvent_eagerReaderFlip_le`. (Per-`g` flip prob can be higher conditional on
+      --     a hit found at an earlier query — replay then fires with prob 1 — but the
+      --     marginal over `g` averages back to the slack.)
+      --   * `Pr_g[badReader@final = true]` ≤ `∑_{q=1}^{qR} Pr_g[flip at q-th reader query]`
+      --     ≤ `qR · |TagId|/|Digest|` by union.
       --
-      -- **Strategic conclusion**: dropping `hdist` requires either
-      --   (a) a *weaker* headline bound (e.g., `qR · 2^qR · |TagId|/|Digest|`, still
-      --       cryptographically negligible for polynomial `qR` and `|Digest| = 2^λ`), OR
-      --   (b) a *different bad event* with different gating, OR
-      --   (c) a *restricted adversary class* (e.g., non-adaptive in `auth`), OR
-      --   (d) instrumenting the proof with a hardness assumption (e.g., the PRF assumption
-      --       directly bounds the binary-search attack via key uniformity).
+      -- The proof obstacle is NOT correctness of the bound — it's the *technique*. Structural
+      -- induction on `oa` introduces a factor-2 inflation at the reader step (splitting on
+      -- `replyBool g = u` makes each `u`-branch's IH apply independently, double-counting).
+      -- The trace-level union argument (sum over q ∈ Fin qR) is the right technique and
+      -- avoids the factor-2 because it never splits on `replyBool g`.
       --
-      -- The current `multipleIdeal_le_hybrid_add_bad_PathA_explicit` (line ~2467) presents the
-      -- bound as `2 · qR · |TagId|/|Digest|`, which is also negligible-vs-real-attack and
-      -- thus unprovable for adversarial adaptive `qR > log|Digest|`. The headline as stated
-      -- is FALSE for adaptive adversaries. Path A as currently designed does not drop hdist.
+      -- **Path forward**: implement the trace-position abstraction (Session 12d original
+      -- plan, now revalidated). Concretely: for `oa` with `IsQueryBoundP oa (·.isRight) qR`,
+      -- extract the q-th reader query event and apply `probEvent_eagerReaderFlip_le` to each.
+      -- The framework's `QueryCount` / `WriterCost` instrumentation can serve as the
+      -- "count by reader queries seen so far" — see `Session 12e` scaffolding above for the
+      -- expected-cost handler shape. Alternative: directly enumerate via `IsQueryBoundP`
+      -- destructors.
       sorry
 
 /-- **Eager-form auxiliary for `probEvent_multipleBadPathA_badReader_le`.**
