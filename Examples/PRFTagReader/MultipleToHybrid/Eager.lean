@@ -2616,6 +2616,47 @@ This sketch is left as future work. The Session 12d `probEvent_eagerReaderFlip_l
 substantive per-step content; closing the conditioned IH plus the handler instrumentation is
 mechanical bookkeeping that any of the three Session 12d routes shares. -/
 
+/-- **Path-A `badReader` bound — conditioned form (Session 12e scaffold).**
+
+Strengthens `probEvent_multipleBadPathA_badReader_aux_eager_family` with an arbitrary
+`g`-conditioning event `A`. This is the IH form that composes cleanly across the reader step:
+splitting on `replyBool g = u ∈ {true, false}` partitions A into disjoint A ∩ {replyBool g = u},
+and summing the IH bounds over u uses `∑_u 1[replyBool g = u] = 1` to collapse exactly — no
+factor-2 inflation.
+
+Specialized at `A = fun _ => True`, recovers
+`probEvent_multipleBadPathA_badReader_aux_eager_family`. Specialized at families ` sM_fam,
+sB_fam` constant in `g`, recovers `probEvent_multipleBadPathA_badReader_aux_eager`.
+
+The proof structure (open work):
+* **pure**: trivially `Pr[A ∧ start.bR]` (no run, no flips).
+* **query_bind (inl tag)**: tag step preserves badReader; IH applies with same `A`.
+* **query_bind (inr t)**: at most one flip; the badReader contribution after one step is
+  `Pr_g[A ∧ flip(g)] ≤ Pr_g[A] · |TagId|/|Digest|` (from `probEvent_eagerReaderFlip_le`
+  + monotonicity over A); then IH with the same A applied to (k u) for each u, summed via
+  partition. -/
+lemma probEvent_multipleBadPathA_badReader_aux_eager_conditioned [Fintype Nonce] [Fintype Digest]
+    [Nonempty Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (sM_fam : (TagId × Nonce → Digest) → UnlinkState TagId)
+    (sB_fam : (TagId × Nonce → Digest) → UnlinkBadState TagId Nonce Digest)
+    (A : (TagId × Nonce → Digest) → Prop) [DecidablePred A]
+    (_hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR) :
+    Pr[fun gz : (TagId × Nonce → Digest) ×
+          (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest)) =>
+        A gz.1 ∧ gz.2.2.2.badReader = true |
+        do let g ← $ᵗ (TagId × Nonce → Digest)
+           let z ← (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run
+                (sM_fam g, sB_fam g)
+           pure (g, z)] ≤
+      Pr[fun g => A g ∧ (sB_fam g).badReader = true | ($ᵗ (TagId × Nonce → Digest))] +
+        Pr[A | ($ᵗ (TagId × Nonce → Digest))] *
+          ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  -- See Session 12e plan: induction on `oa`, with reader step using `probEvent_eagerReaderFlip_le`
+  -- and partition `∑_u 1[replyBool g = u] = 1` to compose without factor-2 inflation.
+  sorry
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
