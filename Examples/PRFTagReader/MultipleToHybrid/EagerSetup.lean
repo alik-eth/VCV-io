@@ -67,6 +67,30 @@ noncomputable def multipleBadTableHandler (g : TagId × Nonce → Digest) :
             (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
           pure (r.1, r.2, p.2)
 
+/-- Path-A variant of the eager-table multi handler. Identical to `multipleBadTableHandler` on
+tag queries and on the output bit; on a reader query it advances the bad-world component via
+`multipleBadReaderAdvanceEager`, which flips `badReader` when the queried nonce has been visited
+before (`sB.readerTouched transcript.nonce`) AND some `g`-cell at that nonce matches
+`transcript.auth` while not being session-recorded.
+
+This is the eager-table analogue of `multipleBadQueryImplPathA`. The pair will satisfy the
+Path-A eager-equivalence
+(`evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending`, added in a follow-up
+commit) under an extended coupling invariant linking the lazy stale-cell condition to
+`readerTouched`. -/
+noncomputable def multipleBadTableHandlerPathA (g : TagId × Nonce → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) ProbComp) :=
+  fun q => fun p => match q with
+    | Sum.inl tag =>
+        (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1 >>= fun r =>
+          pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)
+    | Sum.inr transcript =>
+        (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+          pure (r.1, r.2, multipleBadReaderAdvanceEager transcript g p.2)
+
 omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- `simulateQ multipleBadTableHandler` of a `query_bind`, run from a state and projected to its
 full output. -/
@@ -133,6 +157,113 @@ lemma multipleBadTableHandler_run_preserves_bad {α : Type} (g : TagId × Nonce 
     rw [multipleBadTable_run_query_bind', mem_support_bind_iff] at hz
     obtain ⟨q, hq, hz⟩ := hz
     exact ih q.1 q.2 (multipleBadTableHandler_step_preserves_bad g t p hbad q hq) z hz
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- Path-A `simulateQ` query-bind unfolding. Same shape as `multipleBadTable_run_query_bind'`. -/
+lemma multipleBadTablePathA_run_query_bind' {α : Type} (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g) (liftM (OracleSpec.query t) >>= f)).run s =
+      (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t s) >>= fun p =>
+        (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g) (f p.1)).run p.2 := by
+  rw [simulateQ_query_bind, StateT.run_bind]
+  rfl
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Path-A eager-table single-step bad monotonicity.** -/
+lemma multipleBadTableHandlerPathA_step_preserves_bad (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
+    ∀ z ∈ support (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t p), z.2.2.bad = true := by
+  cases t with
+  | inl tag =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1
+        >>= fun r => pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    cases hr : r.1 <;> simp [multipleBadAdvance, hbad]
+  | inr transcript =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1
+        >>= fun r => pure (r.1, r.2, multipleBadReaderAdvanceEager transcript g p.2)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    rw [multipleBadReaderAdvanceEager_bad]; exact hbad
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Path-A eager-table single-step badReader monotonicity.** -/
+lemma multipleBadTableHandlerPathA_step_preserves_badReader (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbR : p.2.badReader = true) :
+    ∀ z ∈ support (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t p), z.2.2.badReader = true := by
+  cases t with
+  | inl tag =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1
+        >>= fun r => pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    cases hr : r.1 <;> simp [multipleBadAdvance, hbR]
+  | inr transcript =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1
+        >>= fun r => pure (r.1, r.2, multipleBadReaderAdvanceEager transcript g p.2)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    exact multipleBadReaderAdvanceEager_badReader_of_set transcript g p.2 hbR
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Path-A eager-table full-run bad monotonicity.** -/
+lemma multipleBadTableHandlerPathA_run_preserves_bad {α : Type} (g : TagId × Nonce → Digest)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run p), z.2.2.bad = true := by
+  induction oa using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hbad
+  | query_bind t f ih =>
+    intro z hz
+    rw [multipleBadTablePathA_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hz⟩ := hz
+    exact ih q.1 q.2 (multipleBadTableHandlerPathA_step_preserves_bad g t p hbad q hq) z hz
+
+omit [Nonempty TagId] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Path-A eager-table full-run badReader monotonicity.** -/
+lemma multipleBadTableHandlerPathA_run_preserves_badReader {α : Type} (g : TagId × Nonce → Digest)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbR : p.2.badReader = true) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run p),
+      z.2.2.badReader = true := by
+  induction oa using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hbR
+  | query_bind t f ih =>
+    intro z hz
+    rw [multipleBadTablePathA_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hz⟩ := hz
+    exact ih q.1 q.2 (multipleBadTableHandlerPathA_step_preserves_badReader g t p hbR q hq) z hz
 
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution
