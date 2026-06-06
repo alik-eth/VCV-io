@@ -2435,6 +2435,12 @@ lemma probEvent_multipleBadPathA_badReader_aux_eager_family [Fintype Nonce] [Fin
       --
       -- This requires a "reader query trace" abstraction (the q-th reader query event, given
       -- the adversary structure + `IsQueryBoundP`). Open as Session 12d.
+      --
+      -- **Building block now available**: `probEvent_eagerReaderFlip_le` (line ~2462) proves
+      -- the per-step flip bound `Pr_g[flip] ≤ |TagId|/|Digest|` as a stand-alone counting fact.
+      -- Both the structural induction (per-step termination) and the union argument (per-q term)
+      -- can invoke it directly — only the indexing infrastructure (q-th reader query event,
+      -- monotonicity of badReader along the trace) remains.
       sorry
 
 /-! ### Session 12d — single-step flip building block
