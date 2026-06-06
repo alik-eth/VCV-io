@@ -1044,6 +1044,38 @@ def MultipleHybridColFresh (oa : UnlinkAdversary TagId Nonce Digest)
     (cM (tag, n)).isSome → (∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some n) →
       sB.badReader = true ∨ OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
 
+/-- **Path-A widened freshness witness.** Like `MultipleHybridColFresh` but with an extra
+`sB.readerTouched n = true` disjunct: under Path A's bad-flag bookkeeping, a previously touched
+nonce is "paid for" by the `readerTouched`-shadow without needing the strict
+`IsQueryBoundP oa (pReaderNonce n) 0` residual-budget witness that `hdist` provides in the
+non-Path-A track. Fresh non-session cells introduced at `transcript.nonce` by an
+`idealCacheMapM`-lazification of a reader query are discharged via this disjunct (always set
+post-reader). -/
+def MultipleHybridColFreshPathA (oa : UnlinkAdversary TagId Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (cM : ((TagId × Nonce) →ₒ Digest).QueryCache) : Prop :=
+  ∀ (n : Nonce) (tag : TagId),
+    (cM (tag, n)).isSome → (∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some n) →
+      sB.badReader = true ∨ sB.readerTouched n = true ∨
+        OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
+
+omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- The strict freshness implies the Path-A widened freshness (the widened disjunction is
+strictly more permissive). -/
+lemma MultipleHybridColFresh.toPathA {oa : UnlinkAdversary TagId Nonce Digest}
+    {sB : UnlinkBadState TagId Nonce Digest}
+    {sH : HybridState TagId Nonce sessionsPerTag ×
+      (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache}
+    {cM : ((TagId × Nonce) →ₒ Digest).QueryCache}
+    (h : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sB sH cM) :
+    MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) oa sB sH cM := by
+  intro n tag hsome hns
+  exact (h n tag hsome hns).imp id Or.inr
+
 omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- The empty multiple cache satisfies the hop-A freshness invariant vacuously: no cell is cached,
 so the hypothesis `(cM (tag, n)).isSome` is never met. -/

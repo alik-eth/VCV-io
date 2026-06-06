@@ -66,7 +66,7 @@ lemma multipleBadEager_reader_step_PathA [Fintype Nonce] [Fintype Digest]
     (hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
     (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
-    (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (hfresh : MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
       (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
@@ -84,7 +84,7 @@ lemma multipleBadEager_reader_step_PathA [Fintype Nonce] [Fintype Digest]
         MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB →
         OracleComp.IsQueryBoundP (f u) (fun i => i.isRight = true) qR →
         OracleComp.IsQueryBoundP (f u) (fun i => i.isLeft = true) qT →
-        MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 →
         (∀ tag : TagId,
           (Finset.univ.filter (fun n : Nonce =>
@@ -413,26 +413,34 @@ lemma multipleBadEager_reader_step_PathA [Fintype Nonce] [Fintype Digest]
     have hABNew : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sM.1, rs.2).2 sB' :=
       MultipleBadPathACoupling_reader_step sM.2 sB hAB transcript rs hrs
-    have hfreshNew : MultipleHybridColFresh (sessionsPerTag := sessionsPerTag)
+    have hfreshNew : MultipleHybridColFreshPathA (sessionsPerTag := sessionsPerTag)
         (f (ReaderReply.ofBool bHconst)) sB' sH rs.2 := by
       intro n tag hsome hns
-      refine Or.inr ?_
       by_cases hnn : n = n₀
-      · -- **Open: n = n₀ branch of hfreshNew.** Without `hdist`, the original `hb0`-based
-        -- argument is unavailable. Path-A discharge requires the case-split on stale-match: in
-        -- the non-stale case the IH applies and this case is reachable; in the stale case the
-        -- whole proof short-circuits via badReader and this branch is never entered.
-        subst hnn; sorry
+      · -- **Path-A widened disjunct discharge at `n = n₀`.** The reader step always sets
+        -- `readerTouched n₀ = true`, so the second disjunct fires.
+        subst hnn
+        refine Or.inr (Or.inl ?_)
+        exact multipleBadReaderAdvance_readerTouched_self transcript sM.2 sB
       · have hcellnotmem : (tag, n) ∉ cells := by
           rw [hcells, multipleReaderCells, List.mem_map]
           rintro ⟨_, _, h⟩
           exact hnn (congrArg Prod.snd h).symm
         rw [hr2_not_mem (tag, n) hcellnotmem] at hsome
-        have hb := (hfresh n tag hsome hns).resolve_left (by simp [hInv.2.2.2.1])
-        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
-        have hpf : ¬ pReaderNonce (TagId := TagId) (Digest := Digest) n
-            (Sum.inr transcript) := fun h => hnn h.symm
-        simpa [hpf] using hb.2 (ReaderReply.ofBool bHconst)
+        -- Path-A widened disjunction: dispatch the 3 branches.
+        rcases hfresh n tag hsome hns with hbR | hRT | hb
+        · -- sB.badReader = true ⟹ sB'.badReader = true.
+          refine Or.inl ?_
+          exact multipleBadReaderAdvance_badReader_of_set transcript sM.2 sB hbR
+        · -- sB.readerTouched n = true ⟹ sB'.readerTouched n = true (n ≠ n₀, preserved).
+          refine Or.inr (Or.inl ?_)
+          rwa [multipleBadReaderAdvance_readerTouched_of_ne transcript sM.2 sB hnn]
+        · -- Residual = 0 in `oa`; propagate to continuation since head reader is at n₀ ≠ n.
+          refine Or.inr (Or.inr ?_)
+          rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+          have hpf : ¬ pReaderNonce (TagId := TagId) (Digest := Digest) n
+              (Sum.inr transcript) := fun h => hnn h.symm
+          simpa [hpf] using hb.2 (ReaderReply.ofBool bHconst)
     have hCacheBoundNew : ∀ tag : TagId,
         (Finset.univ.filter (fun n : Nonce =>
           (rs.2 (tag, n)).isSome ∧

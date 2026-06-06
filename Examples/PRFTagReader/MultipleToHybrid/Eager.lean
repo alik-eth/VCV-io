@@ -1078,7 +1078,7 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
     (hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
     (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
-    (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (hfresh : MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
       (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
@@ -1139,12 +1139,15 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
       -- IH freshness is the head's freshness lifted through the tag-step bad-state update.
       -- This is the verbatim shape from the original aux; the disjunction is split via the
       -- `hbadcol`/`hbR` invariants of `MultipleHybridCoupling`.
-      have hfreshf : ∀ u, MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 := fun u n tg hsome hns => by
-        refine Or.inr ?_
-        have hb := (hfresh n tg hsome hns).resolve_left (by simp [hInv.2.2.2.1])
-        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
-        simpa [pReaderNonce] using hb.2 u
+      have hfreshf : ∀ u, MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 :=
+        fun u n tg hsome hns => by
+        rcases hfresh n tg hsome hns with hbR | hRT | hb
+        · exact Or.inl hbR
+        · exact Or.inr (Or.inl hRT)
+        · refine Or.inr (Or.inr ?_)
+          rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+          simpa [pReaderNonce] using hb.2 u
       by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
       · -- **Slot-available tag step (Path-A port).** Verbatim port of the original aux's
         -- slot-available branch: bad-vs-fresh split via `evalDist_uniformSample_bind_update`
@@ -1506,7 +1509,7 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
             -- coincides with the new entry (contradicting the no-session hypothesis at `n'`) or
             -- lifts the pre-advance freshness witness `hfreshf (some ⟨n, u⟩)` at `(tag', n')`.
             have hFreshNew : ∀ u : Digest,
-                MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
                   (sessionsPerTag := sessionsPerTag) (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
                   (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
                   (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
@@ -1901,7 +1904,7 @@ lemma multipleBad_le_hybrid_add_bad_add_slack_aux_PathA [Fintype Nonce] [Fintype
     (hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
     (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
-    (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (hfresh : MultipleHybridColFreshPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
       (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
@@ -2033,7 +2036,7 @@ theorem multipleIdeal_le_hybrid_add_bad_PathA [Fintype Nonce] [Fintype Digest]
   refine multipleBad_le_hybrid_add_bad_add_slack_aux_PathA adversary qReader qTag qReader
     (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init
     MultipleHybridCoupling_init MultipleBadPathACoupling_init hqReader hqTag
-    (multipleHybridColFresh_init adversary UnlinkBadState.init (HybridState.init, ∅)) ?_ le_rfl
+    (multipleHybridColFresh_init adversary UnlinkBadState.init (HybridState.init, ∅)).toPathA ?_ le_rfl
   intro tag
   -- Initial multiple cache is empty, so the SubB-off-collision filter is empty.
   simp [QueryCache.empty_apply]
