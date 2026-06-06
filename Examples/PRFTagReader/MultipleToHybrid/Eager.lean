@@ -1074,17 +1074,17 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
       (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (sB : UnlinkBadState TagId Nonce Digest)
     (hInv : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) sM sH sB)
-    (_hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
-    (_hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
-    (_hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
-    (_hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (hAB : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) sM.2 sB)
+    (hqR : OracleComp.IsQueryBoundP oa (fun i => i.isRight) qR)
+    (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
+    (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
       (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
-    (_hCacheBound : ∀ tag : TagId,
+    (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
         (sM.2 (tag, n)).isSome ∧
           ¬ ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n)).card ≤
         qRInit - qR)
-    (_hqRle : qR ≤ qRInit) :
+    (hqRle : qR ≤ qRInit) :
     Pr[= true | do
         let gM ← $ᵗ (TagId × Nonce → Digest)
         (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
@@ -1118,15 +1118,74 @@ lemma multipleBadEager_le_hybridEager_aux_PathA [Fintype Nonce] [Fintype Digest]
       rw [← bind_pure_comp, ← bind_pure_comp, probOutput_bind_const, probOutput_bind_const,
         probFailure_uniformSample, probFailure_uniformSample]
     exact le_add_right (le_add_right (le_add_right (le_of_eq h1)))
-  | query_bind t f _ih =>
-    -- TODO Session 7+: tag-step and reader-step query_bind cases.
-    -- Tag steps: verbatim port from `multipleBadEager_le_hybridEager_aux` (PathA agrees on tag
-    --   queries pointwise; coupling preservation via
-    --   `MultipleBadPathACoupling_tag_advance_{some,none}`).
-    -- Reader step: Path-A analogue of `multipleBadEager_reader_step` using
-    --   `MultipleBadPathACoupling_reader_step` + `multipleBadReaderAdvance_eq_Eager_of_coupling`
-    --   in place of `hdist`.
-    exact absurd hInv (by exact fun _ => sorry)
+  | query_bind t f ih =>
+    simp only [multipleBadTablePathA_run_query_bind', hybridTable_run'_query_bind', map_bind]
+    cases t with
+    | inl tag =>
+      -- Continuation budget extractions (verbatim shape from the original aux): tag query
+      -- consumes one tag-budget slot; reader budgets and the per-nonce-reader bound pass through.
+      have hqRf : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight = true) qR := fun u => by
+        have := hqR
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa using this.2 u
+      have hqTsplit := hqT
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hqTsplit
+      have hqTpos : 0 < qT := hqTsplit.1.resolve_left (fun h => absurd rfl h)
+      obtain ⟨qT', rfl⟩ : ∃ qT', qT = qT' + 1 := ⟨qT - 1, by omega⟩
+      have hqTf : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isLeft = true) qT' := by
+        intro u; simpa using hqTsplit.2 u
+      -- Freshness preservation: tag queries don't affect `pReaderNonce`-style witnesses, so the
+      -- IH freshness is the head's freshness lifted through the tag-step bad-state update.
+      -- This is the verbatim shape from the original aux; the disjunction is split via the
+      -- `hbadcol`/`hbR` invariants of `MultipleHybridCoupling`.
+      have hfreshf : ∀ u, MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 := fun u n tg hsome hns => by
+        refine Or.inr ?_
+        have hb := (hfresh n tg hsome hns).resolve_left (by simp [hInv.2.2.2.1])
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
+        simpa [pReaderNonce] using hb.2 u
+      by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
+      · -- **Slot-available tag step (open obligation).** Verbatim port of the original aux's
+        -- 685-line slot-available proof. The structure is identical: bad-vs-fresh split via
+        -- `evalDist_uniformSample_bind_update` on shared digests, with the bad branch
+        -- absorbed into `Pr[·.2.bad]` (which widens trivially to `Pr[·.2.bad ∨ ·.2.badReader]`)
+        -- and the fresh branch closed by `MultipleHybridCoupling_tag_step` +
+        -- `MultipleBadPathACoupling_tag_advance_some` + `ih`.
+        exact absurd hInv (by exact fun _ => sorry)
+      · -- **Slot-exhausted tag step (verbatim port).** Both table handlers return `none` with
+        -- state untouched, so the step collapses to the continuation `f none`. PathA agrees with
+        -- the original on tag queries pointwise. Coupling preservation:
+        -- `MultipleBadPathACoupling_tag_advance_none`.
+        have hnotH : ¬ sH.1.sessionsUsed tag < sessionsPerTag :=
+          (congrFun hInv.1 tag).symm ▸ hslot
+        have hM : ∀ g : TagId × Nonce → Digest,
+            multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) (sM.1, sB)
+            = pure (none, sM.1, multipleBadAdvance tag sB none) := by
+          intro g
+          change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) sM.1
+              >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1)) = _
+          rw [multipleTableHandler_tag_run_of_not_lt g tag sM.1 hslot]
+          rfl
+        have hH : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            hybridTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) sH.1
+            = pure (none, sH.1) :=
+          fun gS => hybridTableHandler_tag_run_of_not_lt gS tag sH.1 hnotH
+        simp only [hM, hH, pure_bind]
+        have hABf : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            sM.2 (multipleBadAdvance tag sB none) :=
+          MultipleBadPathACoupling_tag_advance_none sM.2 sB hAB tag
+        refine (ih none qR qT' qRInit sM sH (multipleBadAdvance tag sB none) hInv hABf
+            (hqRf none) (hqTf none) (hfreshf none) hCacheBound hqRle).trans ?_
+        gcongr <;> first | rfl | omega
+    | inr transcript =>
+      -- **Reader step (open obligation, Session 9).** PathA's reader handler advances the
+      -- bad-world component via `multipleBadReaderAdvanceEager`, gated by `readerTouched`;
+      -- the proof replaces `multipleBadEager_reader_step`'s `hdist`-based argument with
+      -- the `badReader` charge under `MultipleBadPathACoupling`.
+      exact absurd hInv (by exact fun _ => sorry)
 
 /-- **Path-A multiple-to-hybrid, lazy-form slack bound.** Reduces (via the Session-5 Path-A eager
 equivalence `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` and the existing
