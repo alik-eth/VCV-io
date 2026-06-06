@@ -2192,15 +2192,31 @@ lemma probEvent_multipleBadPathA_badReader_aux [Fintype Nonce] [Fintype Digest]
       rw [ENNReal.tsum_mul_right]
       exact mul_le_of_le_one_left (zero_le _) tsum_probOutput_le_one
     | inr transcript =>
-      -- Reader query: budget decrements (`(inr _).isRight = true`).
-      -- IH applies at `qR - 1`; per-step slack is `|TagId|/|Digest|`.
-      -- Reader step's bad-state output is the DETERMINISTIC
-      -- `multipleBadReaderAdvance transcript c sB`. The flip predicate reduces under the
-      -- coupling `(a)`: any stale cell must have `readerTouched n = true` (cell written by a
-      -- prior reader query), hence uniform-random in `Digest`. Eagerizing via
-      -- `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` makes the
-      -- per-cell uniformity claim formal: cells at `(tag, n)` with no session are slices of
-      -- the uniform `g`.
+      -- **Reader-query sorry — structural blocker.**
+      --
+      -- This sub-goal is *false* as stated for the present signature: with only
+      -- `MultipleBadPathACoupling c sB`, an arbitrary starting state can have
+      -- `c (tag, n) = some d` (stale) ∧ `responses (tag, n) = none` ∧ `readerTouched n = true`,
+      -- and a one-query reader adversary at `transcript = (n, d)` then deterministically
+      -- flips `badReader`. With `qR = 1` the RHS is `|TagId|/|Digest|`, which can be < 1.
+      --
+      -- The *headline* `probEvent_multipleBadPathA_badReader_le` is still sound — it
+      -- specializes to `UnlinkBadState.init` where the precondition is much stronger
+      -- (`readerTouched ≡ false`, `responses = ∅`, `badReader = false`), and at that
+      -- specialization the counterexample doesn't reach.
+      --
+      -- Fix path (Session 11):
+      --   1. Replace the lazy aux with an *eager* aux over `multipleBadTableHandlerPathA g`
+      --      after sampling `g ← $ᵗ (TagId × Nonce → Digest)`. The eager flip predicate is
+      --      gated by `readerTouched n = true` (cf. `multipleBadReaderAdvanceEager`), and the
+      --      non-session cells are `g`-slices — uniform over `Digest`.
+      --   2. Bound the eager aux by an induction whose precondition is preserved by both
+      --      tag and reader steps (e.g. "the joint distribution of the `g`-slices at
+      --      non-session cells with `readerTouched n = true` is uniform given the adversary
+      --      view at that point").
+      --   3. Bridge eager ↔ lazy in the headline via
+      --      `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` at the
+      --      coupling-init state.
       sorry
 
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
