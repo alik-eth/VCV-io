@@ -2219,6 +2219,60 @@ lemma probEvent_multipleBadPathA_badReader_aux [Fintype Nonce] [Fintype Digest]
       --      coupling-init state.
       sorry
 
+/-- **Eager-form auxiliary for `probEvent_multipleBadPathA_badReader_le`.**
+
+A version of the badReader bound stated over the EAGER handler `multipleBadTableHandlerPathA g`,
+with `g` sampled uniformly from `TagId × Nonce → Digest` at the start. This form bypasses the
+lazy-aux's structural blocker: the eager reader step's flip predicate reads `g(tag, n)` directly
+(not the lazy cache), so non-session cells are uniform `g`-slices — the bound
+`|TagId|/|Digest|` per reader query is intrinsic to the uniformity of `g`, requiring no
+coupling-invariant bookkeeping on the starting state.
+
+The eager handler's `multipleBadReaderAdvanceEager` gates the flip by `sB.readerTouched n = true`,
+so a FIRST reader query at any nonce never flips (matching the lazy view under coupling). For
+subsequent reader queries at touched nonces, the `g(tag, n)` values at non-session `(tag, n)`
+pairs are uniform-random and independent of the adversary's `transcript.auth` — a union bound
+over `|TagId|` cells gives `|TagId|/|Digest|`.
+
+Status (Session 11 scaffold): pure case proven; query_bind case is the substantive remaining
+work. Once complete, the lazy `_le` headline routes through this aux via
+`evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` at the
+`MultipleBadPathACoupling_init` instance. -/
+lemma probEvent_multipleBadPathA_badReader_aux_eager [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (sM : UnlinkState TagId) (sB : UnlinkBadState TagId Nonce Digest)
+    (_hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR) :
+    Pr[fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+        z.2.2.badReader |
+        do let g ← $ᵗ (TagId × Nonce → Digest)
+           (simulateQ (multipleBadTableHandlerPathA (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run (sM, sB)] ≤
+      (if sB.badReader then 1 else 0) +
+        ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR sM sB with
+  | pure b =>
+    -- Pure: `g` doesn't affect the output state. `probEvent_bind_const` collapses the `g`-sample.
+    simp only [simulateQ_pure, StateT.run_pure, probEvent_bind_const, probEvent_pure]
+    by_cases hbR : sB.badReader = true
+    · simp [hbR]
+    · simp [hbR]
+  | query_bind i k _ih =>
+    -- TODO Session 11 continuation: structural induction.
+    -- Tag query: pull `g` outside the step via `bind_assoc`, apply `multipleTableHandler_tag_run_*`
+    --   to expose the nonce sample, then re-apply IH at the same `qR` (tag queries don't decrement
+    --   `·.isRight`-budget).
+    -- Reader query: budget decrements to `qR - 1`. The step is fully deterministic in `g` (see
+    --   `multipleTableHandler_reader_run` + `multipleBadReaderAdvanceEager` def). The post-step
+    --   bad flag is `sB.badReader || (readerTouched n && ∃ tag : g(tag,n) = auth ∧ ...)`. Bound:
+    --   * `sB.badReader = true`: trivial.
+    --   * `sB.badReader = false ∧ readerTouched n = false`: no flip; IH at `qR-1` closes.
+    --   * `sB.badReader = false ∧ readerTouched n = true`: bound
+    --     `Pr_g[∃ tag : g(tag,n) = auth ∧ responses (tag,n) = none] ≤ |TagId|/|Digest|`
+    --     via `evalDist_uniformSample_bind_update` (marginal independence of `g(tag, n)`) and a
+    --     union over `tag ∈ TagId`. Plus IH at `qR-1` for the continuation.
+    sorry
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
