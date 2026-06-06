@@ -391,6 +391,66 @@ lemma multipleBadReaderAdvance_eq_Eager_of_coupling
     rw [hg_eq] at hgv
     exact ⟨tag, hcv.trans (by rw [hgv]), hresp⟩
 
+omit [NeZero sessionsPerTag] in
+/-- The Path-A coupling invariant is preserved by the reader step: the new cache `rs.2` adds
+all `|TagId|` cells `(tag, transcript.nonce)` (so `Q` for the queried nonce holds), and the new
+`readerTouched` is `update old transcript.nonce true` (so `Q` at all OTHER nonces falls back to
+the pre-step witness, which lifts via cache monotonicity); `(a)` is preserved because
+`responses` is unchanged and any newly-cached non-session cell sits at `transcript.nonce` (where
+`readerTouched` is set) or was already cached pre-step. -/
+lemma MultipleBadPathACoupling_reader_step
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (h : MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest) c sB)
+    (transcript : TagTranscript Nonce Digest)
+    (rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hrs : rs ∈ support (idealCacheMapM (Digest := Digest)
+      ((Finset.univ : Finset TagId).toList.map (fun tag => (tag, transcript.nonce))) c)) :
+    MultipleBadPathACoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      rs.2 (multipleBadReaderAdvance transcript c sB) := by
+  classical
+  obtain ⟨hQ, ha⟩ := h
+  set cells := (Finset.univ : Finset TagId).toList.map
+    (fun tag => (tag, transcript.nonce)) with hcells
+  -- All cells in `cells` end up `isSome` in `rs.2` (via the helper `idealCacheMapM_cell_isSome`).
+  have hrs_cell_some : ∀ tag : TagId, (rs.2 (tag, transcript.nonce)).isSome := fun tag => by
+    refine idealCacheMapM_cell_isSome cells c rs hrs (tag, transcript.nonce) ?_
+    rw [hcells, List.mem_map]
+    exact ⟨tag, Finset.mem_toList.mpr (Finset.mem_univ _), rfl⟩
+  refine ⟨?_, ?_⟩
+  · intro n hRT tag'
+    -- multipleBadReaderAdvance.readerTouched = update sB.readerTouched transcript.nonce true
+    show (rs.2 (tag', n)).isSome = true
+    by_cases hn : n = transcript.nonce
+    · subst hn; exact hrs_cell_some tag'
+    · -- readerTouched at n is unchanged from sB.readerTouched
+      have hRT' : sB.readerTouched n = true := by
+        rw [← multipleBadReaderAdvance_readerTouched_of_ne transcript c sB hn]
+        exact hRT
+      -- cell `(tag', n)` is NOT in `cells` (cells only contain transcript.nonce)
+      have hnotmem : (tag', n) ∉ cells := by
+        rw [hcells, List.mem_map]; rintro ⟨_, _, h⟩
+        exact hn (congrArg Prod.snd h).symm
+      have hr2_eq := idealCacheMapM_cache_not_mem cells c rs hrs (tag', n) hnotmem
+      rw [hr2_eq]
+      exact hQ n hRT' tag'
+  · intro tag' n h1 h2
+    show (multipleBadReaderAdvance transcript c sB).readerTouched n = true
+    by_cases hn : n = transcript.nonce
+    · subst hn
+      exact multipleBadReaderAdvance_readerTouched_self transcript c sB
+    · -- responses on multipleBadReaderAdvance is sB.responses
+      have hresp_eq : (multipleBadReaderAdvance transcript c sB).responses = sB.responses :=
+        multipleBadReaderAdvance_responses transcript c sB
+      rw [hresp_eq] at h2
+      have hnotmem : (tag', n) ∉ cells := by
+        rw [hcells, List.mem_map]; rintro ⟨_, _, h⟩
+        exact hn (congrArg Prod.snd h).symm
+      have hr2_eq := idealCacheMapM_cache_not_mem cells c rs hrs (tag', n) hnotmem
+      rw [hr2_eq] at h1
+      rw [multipleBadReaderAdvance_readerTouched_of_ne transcript c sB hn]
+      exact ha tag' n h1 h2
+
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution
 (output bit, multiple-ideal state and bad-world state) as sampling a full random-oracle table `g`,

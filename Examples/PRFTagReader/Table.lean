@@ -329,6 +329,29 @@ lemma idealCacheMapM_cache_off {D : Type} [DecidableEq D]
     rw [ih step.2 rest hrest hstepd, idealCacheStep_preserves_some c e step hstep d hd]
 
 omit [DecidableEq Digest] in
+/-- Every cell `d` in `l` is `isSome` in the post-fold cache `r.2`: either the head step at `d`
+caches it, or a tail step does and subsequent steps preserve `isSome`. -/
+lemma idealCacheMapM_cell_isSome {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (r : List Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (d : D) (hd : d ∈ l) :
+    (r.2 d).isSome := by
+  induction l generalizing c r with
+  | nil => cases hd
+  | cons e es ih =>
+    simp only [idealCacheMapM, mem_support_bind_iff] at hr
+    obtain ⟨step, hstep, rest, hrest, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rcases List.mem_cons.mp hd with hd | hd
+    · subst hd
+      have hstep_some : (step.2 d).isSome := idealCacheStep_cache_self_dom c d step hstep
+      rw [idealCacheMapM_cache_off es step.2 rest hrest d hstep_some]
+      exact hstep_some
+    · exact ih step.2 rest hrest hd
+
+omit [DecidableEq Digest] in
 /-- Folding `idealCacheStep` over `l` leaves any cell `d` outside `l` unchanged. -/
 lemma idealCacheMapM_cache_not_mem {D : Type} [DecidableEq D]
     (l : List D) (c : (D →ₒ Digest).QueryCache)
