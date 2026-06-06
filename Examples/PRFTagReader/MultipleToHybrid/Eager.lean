@@ -2056,25 +2056,68 @@ The resulting headline `multipleIdeal_le_hybrid_add_bad_PathA_explicit` exposes 
 bound: `Pr[hybrid] + Pr[bad on PathA] + 2 · qR · |TagId| / |Digest| + qR · qT / |Nonce|`. The
 constant-factor `2` is the Path-A cost of dropping `hdist`. -/
 
+/-- **Path-A `badReader` bound — auxiliary inductive form.**
+
+Generalizes `probEvent_multipleBadPathA_badReader_le` to an arbitrary starting state, threading
+a `(if sB.badReader then 1 else 0)` indicator so the bound is monotone in the start state. This
+shape composes with the structural induction over the adversary, where each `query_bind` step
+either:
+
+* (tag query) leaves `sB.badReader` unchanged via `multipleBadAdvance` and re-applies the IH;
+* (reader query) flips `sB.badReader` by `multipleBadReaderAdvance`, contributing at most
+  `|TagId| / |Digest|` of fresh probability (the inner `∃ tag, c (tag, n) = some auth ∧ …` event
+  picks at most `|TagId|` cells, each independently uniform on `Digest` over the lazy draw).
+
+The pure base case is immediate from `simulateQ_pure` and `probEvent_pure`. -/
+lemma probEvent_multipleBadPathA_badReader_aux [Fintype Nonce] [Fintype Digest]
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR : ℕ)
+    (s : UnlinkState TagId) (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (_hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR) :
+    Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.badReader |
+        (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run ((s, c), sB)] ≤
+      (if sB.badReader then 1 else 0) +
+        ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing qR s c sB with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run_pure, probEvent_pure]
+    by_cases hbR : sB.badReader = true
+    · simp [hbR]
+    · simp [hbR]
+  | query_bind i k _ih =>
+    -- TODO Session 10b: per-step union bound.
+    -- Tag-query case: `multipleBadAdvance` leaves `sB.badReader` untouched
+    -- (cf. `multipleBadAdvance` definition: `badReader := sB.badReader`), so the head bind step
+    -- preserves the indicator and the IH bounds the tail with the same `qR`.
+    -- Reader-query case: `multipleBadReaderAdvance` may flip via the inner
+    -- `decide (∃ tag, c (tag, n) = some auth ∧ responses (tag, n) = none)`. Eagerizing the run
+    -- via `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` (when applied at
+    -- a `MultipleBadPathACoupling`-init state) lets the flip probability be bounded over the
+    -- uniform table draw by `|TagId| / |Digest|`. Coupled with the IH at decremented `qR`, this
+    -- closes the step.
+    sorry
+
 /-- **Path-A `badReader` bound (Session 10 scaffold).** The `badReader` flag, set by
 `multipleBadReaderAdvance` exactly when a reader query at a *previously-touched* nonce hits a
 stale cached cell matching the transcript authenticator, fires with total probability at most
 `qReader · |TagId| / |Digest|` over a run of `multipleBadQueryImplPathA`.
 
-Proof sketch (open): eagerize via `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending`;
-union-bound across reader queries; per query, the gate `readerTouched` does not reduce mass and
-the inner `∃ tag, g(tag, n) = transcript.auth ∧ …` event has uniform mass `≤ |TagId| / |Digest|`
-under the uniform-table draw. -/
+Specializes `probEvent_multipleBadPathA_badReader_aux` to the initial state, where
+`UnlinkBadState.init.badReader = false` collapses the indicator term to `0`. -/
 lemma probEvent_multipleBadPathA_badReader_le [Fintype Nonce] [Fintype Digest]
     (adversary : UnlinkAdversary TagId Nonce Digest) (qReader : ℕ)
-    (_hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader) :
+    (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader) :
     Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.badReader |
         (simulateQ (multipleBadQueryImplPathA (TagId := TagId) (Nonce := Nonce)
           (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
           ((UnlinkState.init, ∅), UnlinkBadState.init)] ≤
       ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
-  -- TODO Session 10 continuation: per-step uniform-table union bound.
-  sorry
+  have h := probEvent_multipleBadPathA_badReader_aux (sessionsPerTag := sessionsPerTag)
+    adversary qReader (UnlinkState.init) (∅ : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    UnlinkBadState.init hqReader
+  simpa [UnlinkBadState.init] using h
 
 /-- **Path-A multiple-to-hybrid, explicit-slack headline.** Union-bounds the abstract
 `Pr[bad ∨ badReader]` term of `multipleIdeal_le_hybrid_add_bad_PathA` into the original
