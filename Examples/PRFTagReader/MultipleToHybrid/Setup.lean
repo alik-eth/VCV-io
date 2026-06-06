@@ -638,6 +638,7 @@ def MultipleHybridCoupling
   sM.1.sessionsUsed = sH.1.sessionsUsed ∧
     sM.1.sessionsUsed = sB.sessionsUsed ∧
     sB.bad = false ∧
+    sB.badReader = false ∧
     (∀ tag n, (sB.responses (tag, n)).isSome ↔
       ∃ sid, sH.1.sessionNonce (tag, sid) = some n) ∧
     (∀ tag sid n, sH.1.sessionNonce (tag, sid) = some n →
@@ -659,7 +660,7 @@ lemma MultipleHybridCoupling_init :
     MultipleHybridCoupling (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
       (sessionsPerTag := sessionsPerTag)
       (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init := by
-  refine ⟨rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intros <;>
+  refine ⟨rfl, rfl, rfl, rfl, ?_, ?_, ?_, ?_, ?_, ?_⟩ <;> intros <;>
     simp_all [UnlinkBadState.init, HybridState.init, HybridSessionNonce.init]
 
 /-- Reader-aware hop-A coupling relation for the heterogeneous bad+slack `simulateQ` rule: relate a
@@ -683,30 +684,35 @@ lemma MultipleHybridRel_init :
 /-- **Multiple-to-hybrid freshness invariant** (the `HybridColFresh`-analogue for the multiple cache). A cached
 multiple-cache cell `(tag, n)` that was *not* produced by a tag draw — no session of `tag` recorded
 the nonce `n` in the hybrid session-nonce map `sH.1.sessionNonce` — can only have been written by
-an earlier *reader* query. Under `HasDistinctUnlinkReaderNonces` a second reader query at `n` is
-then impossible, which is recorded here as the residual reader budget at `n` being exhausted.
+an earlier *reader* query. In the disjunctive form used here, either:
+* a future reader query at `n` is impossible (residual reader budget at `n` is exhausted), or
+* the bad-world `badReader` flag is already set, which records that inter-reader-query interference
+  has been charged.
 
 The hybrid tag oracle records `sessionNonce (tag, sid) := some n` exactly when it draws nonce `n`
 for session `(tag, sid)`, and the hop-A cache correspondence `MultipleHybridCoupling.hcorr` ties tag-drawn
 multiple cells to recorded sessions; so a cached multiple cell with no recorded session is genuinely
-reader-written. This predicate is the freshness witness that the reader-step coupling threads
-through the induction, exactly mirroring `HybridColFresh` in hop B. -/
+reader-written. The disjunction prepares for Path A's bad-flag-style elimination of
+`HasDistinctUnlinkReaderNonces`: while `hdist` provides the right disjunct, future reductions can
+instead arrange the left disjunct via a `badReader` bookkeeping pass. -/
 def MultipleHybridColFresh (oa : UnlinkAdversary TagId Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest)
     (sH : HybridState TagId Nonce sessionsPerTag ×
       (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (cM : ((TagId × Nonce) →ₒ Digest).QueryCache) : Prop :=
   ∀ (n : Nonce) (tag : TagId),
     (cM (tag, n)).isSome → (∀ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) ≠ some n) →
-      OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
+      sB.badReader = true ∨ OracleComp.IsQueryBoundP oa (pReaderNonce n) 0
 
 omit [Nonempty TagId] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- The empty multiple cache satisfies the hop-A freshness invariant vacuously: no cell is cached,
 so the hypothesis `(cM (tag, n)).isSome` is never met. -/
 lemma multipleHybridColFresh_init (oa : UnlinkAdversary TagId Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest)
     (sH : HybridState TagId Nonce sessionsPerTag ×
       (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) :
     MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-      (sessionsPerTag := sessionsPerTag) oa sH ∅ := by
+      (sessionsPerTag := sessionsPerTag) oa sB sH ∅ := by
   intro n tag hsome _
   simp at hsome
 
@@ -729,8 +735,9 @@ lemma MultipleHybridCoupling_reader_step
     (r : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache)
     (hr : r ∈ support (idealCacheMapM (Digest := Digest) cells sM.2)) :
     MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) (sM.1, r.2) sH sB := by
-  obtain ⟨hcnt1, hcnt2, hbad, hbadcol, hcorr, hcolfree, hwo, hhyb1, hhyb2⟩ := hInv
-  refine ⟨hcnt1, hcnt2, hbad, hbadcol, fun tag sid n hsn => ?_, hcolfree, hwo, hhyb1, hhyb2⟩
+  obtain ⟨hcnt1, hcnt2, hbad, hbadR, hbadcol, hcorr, hcolfree, hwo, hhyb1, hhyb2⟩ := hInv
+  refine ⟨hcnt1, hcnt2, hbad, hbadR, hbadcol,
+    fun tag sid n hsn => ?_, hcolfree, hwo, hhyb1, hhyb2⟩
   rw [idealCacheMapM_cache_off cells sM.2 r hr (tag, n)
     (by rw [hcorr tag sid n hsn]; exact hhyb2 tag sid n hsn)]
   exact hcorr tag sid n hsn
@@ -772,7 +779,7 @@ lemma MultipleHybridCoupling_tag_step
           bad := sB.bad || (sB.responses (tag, n)).isSome,
           badReader := sB.badReader } :
           UnlinkBadState TagId Nonce Digest) := by
-  obtain ⟨hcMH, hcMB, hbad, hbadcol, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
+  obtain ⟨hcMH, hcMB, hbad, hbadR, hbadcol, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
   set sid : Fin sessionsPerTag := ⟨sM.1.sessionsUsed tag, hslot⟩ with hsid
   -- no session of `tag` had drawn `n` before (else the multiple cell would be cached)
   have hnodrawn : ∀ sid', sH.1.sessionNonce (tag, sid') ≠ some n := fun sid' hsn' =>
@@ -782,7 +789,7 @@ lemma MultipleHybridCoupling_tag_step
     Option.not_isSome_iff_eq_none.mp (by rw [hbadcol tag n, not_exists]; exact hnodrawn)
   obtain ⟨hshcorr, hshcoll, hshwo, hshrec, hshcons⟩ :=
     tag_step_shared_clauses tag n u sM sH hslot hcMH hcorr hcollfree hwo hrec hcons hfresh
-  refine ⟨?_, ?_, ?_, ?_, hshcorr, hshcoll, hshwo, hshrec, hshcons⟩
+  refine ⟨?_, ?_, ?_, hbadR, ?_, hshcorr, hshcoll, hshwo, hshrec, hshcons⟩
   · dsimp only [HybridState.sessionsUsed]; rw [hcMH]
   · dsimp only; rw [hcMB]
   · rw [hbad, hBfresh]; rfl
@@ -852,7 +859,7 @@ lemma multipleReader_accepts_of_hybridCacheAccepts
       (sessionsPerTag := sessionsPerTag) sH.2 sH.1.sessionNonce transcript = true) :
     decide (∃ d ∈ rs.1, d = transcript.auth) = true := by
   classical
-  obtain ⟨_, _, _, _, hcorr, _, _, _, _⟩ := hInv
+  obtain ⟨_, _, _, _, _, hcorr, _, _, _, _⟩ := hInv
   rw [hybridCacheAccepts, decide_eq_true_eq] at hhyb
   obtain ⟨tag, sid, hsn, hcell⟩ := hhyb
   have hmcell : sM.2 (tag, transcript.nonce) = some transcript.auth := by

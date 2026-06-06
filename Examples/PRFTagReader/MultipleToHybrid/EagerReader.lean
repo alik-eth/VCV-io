@@ -58,7 +58,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
     (hdist : ∀ n : Nonce, OracleComp.IsQueryBoundP oa (pReaderNonce n) 1)
     (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-      (sessionsPerTag := sessionsPerTag) oa sH sM.2)
+      (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
         (sM.2 (tag, n)).isSome ∧
@@ -76,7 +76,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
         OracleComp.IsQueryBoundP (f u) (fun i => i.isLeft = true) qT →
         (∀ n : Nonce, OracleComp.IsQueryBoundP (f u) (pReaderNonce n) 1) →
         MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (f u) sH sM.2 →
+          (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 →
         (∀ tag : TagId,
           (Finset.univ.filter (fun n : Nonce =>
             (sM.2 (tag, n)).isSome ∧
@@ -163,7 +163,8 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
       ∃ sid : Fin sessionsPerTag, sH.1.sessionNonce (tag, sid) = some n₀ := by
     intro tag hsome
     by_contra hne
-    have hbad := hfresh n₀ tag hsome (fun sid hs => hne ⟨sid, hs⟩)
+    have hbad := (hfresh n₀ tag hsome (fun sid hs => hne ⟨sid, hs⟩)).resolve_left
+      (by simp [hInv.2.2.2.1])
     rw [OracleComp.isQueryBoundP_query_bind_iff] at hbad
     have hp : pReaderNonce (TagId := TagId) (Digest := Digest) n₀
         (Sum.inr transcript) := rfl
@@ -198,7 +199,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
     refine propext ⟨?_, ?_⟩
     · rintro ⟨tag, sid, hsn, hcell⟩
       have hHsome : (sH.2 ((tag, sid), transcript.nonce)).isSome :=
-        hInv.2.2.2.2.2.2.2.2 tag sid transcript.nonce hsn
+        hInv.2.2.2.2.2.2.2.2.2 tag sid transcript.nonce hsn
       rcases hHv : sH.2 ((tag, sid), transcript.nonce) with _ | v
       · exact absurd hHv (Option.isSome_iff_ne_none.mp hHsome)
       · rw [show OracleComp.tableExtending sH.2 gH ((tag, sid), transcript.nonce) = v by
@@ -361,7 +362,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
       fun tag hsome => hn₀ ▸ hcol tag (hn₀ ▸ hsome)
     have hdisagree := probEvent_multipleReader_disagree_le (TagId := TagId) (Nonce := Nonce)
       (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-      sM.2 sH.2 sH.1.sessionNonce transcript hcol' hInv.2.2.2.2.1
+      sM.2 sH.2 sH.1.sessionNonce transcript hcol' hInv.2.2.2.2.2.1
     refine le_trans (probEvent_mono ?_) hdisagree
     intro rs _ hDrs
     exact ⟨hDrs.1, by rw [← hbHconst]; exact hDrs.2⟩
@@ -394,7 +395,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
       rw [hbHconst, hybridCacheAccepts, decide_eq_true_eq] at hbH
       obtain ⟨tag, sid, hsn, hcell⟩ := hbH
       have hmcell : sM.2 (tag, transcript.nonce) = some transcript.auth := by
-        rw [hInv.2.2.2.2.1 tag sid transcript.nonce hsn, hcell]
+        rw [hInv.2.2.2.2.2.1 tag sid transcript.nonce hsn, hcell]
       have hcellmem : (tag, transcript.nonce) ∈ cells := by
         rw [hcells, multipleReaderCells, List.mem_map]
         exact ⟨tag, Finset.mem_toList.mpr (Finset.mem_univ _), rfl⟩
@@ -430,8 +431,9 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
     have hInvNew : MultipleHybridCoupling (sessionsPerTag := sessionsPerTag) (sM.1, rs.2) sH sB :=
       MultipleHybridCoupling_reader_step sM sH sB hInv cells rs hrs
     have hfreshNew : MultipleHybridColFresh (sessionsPerTag := sessionsPerTag)
-        (f (ReaderReply.ofBool bHconst)) sH rs.2 := by
+        (f (ReaderReply.ofBool bHconst)) sB sH rs.2 := by
       intro n tag hsome hns
+      refine Or.inr ?_
       by_cases hnn : n = n₀
       · subst hnn; exact hb0 _
       · have hcellnotmem : (tag, n) ∉ cells := by
@@ -439,7 +441,7 @@ lemma multipleBadEager_reader_step [Fintype Nonce] [Fintype Digest]
           rintro ⟨_, _, h⟩
           exact hnn (congrArg Prod.snd h).symm
         rw [hr2_not_mem (tag, n) hcellnotmem] at hsome
-        have hb := hfresh n tag hsome hns
+        have hb := (hfresh n tag hsome hns).resolve_left (by simp [hInv.2.2.2.1])
         rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
         have hpf : ¬ pReaderNonce (TagId := TagId) (Digest := Digest) n
             (Sum.inr transcript) := fun h => hnn h.symm

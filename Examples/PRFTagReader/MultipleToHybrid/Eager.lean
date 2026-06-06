@@ -93,7 +93,7 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
     (hdist : ∀ n : Nonce, OracleComp.IsQueryBoundP oa (pReaderNonce n) 1)
     (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-      (sessionsPerTag := sessionsPerTag) oa sH sM.2)
+      (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
         (sM.2 (tag, n)).isSome ∧
@@ -152,8 +152,9 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
         rw [OracleComp.isQueryBoundP_query_bind_iff] at this
         simpa [pReaderNonce] using this.2 u
       have hfreshf : ∀ u, MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (f u) sH sM.2 := fun u n tg hsome hns => by
-        have hb := hfresh n tg hsome hns
+          (sessionsPerTag := sessionsPerTag) (f u) sB sH sM.2 := fun u n tg hsome hns => by
+        refine Or.inr ?_
+        have hb := (hfresh n tg hsome hns).resolve_left (by simp [hInv.2.2.2.1])
         rw [OracleComp.isQueryBoundP_query_bind_iff] at hb
         simpa [pReaderNonce] using hb.2 u
       by_cases hslot : sM.1.sessionsUsed tag < sessionsPerTag
@@ -396,7 +397,7 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
           -- continuation, giving `Pr[r | ob n] = 1`. The off-`D` inequality then follows by
           -- bounding `Pr[q | my n] ≤ 1 = Pr[r | ob n] ≤ Pr[q | oc n] + Pr[r | ob n] + ε₂`.
             have hcell : (sB.responses (tag, n)).isSome = true := by
-              rw [hInv.2.2.2.1]; exact hcoll
+              rw [hInv.2.2.2.2.1]; exact hcoll
             have hadvBad : ∀ d : Digest,
                 (multipleBadAdvance tag sB
                     (some (⟨n, d⟩ : TagTranscript Nonce Digest))).bad = true := fun d => by
@@ -454,17 +455,17 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
           -- is fresh (since `sidH` is the next-to-allocate slot and `hwo` / `hhyb1` rule out
           -- recorded sessions there).
           have hBfresh : sB.responses (tag, n) = none := by
-            rw [← Option.not_isSome_iff_eq_none, hInv.2.2.2.1]
+            rw [← Option.not_isSome_iff_eq_none, hInv.2.2.2.2.1]
             exact hncoll
-          -- `sidH.val = sH.1.sessionsUsed tag`, so by `hInv.hwo` (clause 7) the session-nonce is `none`.
+          -- `sidH.val = sH.1.sessionsUsed tag`, so by `hInv.hwo` (clause 8) the session-nonce is `none`.
           have hSnNone : sH.1.sessionNonce (tag, sidH) = none :=
-            hInv.2.2.2.2.2.2.1 tag sidH (le_refl _)
+            hInv.2.2.2.2.2.2.2.1 tag sidH (le_refl _)
           have hHcellNone : sH.2 ((tag, sidH), n) = none := by
-            -- Contrapositive of `hhyb1` (clause 8): if the hybrid cache cell were some, the
+            -- Contrapositive of `hhyb1` (clause 9): if the hybrid cache cell were some, the
             -- session-nonce would be `some n`, contradicting `hSnNone`.
             rw [← Option.not_isSome_iff_eq_none]
             intro hsome
-            have hsn := hInv.2.2.2.2.2.2.2.1 tag sidH n hsome
+            have hsn := hInv.2.2.2.2.2.2.2.2.1 tag sidH n hsome
             rw [hSnNone] at hsn; cases hsn
           by_cases hMcellNone : sM.2 (tag, n) = none
           · -- **Sub-case A (principal): the multi cache is unfilled at `(tag, n)`.** Couple the
@@ -517,6 +518,7 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
             have hFreshNew : ∀ u : Digest,
                 MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
                   (sessionsPerTag := sessionsPerTag) (f (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+                  (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
                   (advH n, sH.2.cacheQuery ((tag, sidH), n) u)
                   (sM.2.cacheQuery (tag, n) u) := by
               intro u n' tag' hcell hns
@@ -538,7 +540,7 @@ lemma multipleBadEager_le_hybridEager_aux [Fintype Nonce] [Fintype Digest]
                   -- value unless `(tag', sid) = (tag, sidH)`; rule out the latter and conclude.
                   by_cases hts : (tag', sid) = (tag, sidH)
                   · obtain ⟨htg, hsd⟩ := Prod.mk.inj hts
-                    rw [htg, hsd, hInv.2.2.2.2.2.2.1 tag sidH (le_refl _)] at hsn
+                    rw [htg, hsd, hInv.2.2.2.2.2.2.2.1 tag sidH (le_refl _)] at hsn
                     cases hsn
                   · refine hns sid ?_
                     show (advH n).sessionNonce (tag', sid) = some n'
@@ -894,7 +896,7 @@ lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Fintype Diges
     (hqT : OracleComp.IsQueryBoundP oa (fun i => i.isLeft) qT)
     (hdist : ∀ n : Nonce, OracleComp.IsQueryBoundP oa (pReaderNonce n) 1)
     (hfresh : MultipleHybridColFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-      (sessionsPerTag := sessionsPerTag) oa sH sM.2)
+      (sessionsPerTag := sessionsPerTag) oa sB sH sM.2)
     (hCacheBound : ∀ tag : TagId,
       (Finset.univ.filter (fun n : Nonce =>
         (sM.2 (tag, n)).isSome ∧
@@ -916,7 +918,7 @@ lemma multipleBad_le_hybrid_add_bad_add_slack_aux [Fintype Nonce] [Fintype Diges
   have hM := evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending
     (sessionsPerTag := sessionsPerTag) oa sM.1 sM.2 sB
   have hH := evalDist_simulateQ_hybridLazyHandler_run'_eq_tableExtending oa sH.1 sH.2
-    hInv.2.2.2.2.2.2.2.2
+    hInv.2.2.2.2.2.2.2.2.2
   -- Multiple-side success term: `run' = (·.1) <$> run`, factored through `(z.1,z.2.2) <$> run`.
   have hMsucc :
       Pr[= true | (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
@@ -1021,7 +1023,7 @@ theorem multipleIdeal_le_hybrid_add_bad [Fintype Nonce] [Fintype Digest]
     (UnlinkState.init, ∅) (HybridState.init, ∅) UnlinkBadState.init
     MultipleHybridCoupling_init hqReader hqTag
     ((hasDistinctUnlinkReaderNonces_iff adversary).mp hdist)
-    (multipleHybridColFresh_init adversary (HybridState.init, ∅)) ?_ le_rfl
+    (multipleHybridColFresh_init adversary UnlinkBadState.init (HybridState.init, ∅)) ?_ le_rfl
   intro tag
   -- Initial multiple cache is empty, so the SubB-off-collision filter is empty.
   simp [QueryCache.empty_apply]
