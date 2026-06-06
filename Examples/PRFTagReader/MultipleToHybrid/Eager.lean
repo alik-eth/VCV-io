@@ -2217,6 +2217,27 @@ lemma probEvent_multipleBadPathA_badReader_aux [Fintype Nonce] [Fintype Digest]
       --   3. Bridge eager ↔ lazy in the headline via
       --      `evalDist_simulateQ_multipleBadQueryImplPathA_run_eq_tableExtending` at the
       --      coupling-init state.
+      --
+      -- **Session 13 finding** (post-12d/12e): the EAGER fix path (Session 11) is itself blocked
+      -- by the factor-2 / conditioned-IH obstacle — see comments at the eager aux's reader case
+      -- and the conditioned aux's reader case. The structural pattern is:
+      --   eager `multipleBadReaderAdvanceEager` reads `g(?, t.nonce)`,
+      --   so `Pr[A ∧ flip(g)] ≤ Pr[A] · slack` requires `A ⊥ flip`,
+      --   which past `replyBool g` constraints only satisfy under `hdist`.
+      --
+      -- Returning to the LAZY view (this branch): the lazy reader-step bound IS sound — the
+      -- flip event `c (tag, n) = some auth ∧ responses (tag, n) = none` over pre-step cache
+      -- `c` becomes a per-step fresh-sample event when (tag, n) is uncached, and `auth` is
+      -- adversary-chosen INDEPENDENT of the fresh sample's value. Per-step union over `tag`
+      -- gives `|TagId|/|Digest|`. The needed strengthening: the coupling invariant must track
+      -- that "cached values at cells with `responses = none` are fresh samples uniform-
+      -- conditional on the adversary's view at that point" — a JOINT-DISTRIBUTION invariant,
+      -- not a structural Bool predicate.
+      --
+      -- Concretely: extend `MultipleBadPathACoupling` with a deferred-sampling clause. The
+      -- prior reader queries' fresh samples must be carried as a sub-distribution over `g`
+      -- compatible with the coupling. This is the `randomOracle` semantics applied to the
+      -- bad-state coupling — Session 13's substantive work.
       sorry
 
 /-- **Eager-form auxiliary for `probEvent_multipleBadPathA_badReader_le`.**
