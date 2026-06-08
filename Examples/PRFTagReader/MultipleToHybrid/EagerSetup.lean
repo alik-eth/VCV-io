@@ -1457,6 +1457,74 @@ lemma multipleBadTableHandlerFine_run_preserves_cacheBad {α : Type}
     exact ih q.1 q.2
       (multipleBadTableHandlerFine_step_preserves_cacheBad g gFine t p hcb q hq) z hz
 
+/-! ### Fixed-gFine cacheBad-end characterization (Step 8 stage (b) Strategy 1 primitive)
+
+At fixed `gFine`, every reachable output of the shared-table Fine run has cacheBad-end either
+equal to the initial cacheBad flag, OR the run included a reader-step transcript `T` such that
+`cacheBadReader gFine T = true`. This is the *deterministic* fixed-gFine support-level
+existence statement that Strategy 1 (Direct Fubini) consumes at its union-bound step. -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Fixed-gFine cacheBad-end witness existence.** Let `gFine` be fixed. If a Fine-handler run
+ends with `cacheBad = true` from a state with `cacheBad = false`, then the adversary made some
+reader query whose transcript `T` satisfies `cacheBadReader gFine T = true`.
+
+Stated as a support-level deterministic existence over the adversary's structure. Proof by
+induction on the adversary. The reader arm uses `multipleBadTableHandlerFine_reader_state_eq`
+to project the post-reader cacheBad as `false || cacheBadReader gFine T`, then case-splits on
+the predicate. The tag arm uses `multipleBadTableHandlerFine_tag_preserves_cacheBad` to thread
+the false cacheBad flag forward.
+
+This is Strategy 1's structural primitive: combined with averaging over `gFine ← $ᵗ` and the
+stage (a) per-cell uniform-table bound, it closes the full-run shared-table cacheBad bound at
+`qR * |TagId| * sessionsPerTag / |Digest|`. -/
+lemma multipleBadTableHandlerFine_run_cacheBad_exists_reader_hit {α : Type}
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest)
+    (hcb : p.2.cacheBad = false) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) adversary).run p),
+        z.2.2.cacheBad = true →
+        ∃ T : TagTranscript Nonce Digest,
+          cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true := by
+  induction adversary using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz hzcb
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz
+    rw [hcb] at hzcb; exact absurd hzcb (by decide)
+  | query_bind t f ih =>
+    intro z hz hzcb
+    rw [multipleBadTableFine_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hzcont⟩ := hz
+    cases t with
+    | inl tag =>
+      -- Tag step preserves cacheBad. Apply IH with the same hcb hypothesis on the continuation.
+      have hqcb := multipleBadTableHandlerFine_tag_preserves_cacheBad
+        (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine tag p q hq
+      rw [hcb] at hqcb
+      exact ih q.1 q.2 hqcb z hzcont hzcb
+    | inr transcript =>
+      -- Reader step: post-state cacheBad is p.2.cacheBad || cacheBadReader gFine transcript
+      -- via `multipleBadTableHandlerFine_reader_state_eq` projected onto `.cacheBad`.
+      have hqstate := multipleBadTableHandlerFine_reader_state_eq
+        (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine transcript p q hq
+      have hqcb : q.2.2.cacheBad =
+          (p.2.cacheBad || cacheBadReader (sessionsPerTag := sessionsPerTag)
+            gFine transcript) := by rw [hqstate]; rfl
+      rw [hcb, Bool.false_or] at hqcb
+      by_cases hcbr : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = true
+      · -- This reader step is the witness.
+        exact ⟨transcript, hcbr⟩
+      · -- Predicate false: q.2.2.cacheBad = false. Apply IH on the continuation.
+        have hqcb' : q.2.2.cacheBad = false := by
+          rw [hqcb]; exact Bool.eq_false_iff.mpr hcbr
+        exact ih q.1 q.2 hqcb' z hzcont hzcb
+
 /-! ### Reader-step gFine-commutation for the shared-table full run (Step 8 stage (b) bridge) -/
 
 omit [Nonempty TagId] [SampleableType Digest] in
@@ -1749,18 +1817,45 @@ and the continuation, so `probEvent_bind_le_add` on `gFine ← $ᵗ` requires th
 bound `Pr[cacheBad-end | simulate (g, FIXED gFine) ... .run]` for EACH fixed gFine — which is
 not what the IH (averaged over fresh gFine) provides.
 
+**Why a fixed-gFine IH alone CANNOT yield the target bound** (analytic obstruction recorded in
+iteration 18): at fixed `gFine`, the reader-step transition is *deterministic* in the predicate
+`cacheBadReader gFine transcript`: it is either `0` (the predicate is false) or `1` (the predicate
+is true). The stage (a) bound `|TagId| * sessionsPerTag / |Digest|` is achieved **only after
+averaging gFine**; at fixed gFine, the per-step bound is `1`, and an induction at fixed gFine yields
+only the trivial bound `qR * 1 = qR`. The stage (a) bound is therefore intrinsically an
+*averaged-gFine* statement.
+
 The closing strategies (one of which the next iteration should execute):
-1. **Direct Fubini decomposition.** Express `cacheBad_end` after a shared-`gFine` run as the
-   union over reader queries `i = 1..qR` of `cacheBadReader gFine T_i`, where `T_i` is the
-   `i`-th reader-query transcript. The transcripts `T_i` are gFine-independent (the
-   `multipleTableHandler` reads only `g`, not `gFine`). Union bound + the stage (a) per-cell
-   marginal closes the bound at `qR * |TagId| * sessionsPerTag / |Digest|`.
-2. **Reduction to FineFresh via marginal-distribution equality.** Show that the marginal
-   distribution of `(state, cacheBad)` after a shared-`gFine` Fine run agrees with the marginal
-   after a per-step-fresh FineFresh run. Then transport the FineFresh bound.
+
+1. **Direct Fubini decomposition (recommended).** Express `cacheBad_end` after a shared-`gFine`
+   run as the union over reader queries `i = 1..qR` of `cacheBadReader gFine T_i`, where `T_i`
+   is the `i`-th reader-query transcript. The transcripts `T_i` are gFine-independent (the
+   `multipleTableHandler` reads only `g`, not `gFine`). The structural infrastructure required:
+   * A `readerTranscriptsList g adv p₁ : ProbComp (List (TagTranscript Nonce Digest))` that runs
+     a gFine-independent shadow of `simulateQ multipleTableHandler adv .run p₁`, projecting only
+     the reader-step outputs.
+   * A length bound `length ≤ qR` for any adversary with `IsQueryBoundP (·.isRight) qR`.
+   * A fixed-gFine telescoping identity: at every fixed `gFine`, `cacheBad_end` after a Fine run
+     equals `p₂.cacheBad || OR_{T ∈ readerTranscriptsList} cacheBadReader gFine T`. This is
+     proved by induction on the adversary, using iter-15's
+     `multipleBadTableHandlerFine_reader_cacheBad_eq` as the single-step base.
+   * A Fubini swap of the outer `gFine ← $ᵗ` past the gFine-independent transcripts
+     distribution, followed by union bound + the stage (a) per-cell marginal
+     `probEvent_cacheBadReader_uniformSample_le`. The result is the target
+     `qR * |TagId| * sessionsPerTag / |Digest|`.
+   Estimated 200-250 lines for the transcript list + telescoping identity, plus 30-50 for the
+   Fubini swap and union bound.
+2. **Reduction to FineFresh via marginal-distribution equality.** *Not viable in general.* The
+   marginal `cacheBad_end` distributions of Fine (shared gFine) and FineFresh (independent per
+   reader query) differ in joint structure: at fixed run trace `T_1, …, T_m`, Fine gives
+   `Pr_gFine[OR_i cacheBadReader gFine T_i]`, while FineFresh gives
+   `1 - Π_i (1 - p_i)` where `p_i = Pr_gFine[cacheBadReader gFine T_i]`. The ordering between the
+   two requires a Harris/correlation argument that is non-trivial and does not visibly carry
+   through Lean's lemmas without substantial infrastructure of its own.
 3. **Per-cell coupling.** Identify the finite set of `((TagId × Fin sessionsPerTag) × Nonce)`
    cells the shared `gFine` is read at across the full run, and decompose the bound across these
-   cells using the marginal lemma `probOutput_uniformSample_fun_eval`.
+   cells using the marginal lemma `probOutput_uniformSample_fun_eval`. Subsumes Strategy 1 but
+   adds redundant indexing; Strategy 1 is the simpler unfolding.
 
 Steps 9-12 of the Option-6 plan (the two `sorry`s in `DirectCoupling/Compose.lean`) consume this
 bound; until it lands, those sorries remain. -/
