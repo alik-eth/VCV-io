@@ -426,14 +426,37 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           · -- D-mass: `Pr[False | $ᵗ Nonce] = 0 ≤ qR / |Nonce|`.
             simp
           intro n _ _hnD
-          -- **Phase D (next commit).** Per-`n` bound. Case-split on `c ((tag, 0), n)`:
-          -- * `some u₀`: cell read is `u₀` regardless of `gS`; apply IH at `(k (some ⟨n, u₀⟩),
-          --   qR, qT', advM, c, multipleBadAdvance tag sB (some ⟨n, u₀⟩))`.
-          -- * `none`: marginalize cell `((tag, 0), n)` of `gS` via
-          --   `evalDist_uniformSample_bind_update_map`; apply IH at `(k (some ⟨n, u⟩), qR, qT',
-          --   advM, c.cacheQuery ((tag, 0), n) u, multipleBadAdvance tag sB (some ⟨n, u⟩))` for
-          --   each fresh `u`; integrate over `u`.
-          sorry
+          -- **Phase D.** Per-`n` bound. Case-split on `c ((tag, 0), n)`.
+          rcases hc : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
+          · -- **Case B: cache miss.** Cell value is `gS ((tag, 0), n)`; marginalize.
+            -- Plan: convert `$ᵗ gS >>= ψ(gS)` to `$ᵗ u; $ᵗ gS'; ψ(Function.update gS' ((tag, 0), n) u)`
+            -- via `evalDist_uniformSample_bind_update_map`. Inside,
+            -- `tableExtending c (Function.update gS' ((tag, 0), n) u) ((tag, 0), n) = u`
+            -- (`tableExtending_update_of_none` + `hc`), and the surrounding cache extends to
+            -- `c.cacheQuery ((tag, 0), n) u` (`tableExtending_cacheQuery`). Apply IH per-`u` at
+            -- the extended cache; integrate over `$ᵗ u` to recover the goal RHS shape.
+            sorry
+          · -- **Case A: cache hit `u₀`.** Cell read is `u₀` regardless of `gS`. Substitute via
+            -- `OracleComp.tableExtending c gS ((tag, 0), n) = u₀`, then apply IH at unchanged
+            -- cache `c`.
+            have hcell : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                OracleComp.tableExtending c gS ((tag, (0 : Fin sessionsPerTag)), n) = u₀ :=
+              fun gS => by
+                show (c ((tag, (0 : Fin sessionsPerTag)), n)).getD
+                    (gS ((tag, (0 : Fin sessionsPerTag)), n)) = u₀
+                rw [hc]; rfl
+            simp_rw [hcell]
+            -- Goal: `Pr[(· = true) | $ᵗ gS >>= ψ_M_at_u₀] ≤ Pr[(· = true) | $ᵗ gS >>= ψ_S_at_u₀]
+            --        + Pr[(fun z => z.2.bad = true) | $ᵗ gS >>= ψ_BAD_at_u₀] + ε₂`.
+            -- IH at `(k (some ⟨n, u₀⟩), qR, qT', advM, c, multipleBadAdvance tag sB (some ⟨n, u₀⟩))`
+            -- gives the bound (in probOutput form). Bridge probOutput↔probEvent on the bound's
+            -- LHS/RHS via `probEvent_eq_eq_probOutput`.
+            have hihA := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
+              advM c
+              (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
+              (hqRk _) (hqTk _)
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput, ← add_assoc, ← add_assoc]
+            exact hihA
         · -- **Tag slot-positive step (slot available).** M reads `gS((tag, 0), n)` (sub-table);
           -- S reads `gS((tag, k), n)` for `k = s.sessionsUsed tag ≥ 1`. Off-bad (fresh nonce),
           -- both cells are independent uniforms → marginal distribution agree (each is uniform
