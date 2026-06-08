@@ -102,6 +102,38 @@ omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType No
     (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).responses =
       sB.responses := rfl
 
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- **`cacheBad` projection through `multipleBadReaderAdvance`.** The post-advance `cacheBad`
+flag equals the pre-advance flag OR the `cacheBadReader` predicate. Definitional rewrite
+extracted as a `@[simp]` lemma so the inductive proof of
+`simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le` can split on whether the reader-step
+flipped the bit. -/
+@[simp] lemma multipleBadReaderAdvance_cacheBad
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).cacheBad =
+      (sB.cacheBad || cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript) := rfl
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- **`cacheBad`-false characterization of `multipleBadReaderAdvance`.** The post-advance
+`cacheBad = false` iff both the pre-advance flag and the `cacheBadReader` predicate are `false`.
+Direct corollary of `multipleBadReaderAdvance_cacheBad`. Consumed at the IH application site of
+the headline shared-table cacheBad bound, where we case-split on whether the current reader step
+flipped the bit. -/
+lemma multipleBadReaderAdvance_cacheBad_eq_false_iff
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).cacheBad =
+        false ↔
+      sB.cacheBad = false ∧
+        cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = false := by
+  rw [multipleBadReaderAdvance_cacheBad]
+  exact Bool.or_eq_false_iff
+
 /-! ### Multiple-to-hybrid: the eager-table instrumented multiple handler
 
 The `MultipleHybridCoupling`-`inductionOn` route for the coupling bound is a proven dead end: a
@@ -1677,7 +1709,7 @@ coupling at the reader step: a shared `gFine` is reused across all reader querie
 inductive proof's continuation must operate at the *same* `gFine` as the current step rather than
 sampling a fresh one.
 
-**Status (Iteration 16).** The full-run shared-table bound below is the remaining open target of
+**Status (Iteration 17).** The full-run shared-table bound below is the remaining open target of
 Step 8 stage (b). Prior iterations built up the supporting scaffolding:
 
 * Iter 9-10: per-step FineFresh bound (`multipleBadTableHandlerFineFresh_reader_step_cacheBad_le`)
@@ -1699,6 +1731,14 @@ Step 8 stage (b). Prior iterations built up the supporting scaffolding:
   `probEvent_multipleBadTableHandlerFine_reader_avg_cacheBad_eq`) — turning the three arms of the
   inductive proof into mechanical tsum-rewrites that consume the iter-11/14 commutes and the
   iter-15 cacheBad identity.
+* Iter 17: **reader-advance `cacheBad`-bit projection** (`multipleBadReaderAdvance_cacheBad`,
+  `multipleBadReaderAdvance_cacheBad_eq_false_iff`) — definitional `@[simp]` lemmas exposing
+  the post-advance `cacheBad` flag as `sB.cacheBad || cacheBadReader gFine transcript`, with the
+  `cacheBad = false` characterization split into a conjunction. Consumed at the inductive
+  proof's reader-arm site to case-split on whether the current reader step flipped the bit:
+  the `cacheBadReader gFine transcript = true` branch is charged via the stage (a) per-cell
+  uniform-table bound, and the `cacheBadReader gFine transcript = false` branch hands a state
+  with `cacheBad = false` to the IH at budget `qR - 1`.
 
 With this iteration's reader-step commute, the inductive proof now has symmetric structural
 primitives at both tag and reader branches: the table-handler step is gFine-independent in both
