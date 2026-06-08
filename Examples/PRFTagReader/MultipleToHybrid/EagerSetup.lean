@@ -303,6 +303,151 @@ lemma multipleBadTableHandlerFine_run_preserves_bad {α : Type} (g : TagId × No
     obtain ⟨q, hq, hz⟩ := hz
     exact ih q.1 q.2 (multipleBadTableHandlerFine_step_preserves_bad g gFine t p hbad q hq) z hz
 
+/-! ### Per-step uniform-table cacheBadReader bound (Step 8 stage (a)) -/
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Single-cell marginal at a uniform function.** Drawing a uniform function `gFine` and
+reading off its value at a fixed cell `x` produces a uniform digest, so any specific value `v`
+appears with probability `1 / |Digest|`.
+
+This is a consequence of the marginalization lemma
+`OracleComp.evalDist_uniformSample_bind_update_map`: rewriting a uniform function as the
+post-composition of a fresh uniform value at `x` with a uniform function at the remaining cells. -/
+lemma probOutput_uniformSample_fun_eval [Fintype Nonce] [Fintype Digest] [Nonempty Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (x : (TagId × Fin sessionsPerTag) × Nonce) (v : Digest) :
+    Pr[= v | do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                pure (gFine x)] =
+      (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+  classical
+  -- Bridge via `evalDist_uniformSample_bind_update_map` at the cell `x`, with `ψ = fun g => g x`.
+  have hbridge :=
+    OracleComp.evalDist_uniformSample_bind_update_map
+      (D := (TagId × Fin sessionsPerTag) × Nonce) (R := Digest) x (fun g => g x)
+  have hLHS :
+      (do let u ← ($ᵗ Digest); let g ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+          pure ((Function.update g x u) x))
+        = (do let u ← ($ᵗ Digest); let _g ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+              pure u) := by
+    refine bind_congr fun u => bind_congr fun g => ?_
+    rw [Function.update_self]
+  rw [hLHS] at hbridge
+  -- Use the equivalence on `Pr[= v |...]` to convert the target to `Pr[= v | $ᵗ Digest]`.
+  have htarget : Pr[= v | do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                              pure (gFine x)] =
+                 Pr[= v | do let u ← ($ᵗ Digest);
+                              let _g ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                              pure u] := probOutput_congr rfl hbridge.symm
+  rw [htarget]
+  -- Eliminate the unused `_g` bind: probability factors as `Pr[= v | $ᵗ Digest] * 1`.
+  rw [probOutput_bind_eq_tsum]
+  have hinner : ∀ u : Digest,
+      Pr[= v | (do let _g ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)); pure u)]
+        = Pr[= v | (pure u : ProbComp Digest)] := fun u => by
+    rw [probOutput_bind_const, probFailure_uniformSample, tsub_zero, one_mul]
+  simp_rw [hinner]
+  -- ∑' u, Pr[= u | $ᵗ Digest] * Pr[= v | pure u] = Pr[= v | $ᵗ Digest]
+  rw [show (∑' u : Digest, Pr[= u | ($ᵗ Digest)] * Pr[= v | (pure u : ProbComp Digest)]) =
+        Pr[= v | (do let u ← ($ᵗ Digest); pure u : ProbComp Digest)]
+      from (probOutput_bind_eq_tsum _ _ _).symm]
+  rw [bind_pure, probOutput_uniformSample]
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce] in
+/-- **Per-step uniform-table bound on `cacheBadReader`.** Sampling a uniform fine-grained
+table `gFine` and checking `cacheBadReader gFine transcript`, the probability of a hit is
+bounded by `|TagId| * sessionsPerTag / |Digest|`.
+
+The proof is a union bound over the cell set `TagId × Fin sessionsPerTag` (existence in a
+finset), where each summand is the single-cell marginal `1 / |Digest|` from
+`probOutput_uniformSample_fun_eval`. The `sid ≠ 0` filter is dropped by monotonicity, giving
+the slightly loose `|TagId| * sessionsPerTag` bound (rather than the tight
+`|TagId| * (sessionsPerTag - 1)`). -/
+lemma probEvent_cacheBadReader_uniformSample_le [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (transcript : TagTranscript Nonce Digest) :
+    Pr[fun b : Bool => b = true |
+        do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+           pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript)] ≤
+      ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  haveI : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  -- Step 1: expand the predicate. `cacheBadReader g t = true` is `∃ tag sid, sid ≠ 0 ∧
+  -- g((tag,sid), t.nonce) = t.auth`; drop the `sid ≠ 0` filter by monotonicity.
+  set P : (((TagId × Fin sessionsPerTag) × Nonce) → Digest) → Prop :=
+    fun gFine => ∃ slot : TagId × Fin sessionsPerTag, slot ∈
+      (Finset.univ : Finset (TagId × Fin sessionsPerTag)) ∧
+      gFine (slot, transcript.nonce) = transcript.auth with hP
+  have hmono :
+      Pr[fun b : Bool => b = true |
+          do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+             pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript)] ≤
+        Pr[fun gFine => P gFine |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+    -- Direct via `probEvent_mono` once we rewrite the LHS into a `Pr[.. | $ᵗ]` form.
+    rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite (p := fun gFine => P gFine)]
+    refine ENNReal.tsum_le_tsum fun gFine => ?_
+    -- Inner factor: `Pr[(b=true) | pure (cacheBadReader gFine t)] = if cacheBadReader gFine t then 1 else 0`
+    have hinner :
+        Pr[fun b : Bool => b = true |
+            (pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript)
+              : ProbComp Bool)] =
+          (if cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = true
+            then (1 : ℝ≥0∞) else 0) := by
+      simp
+    rw [hinner]
+    by_cases hcb : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = true
+    · rw [if_pos hcb, mul_one, if_pos]
+      unfold cacheBadReader at hcb
+      rw [decide_eq_true_eq] at hcb
+      obtain ⟨tag, sid, _, hg⟩ := hcb
+      exact ⟨(tag, sid), Finset.mem_univ _, hg⟩
+    · rw [if_neg hcb, mul_zero]; exact zero_le _
+  refine hmono.trans ?_
+  -- Step 2: union bound over the slot set.
+  have hsum :
+      Pr[fun gFine => P gFine |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+        ∑ slot ∈ (Finset.univ : Finset (TagId × Fin sessionsPerTag)),
+          Pr[fun gFine => gFine (slot, transcript.nonce) = transcript.auth |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+    simpa [P] using probEvent_exists_finset_le_sum
+      (s := (Finset.univ : Finset (TagId × Fin sessionsPerTag)))
+      (mx := ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)))
+      (E := fun slot gFine => gFine (slot, transcript.nonce) = transcript.auth)
+  refine hsum.trans ?_
+  -- Step 3: each summand equals `1 / |Digest|` via the single-cell marginal.
+  have hcell : ∀ slot : TagId × Fin sessionsPerTag,
+      Pr[fun gFine => gFine (slot, transcript.nonce) = transcript.auth |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+        = (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+    intro slot
+    -- Rewrite the probEvent as `Pr[= transcript.auth | g ←$ᵗ; pure (g (slot, nonce))]`
+    -- via the bind/map bridge, then apply the single-cell marginal.
+    have hkey :
+        Pr[fun gFine => gFine (slot, transcript.nonce) = transcript.auth |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+          = Pr[= transcript.auth |
+              do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                 pure (gFine (slot, transcript.nonce))] := by
+      rw [probOutput_bind_eq_tsum, probEvent_eq_tsum_ite]
+      refine tsum_congr fun gFine => ?_
+      by_cases h : gFine (slot, transcript.nonce) = transcript.auth
+      · simp [h, probOutput_pure]
+      · simp only [h, ite_false, probOutput_pure]
+        rw [if_neg (fun heq => h heq.symm), mul_zero]
+    rw [hkey]
+    exact probOutput_uniformSample_fun_eval (slot, transcript.nonce) transcript.auth
+  rw [Finset.sum_congr rfl (fun slot _ => hcell slot)]
+  rw [Finset.sum_const, Finset.card_univ, Fintype.card_prod, Fintype.card_fin]
+  rw [nsmul_eq_mul]
+  rw [ENNReal.div_eq_inv_mul, Nat.cast_mul]
+  rw [show (((Fintype.card Digest : ℝ≥0∞)⁻¹ *
+    ((Fintype.card TagId : ℝ≥0∞) * (sessionsPerTag : ℝ≥0∞))))
+      = ((Fintype.card TagId : ℝ≥0∞) * (sessionsPerTag : ℝ≥0∞) *
+          (Fintype.card Digest : ℝ≥0∞)⁻¹) by ring]
+
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution
 (output bit, multiple-ideal state and bad-world state) as sampling a full random-oracle table `g`,
