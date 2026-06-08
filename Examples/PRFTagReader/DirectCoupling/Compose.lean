@@ -677,12 +677,43 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         have := hqT
         rw [OracleComp.isQueryBoundP_query_bind_iff] at this
         simpa using this.2
-      -- **Phase B-C (next commit).** Lift handler unfolds, case-split on `M_accepts(gS)`,
-      -- bound the (M rejects, S accepts) "flip" event by Pr[flip | $ᵗ gS] ≤
-      -- `|TagId| · sp / |Digest|` via a deterministic disagree-lemma application on
-      -- `mx := $ᵗ gS` with `D := flip event`. Off-flip: M-cont and S-cont use the SAME
-      -- `k (.ofBool b)` with `b = M_acc gS = S_acc gS`; apply IH at each `b ∈ {T, F}` via
-      -- case-split inside the bind.
+      -- **Reader-side acceptance predicates as gS-dependent Bools.**
+      let Macc : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → Bool := fun gS =>
+        unlinkReaderAccepts (Slot := TagId)
+          (fun tag nonce =>
+            slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS) (tag, nonce))
+          (multiplePattern (TagId := TagId) sessionsPerTag) transcript
+      let Sacc : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → Bool := fun gS =>
+        unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+          (fun slot nonce => OracleComp.tableExtending c gS (slot, nonce))
+          (singlePattern (TagId := TagId) sessionsPerTag) transcript
+      -- M-bad reader step: deterministic `pure` with bad state unchanged.
+      have hMstep_with_bad : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+          multipleBadTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag)
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS)) (Sum.inr transcript) (s, sB)
+          = pure (ReaderReply.ofBool (Macc gS), s, sB) := by
+        intro gS
+        change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag)
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS)) (Sum.inr transcript)) s
+            >>= (fun r => pure (r.1, r.2, sB)) = _
+        rw [multipleTableHandler_reader_run_slotZeroSubTable
+          (OracleComp.tableExtending c gS) transcript s]
+        rfl
+      -- S reader step: deterministic `pure`.
+      have hSstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+          singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)
+            (Sum.inr transcript) s
+          = pure (ReaderReply.ofBool (Sacc gS), s) := fun gS =>
+        singleTableHandler_reader_run (OracleComp.tableExtending c gS) transcript s
+      -- **Phase C (next commit).** Lift unfolds via `simp only [..., hMstep_with_bad, hSstep]`,
+      -- case-split on `Macc gS` and the `(Macc, Sacc) = (F, T)` flip event, bound flip mass
+      -- by `|TagId| · sp / |Digest|`, apply IH at each `b ∈ {T, F}` for the off-flip branch.
       sorry
 
 end UnlinkReduction
