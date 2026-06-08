@@ -1361,6 +1361,79 @@ lemma multipleBadTableHandlerFine_tag_step_cacheBad_avg_preserves
     (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
     (sessionsPerTag := sessionsPerTag) g gFine tag p z hz
 
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Per-step cacheBad monotonicity for the shared-table Fine handler.** If `cacheBad` is set in
+the input state, every reachable output of `multipleBadTableHandlerFine g gFine t p` keeps
+`cacheBad = true`. The tag branch leaves `cacheBad` unchanged (proved via
+`multipleBadTableHandlerFine_tag_preserves_cacheBad`); the reader branch ORs into it (proved via
+`multipleBadTableHandlerFine_reader_state_eq` and idempotence of OR on `true`).
+
+Shared-table analogue of `multipleBadTableHandlerFineFresh_step_preserves_cacheBad`. Used by the
+upcoming full-run shared-table cacheBad bound at the tag-step IH application site (we need
+preservation in BOTH directions: false-stays-false for the per-step charge to fire, and
+true-stays-true so the IH can be applied at the post-step state). -/
+lemma multipleBadTableHandlerFine_step_preserves_cacheBad
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hcb : p.2.cacheBad = true) :
+    ∀ z ∈ support (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine t p), z.2.2.cacheBad = true := by
+  cases t with
+  | inl tag =>
+    intro z hz
+    have h := multipleBadTableHandlerFine_tag_preserves_cacheBad
+      (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g gFine tag p z hz
+    rw [h]; exact hcb
+  | inr transcript =>
+    intro z hz
+    have h := multipleBadTableHandlerFine_reader_state_eq
+      (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g gFine transcript p z hz
+    rw [h]
+    show (p.2.cacheBad || _ : Bool) = true
+    rw [hcb, Bool.true_or]
+
+/-! ### Full-run shared-table cacheBad bound (Step 8 stage (b))
+
+The headline bound the Option-6 plan calls for: starting from a state with `cacheBad = false` and
+sampling a single shared `gFine ← $ᵗ` outside the run, the probability that the shared-table
+`multipleBadTableHandlerFine g gFine` handler leaves `cacheBad = true` after running an
+adversary that makes at most `qR` reader queries is bounded by
+`qR * |TagId| * sessionsPerTag / |Digest|`.
+
+This is the bound that `simulateQ_multipleBadTableHandlerFineFresh_cacheBad_prob_le` provides for
+the **fresh-per-step** variant. The shared-table variant requires bridging across the gFine
+coupling at the reader step: a shared `gFine` is reused across all reader queries, so the
+inductive proof's continuation must operate at the *same* `gFine` as the current step rather than
+sampling a fresh one.
+
+**Status (Iteration 12).** The full-run shared-table bound below is the remaining open target of
+Step 8 stage (b). Iterations 9-11 attempted three different bridge strategies — per-step
+`bind_comm` lift, tag-step gFine commutation, and reader-step stochastic dominance — and
+documented their structural obstructions (the reader-step gFine sharing forces a coupling between
+the per-step OR and the continuation's gFine reads).
+
+The cleanest path forward — to be executed in the next iteration — is one of:
+1. **Direct Fubini decomposition.** Express `cacheBad_end` after a shared-`gFine` run as the
+   union over reader queries `i = 1..qR` of `cacheBadReader gFine T_i`, where `T_i` is the
+   `i`-th reader-query transcript. The transcripts `T_i` are gFine-independent (the
+   `multipleTableHandler` reads only `g`, not `gFine`). Union bound + the stage (a) per-cell
+   marginal closes the bound at `qR * |TagId| * sessionsPerTag / |Digest|`.
+2. **Reduction to FineFresh via marginal-distribution equality.** Show that the marginal
+   distribution of `(state, cacheBad)` after a shared-`gFine` Fine run agrees with the marginal
+   after a per-step-fresh FineFresh run. Then transport the FineFresh bound.
+3. **Per-cell coupling.** Identify the finite set of `((TagId × Fin sessionsPerTag) × Nonce)`
+   cells the shared `gFine` is read at across the full run, and decompose the bound across these
+   cells using the marginal lemma `probOutput_uniformSample_fun_eval`.
+
+For Iteration 12 we leave the full-run shared-table bound as the named open target, with the
+per-step / preservation / commutation scaffolding from Iterations 9-11 + this iteration's
+`multipleBadTableHandlerFine_step_preserves_cacheBad` in place. Steps 9-12 of the Option-6 plan
+(the two `sorry`s in `DirectCoupling/Compose.lean`) consume this bound; until it lands, those
+sorries remain. -/
+
 end UnlinkReduction
 
 end PRFTagReader
