@@ -402,14 +402,37 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           rw [probOutput_congr rfl hLHS_comm,
               probOutput_congr rfl hRHS_comm,
               probEvent_congr' (fun _ _ => Iff.rfl) hBAD_comm]
-          -- **Phase C (next commit).** Per-`n`: case-split on `c ((tag, 0), n)`.
-          -- * `some u₀`: cell read is `u₀`, apply IH at `(k (some ⟨n, u₀⟩), qR, qT', advM, c,
-          --   multipleBadAdvance tag sB (some ⟨n, u₀⟩))`.
-          -- * `none`: marginalize cell `((tag, 0), n)` via `evalDist_uniformSample_bind_update_map`,
-          --   apply IH at `(k (some ⟨n, u⟩), qR, qT', advM, c.cacheQuery ((tag, 0), n) u,
-          --   multipleBadAdvance tag sB (some ⟨n, u⟩))` for each fresh `u`.
-          -- Integrate over `n` via `probEvent_bind_le_add_bad_disagree` with empty disagree set,
-          -- or via the elementary `probEvent_uniformSample_bind_le` form.
+          -- **Phase C.** Reshape the slack so the head goal's `qR · (qT' + 1) / |Nonce|` splits
+          -- into `qR / |Nonce| + qR · qT' / |Nonce|`. Place `qR / |Nonce|` in the `ε₁` slot of
+          -- `probEvent_bind_le_add_bad_disagree`; the remaining `qR · |TagId| / |Digest| +
+          -- qR · qT' / |Nonce| + qR · |TagId| · sp / |Digest|` is the IH-shaped `ε₂`. The
+          -- disagree set is empty (`D := fun _ => False`) because under hzero, M and S do the
+          -- same step (Session 3) — there's no per-step disagreement to charge.
+          classical
+          simp only [← probEvent_eq_eq_probOutput]
+          have hSplit : ((qR * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
+              = ((qR : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+                ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+            rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
+              Nat.cast_add, ENNReal.add_div]
+          rw [hSplit]
+          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃`.
+          -- Reassociate to `success + bad + qR/|N| + (slack₁ + slack₂(qT') + slack₃)`.
+          rw [show ∀ a b c d e f : ℝ≥0∞, a + b + c + (d + e) + f = a + b + d + (c + e + f) from
+                fun a b c d e f => by ring]
+          refine probEvent_bind_le_add_bad_disagree
+            (D := fun _ : Nonce => False)
+            ?_ ?_
+          · -- D-mass: `Pr[False | $ᵗ Nonce] = 0 ≤ qR / |Nonce|`.
+            simp
+          intro n _ _hnD
+          -- **Phase D (next commit).** Per-`n` bound. Case-split on `c ((tag, 0), n)`:
+          -- * `some u₀`: cell read is `u₀` regardless of `gS`; apply IH at `(k (some ⟨n, u₀⟩),
+          --   qR, qT', advM, c, multipleBadAdvance tag sB (some ⟨n, u₀⟩))`.
+          -- * `none`: marginalize cell `((tag, 0), n)` of `gS` via
+          --   `evalDist_uniformSample_bind_update_map`; apply IH at `(k (some ⟨n, u⟩), qR, qT',
+          --   advM, c.cacheQuery ((tag, 0), n) u, multipleBadAdvance tag sB (some ⟨n, u⟩))` for
+          --   each fresh `u`; integrate over `u`.
           sorry
         · -- **Tag slot-positive step (slot available).** M reads `gS((tag, 0), n)` (sub-table);
           -- S reads `gS((tag, k), n)` for `k = s.sessionsUsed tag ≥ 1`. Off-bad (fresh nonce),
