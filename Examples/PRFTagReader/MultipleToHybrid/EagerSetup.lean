@@ -1425,6 +1425,96 @@ lemma multipleBadTableHandlerFine_run_preserves_cacheBad {α : Type}
     exact ih q.1 q.2
       (multipleBadTableHandlerFine_step_preserves_cacheBad g gFine t p hcb q hq) z hz
 
+/-! ### Reader-step gFine-commutation for the shared-table full run (Step 8 stage (b) bridge) -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Reader-step gFine commutation for the shared-table full run.** Analogue of
+`multipleBadTableHandlerFine_full_run_tag_step_commute` for a reader-headed adversary. The
+table-handler reader step `multipleTableHandler g (Sum.inr transcript) p.1` is gFine-independent
+(it reads only `g`). The gFine sample enters only through the bad-state OR
+`multipleBadReaderAdvance gFine transcript p.2` and through the continuation `oa`.
+
+Concretely: sampling `gFine ← $ᵗ` outside a reader-headed adversary
+`liftM (OracleSpec.query (Sum.inr transcript)) >>= oa` is **distribution-equivalent** to running
+the gFine-independent table-handler step first and *then* sampling `gFine` afresh for both the OR
+and the continuation. Even though both the OR and the continuation share the same gFine sample
+at the source, since the table-handler step does not depend on gFine, we can commute that
+gFine-independent step past the outer `$ᵗ`.
+
+This is a Fubini equality, mirroring the tag-step version. Both versions are pure structural
+identities at the `evalDist` level; the difference between tag and reader cases is that the
+reader case keeps gFine "alive" inside the inner bind (since the OR step and continuation both
+read it), whereas the tag case lets gFine be sampled afresh inside (since the tag bad-state
+advance is gFine-independent).
+
+Proved by combining `multipleBadTableFine_run_query_bind'` (unfolding `simulateQ` over the
+`query_bind` of a reader query) with `evalDist_probComp_bind_comm` (commuting the outer
+`gFine ← $ᵗ` past the gFine-independent table-handler step). -/
+lemma multipleBadTableHandlerFine_full_run_reader_step_commute
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (transcript : TagTranscript Nonce Digest)
+    (oa : ReaderReply → UnlinkAdversary TagId Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    𝒟[(($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                  (Sum.inr transcript))) >>= oa)).run p :
+          ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest)))] =
+        𝒟[((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2,
+                  multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine
+                    transcript p.2))] := by
+  classical
+  -- Unfold the inner simulateQ over the query_bind, then commute the outer gFine past the
+  -- gFine-independent table-handler step.
+  have hstep_eq : ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest,
+      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+          ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+              (Sum.inr transcript))) >>= oa)).run p =
+        ((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              (oa r.1)).run (r.2,
+                multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine
+                  transcript p.2)) := by
+    intro gFine
+    rw [multipleBadTableFine_run_query_bind' g gFine (Sum.inr transcript) oa p]
+    simp [multipleBadTableHandlerFine]
+  have hunfold :
+      (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                    (Sum.inr transcript))) >>= oa)).run p :
+            ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest))) =
+        (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2,
+                  multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine
+                    transcript p.2)) := by
+    refine bind_congr fun gFine => ?_
+    exact hstep_eq gFine
+  rw [show 𝒟[_] = 𝒟[_] from congrArg _ hunfold]
+  exact evalDist_probComp_bind_comm
+    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+    ((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1)
+    (fun gFine r => (simulateQ (multipleBadTableHandlerFine (TagId := TagId)
+        (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+        (oa r.1)).run (r.2,
+          multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2))
+
 /-! ### Full-run shared-table cacheBad bound (Step 8 stage (b))
 
 The headline bound the Option-6 plan calls for: starting from a state with `cacheBad = false` and
@@ -1439,13 +1529,31 @@ coupling at the reader step: a shared `gFine` is reused across all reader querie
 inductive proof's continuation must operate at the *same* `gFine` as the current step rather than
 sampling a fresh one.
 
-**Status (Iteration 12).** The full-run shared-table bound below is the remaining open target of
-Step 8 stage (b). Iterations 9-11 attempted three different bridge strategies — per-step
-`bind_comm` lift, tag-step gFine commutation, and reader-step stochastic dominance — and
-documented their structural obstructions (the reader-step gFine sharing forces a coupling between
-the per-step OR and the continuation's gFine reads).
+**Status (Iteration 14).** The full-run shared-table bound below is the remaining open target of
+Step 8 stage (b). Prior iterations built up the supporting scaffolding:
 
-The cleanest path forward — to be executed in the next iteration — is one of:
+* Iter 9-10: per-step FineFresh bound (`multipleBadTableHandlerFineFresh_reader_step_cacheBad_le`)
+  and full-run FineFresh bound (`simulateQ_multipleBadTableHandlerFineFresh_cacheBad_prob_le`).
+* Iter 11: tag-step gFine commutation (`multipleBadTableHandlerFine_full_run_tag_step_commute`)
+  and per-step shared-table bound (`multipleBadTableHandlerFine_reader_step_cacheBad_avg_le`).
+* Iter 12-13: per-step and full-run preservation lemmas
+  (`multipleBadTableHandlerFine_step_preserves_cacheBad`,
+  `multipleBadTableHandlerFine_run_preserves_cacheBad`).
+* Iter 14: **reader-step gFine commutation**
+  (`multipleBadTableHandlerFine_full_run_reader_step_commute`) — Fubini equality for the
+  reader-headed adversary, completing the structural primitives the inductive bound consumes
+  at both branches of its case-split.
+
+With this iteration's reader-step commute, the inductive proof now has symmetric structural
+primitives at both tag and reader branches: the table-handler step is gFine-independent in both
+cases, so the outer `gFine ← $ᵗ` commutes past it. The remaining structural obstacle for the
+full-run bound is the reader-step continuation residue: after the commute, the inner
+`gFine ← $ᵗ; OR(gFine); simulate(g, gFine) (k r) .run` still has gFine shared between the OR
+and the continuation, so `probEvent_bind_le_add` on `gFine ← $ᵗ` requires the continuation
+bound `Pr[cacheBad-end | simulate (g, FIXED gFine) ... .run]` for EACH fixed gFine — which is
+not what the IH (averaged over fresh gFine) provides.
+
+The closing strategies (one of which the next iteration should execute):
 1. **Direct Fubini decomposition.** Express `cacheBad_end` after a shared-`gFine` run as the
    union over reader queries `i = 1..qR` of `cacheBadReader gFine T_i`, where `T_i` is the
    `i`-th reader-query transcript. The transcripts `T_i` are gFine-independent (the
@@ -1458,11 +1566,8 @@ The cleanest path forward — to be executed in the next iteration — is one of
    cells the shared `gFine` is read at across the full run, and decompose the bound across these
    cells using the marginal lemma `probOutput_uniformSample_fun_eval`.
 
-For Iteration 12 we leave the full-run shared-table bound as the named open target, with the
-per-step / preservation / commutation scaffolding from Iterations 9-11 + this iteration's
-`multipleBadTableHandlerFine_step_preserves_cacheBad` in place. Steps 9-12 of the Option-6 plan
-(the two `sorry`s in `DirectCoupling/Compose.lean`) consume this bound; until it lands, those
-sorries remain. -/
+Steps 9-12 of the Option-6 plan (the two `sorry`s in `DirectCoupling/Compose.lean`) consume this
+bound; until it lands, those sorries remain. -/
 
 end UnlinkReduction
 
