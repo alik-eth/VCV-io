@@ -2495,6 +2495,221 @@ lemma probEvent_multipleBadTableHandlerFine_cacheBad_le_shadow_hit {α : Type}
         rw [hrhs_simp]
         exact hih
 
+/-! ### List-indexed union bound and headline shared-table cacheBad bound (iter-25)
+
+The final headline `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le` combines:
+* the list-coupled fixed-`gFine` coupling
+  `probEvent_multipleBadTableHandlerFine_cacheBad_le_shadow_hit`,
+* the shadow length bound `readerTranscriptsList_length_le`,
+* the per-cell stage (a) bound `probEvent_cacheBadReader_uniformSample_le`,
+
+via direct decomposition of the outer `gFine ← $ᵗ` sample using `probEvent_bind_eq_tsum`. The
+inner per-`gFine` event is bounded by the coupling; the shadow gives a list with at most `qR`
+elements, and the per-cell uniform-marginal bound dominates each summand. -/
+
+/-- **List-indexed union bound.** For a list `L`, the probability that *some* element satisfies
+`P` is at most the sum of per-element probabilities. Induction on the list; the base case is
+trivial (empty list has no element) and the inductive case combines via `probEvent_or_le_add`. -/
+lemma probEvent_exists_mem_list_le_sum {α γ : Type}
+    (L : List γ) (mx : ProbComp α) (P : γ → α → Prop) :
+    Pr[fun x => ∃ y ∈ L, P y x | mx] ≤ (L.map (fun y => Pr[P y | mx])).sum := by
+  classical
+  induction L with
+  | nil =>
+    simp
+  | cons hd tl ih =>
+    have hev :
+        (fun x => ∃ y ∈ hd :: tl, P y x) = (fun x => P hd x ∨ ∃ y ∈ tl, P y x) := by
+      funext x
+      apply propext
+      constructor
+      · rintro ⟨y, hy, hPy⟩
+        rcases List.mem_cons.mp hy with rfl | hy'
+        · exact Or.inl hPy
+        · exact Or.inr ⟨y, hy', hPy⟩
+      · rintro (h | ⟨y, hy, hPy⟩)
+        · exact ⟨hd, List.mem_cons_self, h⟩
+        · exact ⟨y, List.mem_cons_of_mem _ hy, hPy⟩
+    rw [hev]
+    refine (probEvent_or_le mx _ _).trans ?_
+    simp only [List.map_cons, List.sum_cons]
+    exact add_le_add le_rfl ih
+
+/-- **Headline: shared-table cacheBad bound.** Running `simulateQ` of the shared-table fine
+handler `multipleBadTableHandlerFine g gFine` against an adversary with at most `qR` reader
+queries, averaged over `gFine ← $ᵗ` (uniformly sampled outside), starting from a cacheBad-false
+state, the probability that `cacheBad` ends up set is bounded by
+`qR * |TagId| * sessionsPerTag / |Digest|`.
+
+Closes Step 8 stage (b) Strategy 1 by combining:
+* the list-coupled fixed-`gFine` coupling (`probEvent_multipleBadTableHandlerFine_cacheBad_le_shadow_hit`),
+* the list-indexed union bound on `∃ T ∈ L, cacheBadReader gFine T` over the gFine-independent
+  reader-transcripts shadow,
+* the shadow length bound `≤ qR` (`readerTranscriptsList_length_le`),
+* the per-cell stage (a) bound `probEvent_cacheBadReader_uniformSample_le`. -/
+lemma simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest)
+    {α : Type} (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (qR : ℕ) (hqR : OracleComp.IsQueryBoundP adversary (·.isRight) qR)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest)
+    (hcb : p.2.cacheBad = false) :
+    Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+           (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+             (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) adversary).run p] ≤
+      (qR : ℝ≥0∞) *
+        (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞)) := by
+  classical
+  -- Step 1: decompose the outer `gFine ← $ᵗ` via `probEvent_bind_eq_tsum`.
+  rw [probEvent_bind_eq_tsum]
+  -- Step 2: per `gFine`, apply the list-coupled fixed-`gFine` coupling.
+  have hcoup : ∀ gFine,
+      Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) adversary).run p] ≤
+      Pr[fun L : List (TagTranscript Nonce Digest) =>
+          ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+        readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g adversary p.1] := fun gFine =>
+    probEvent_multipleBadTableHandlerFine_cacheBad_le_shadow_hit
+      (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g gFine adversary p hcb
+  -- Step 3: bound `∑' gFine, Pr[=gFine|$ᵗ] * (coupling RHS)` by averaging.
+  refine (ENNReal.tsum_le_tsum
+    (fun gFine => mul_le_mul' le_rfl (hcoup gFine))).trans ?_
+  -- Step 4: per-cell decomposition. Use that the shadow is gFine-independent: expand the inner
+  -- Pr over the shadow via `probEvent_eq_tsum_ite`, swap the order of summation, and re-fold.
+  have hswap :
+      ∑' gFine : ((TagId × Fin sessionsPerTag) × Nonce → Digest),
+          Pr[= gFine | ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] *
+            Pr[fun L : List (TagTranscript Nonce Digest) =>
+                ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+              readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g adversary p.1] =
+        ∑' L : List (TagTranscript Nonce Digest),
+          Pr[= L | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g adversary p.1] *
+            Pr[fun gFine => ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T
+              = true | ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+    -- Expand both sides via `probEvent_eq_tsum_ite` and swap sums.
+    simp_rw [probEvent_eq_tsum_ite (mx := readerTranscriptsList (TagId := TagId)
+        (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag) g adversary p.1),
+      probEvent_eq_tsum_ite (mx := ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)))]
+    -- Pull each `p(gFine)` / `q(L)` factor into the inner ite-sum, then swap.
+    simp_rw [← ENNReal.tsum_mul_left]
+    rw [ENNReal.tsum_comm]
+    refine tsum_congr fun L => ?_
+    refine tsum_congr fun gFine => ?_
+    -- Both sides: `p(gFine) * (if cond then q(L) else 0) = q(L) * (if cond then p(gFine) else 0)`.
+    by_cases hcond : ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true
+    · simp [hcond]; ring
+    · simp [hcond]
+  rw [hswap]
+  -- Step 5: per `L`, bound the inner Pr using list union + per-cell stage (a) bound.
+  -- The shadow length is bounded by `qR` via `readerTranscriptsList_length_le`.
+  have hLength := readerTranscriptsList_length_le (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) g adversary p.1 qR hqR
+  have hinner : ∀ L ∈ support (readerTranscriptsList (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag) g adversary p.1),
+      Pr[fun gFine => ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+        (qR : ℝ≥0∞) *
+          (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞)) := by
+    intro L hL
+    -- Union bound: `Pr[∃T∈L, P gFine T] ≤ ∑_{T∈L} Pr[P gFine T]`.
+    have hunion :
+        Pr[fun gFine => ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+          (L.map (fun T => Pr[fun gFine => cacheBadReader (sessionsPerTag := sessionsPerTag)
+            gFine T = true |
+              ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))])).sum :=
+      probEvent_exists_mem_list_le_sum L
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+        (fun T gFine => cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true)
+    refine hunion.trans ?_
+    -- Each per-cell summand ≤ `|TagId|*sessionsPerTag/|Digest|`.
+    have hcell : ∀ T,
+        Pr[fun gFine => cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+          ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞) := by
+      intro T
+      -- Rewrite `Pr[..|$ᵗ]` as `Pr[..|do gFine ← $ᵗ; pure (cacheBadReader gFine T)]`.
+      have hkey :
+          Pr[fun gFine => cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+              ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] =
+            Pr[fun b : Bool => b = true |
+              do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                 pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T)] := by
+        rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+        refine tsum_congr fun gFine => ?_
+        by_cases h : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true
+        · simp [h]
+        · simp [h]
+      rw [hkey]
+      exact probEvent_cacheBadReader_uniformSample_le
+        (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) T
+    -- Sum ≤ `L.length * per-cell bound ≤ qR * per-cell bound`.
+    have hsumLe :
+        (L.map (fun T => Pr[fun gFine => cacheBadReader (sessionsPerTag := sessionsPerTag)
+          gFine T = true |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))])).sum ≤
+          (L.length : ℝ≥0∞) *
+            (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞)) := by
+      calc (L.map (fun T => Pr[fun gFine => cacheBadReader (sessionsPerTag := sessionsPerTag)
+            gFine T = true |
+              ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))])).sum
+          ≤ (L.map (fun _ => ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞))).sum := by
+            refine List.sum_le_sum ?_
+            intro T _
+            exact hcell T
+        _ = (L.length : ℝ≥0∞) * (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞)) := by
+            rw [List.map_const', List.sum_replicate, nsmul_eq_mul]
+    refine hsumLe.trans ?_
+    -- Length bound ≤ qR.
+    exact mul_le_mul' (by exact_mod_cast hLength L hL) le_rfl
+  -- Step 6: combine the per-L bound with the shadow sum.
+  calc ∑' L : List (TagTranscript Nonce Digest),
+          Pr[= L | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g adversary p.1] *
+            Pr[fun gFine => ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T
+              = true | ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+        ≤ ∑' L : List (TagTranscript Nonce Digest),
+            Pr[= L | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g adversary p.1] *
+              ((qR : ℝ≥0∞) *
+                (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+                  (Fintype.card Digest : ℝ≥0∞))) := by
+          refine ENNReal.tsum_le_tsum fun L => ?_
+          by_cases hL : L ∈ support (readerTranscriptsList (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g adversary p.1)
+          · exact mul_le_mul' le_rfl (hinner L hL)
+          · rw [probOutput_eq_zero_of_not_mem_support hL, zero_mul]
+            exact zero_le _
+      _ = (∑' L : List (TagTranscript Nonce Digest),
+            Pr[= L | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g adversary p.1]) *
+            ((qR : ℝ≥0∞) *
+              (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+                (Fintype.card Digest : ℝ≥0∞))) := by rw [ENNReal.tsum_mul_right]
+      _ ≤ 1 * ((qR : ℝ≥0∞) *
+            (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞))) := by
+          gcongr; exact tsum_probOutput_le_one
+      _ = (qR : ℝ≥0∞) *
+            (((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+              (Fintype.card Digest : ℝ≥0∞)) := one_mul _
+
 end UnlinkReduction
 
 end PRFTagReader
