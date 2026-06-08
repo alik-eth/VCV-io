@@ -1515,6 +1515,34 @@ lemma multipleBadTableHandlerFine_full_run_reader_step_commute
         (oa r.1)).run (r.2,
           multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2))
 
+/-! ### Per-step cacheBad-end identity at fixed `gFine` (Step 8 stage (b) helper) -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Per-step cacheBad-end identity at fixed `gFine`.** A single reader step of the shared-table
+Fine handler advances the `cacheBad` bit deterministically: at every reachable output, the
+post-step `cacheBad` equals `p.2.cacheBad || cacheBadReader gFine transcript`. Direct corollary of
+`multipleBadTableHandlerFine_reader_state_eq` projected onto the `cacheBad` field.
+
+Strategy 1 of the closing plan for the full-run shared-table bound consumes this identity at the
+union-bound step: at fixed `gFine`, the cumulative `cacheBad` flag after the run equals
+`OR_i cacheBadReader gFine T_i`, where `T_i` are the reader-query transcripts encountered. This
+lemma is the single-step base of that telescoping identity. -/
+lemma multipleBadTableHandlerFine_reader_cacheBad_eq
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    ∀ z ∈ support (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine (Sum.inr transcript) p),
+        z.2.2.cacheBad =
+          (p.2.cacheBad || cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript) := by
+  intro z hz
+  have h := multipleBadTableHandlerFine_reader_state_eq
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) g gFine transcript p z hz
+  rw [h]
+  rfl
+
 /-! ### Full-run shared-table cacheBad bound (Step 8 stage (b))
 
 The headline bound the Option-6 plan calls for: starting from a state with `cacheBad = false` and
