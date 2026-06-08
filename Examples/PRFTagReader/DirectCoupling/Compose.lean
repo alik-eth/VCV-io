@@ -717,6 +717,19 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
   -- (over `TagId × Nonce → Digest`) to `slotZeroSubTable gS` (over the larger S-side domain) via
   -- `evalDist_slotZeroSubTable_uniformSample` (DirectCoupling.lean Session 1). Then apply
   -- `multipleBadEager_le_singleEager_DC_aux`.
+  --
+  -- **Key inline helpers needed:**
+  --   1. Bridge from `multipleIdealQueryImpl.run'` to the `$ᵗ gS >>= (fun z => z.1) <$>
+  --      (multipleBadTableHandler (slotZeroSubTable gS)).run (init, sB)` form. Uses
+  --      `← probOutput_multipleBad_run'_eq_multipleIdeal` + the eagerization lemma's
+  --      `(z.1, z.2.2)`-map equality, plus map-composition gymnastics to convert to the
+  --      `(z.1)`-map form, plus `evalDist_slotZeroSubTable_uniformSample`.
+  --   2. Bridge the BAD term similarly (already at `(z.1, z.2.2)` map projection level).
+  --
+  -- The map-composition step `(fun b => b = true) ∘ (z.1) = (fun w => w.1 = true) ∘ (z.1, z.2.2)`
+  -- requires careful type alignment; the multipleBadQueryImpl state is `(UnlinkState × QueryCache)
+  -- × UnlinkBadState`, with `z : Bool × ...` having `z.2.2 : QueryCache × UnlinkBadState` (not
+  -- just `UnlinkBadState` as the headline BAD's predicate `z.2.2.bad` expects).
   sorry
 
 end UnlinkReduction
