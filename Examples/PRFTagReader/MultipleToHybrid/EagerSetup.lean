@@ -1264,6 +1264,103 @@ lemma multipleBadTableHandlerFine_reader_step_cacheBad_avg_le
     (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
     (sessionsPerTag := sessionsPerTag) g transcript p hcb
 
+/-! ### Tag-step gFine-commutation for the shared-table full run (Step 8 stage (b) bridge) -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Tag-step gFine commutation for the shared-table full run.** A tag step of
+`multipleBadTableHandlerFine g gFine` is gFine-independent (the bad-state advance is
+`multipleBadAdvance tag p.2 r.1`, which doesn't read `gFine`). Sampling `gFine ← $ᵗ` outside a
+tag-headed adversary `liftM (OracleSpec.query (Sum.inl tag)) >>= oa` is equivalent to running the
+tag step first and *then* sampling `gFine` afresh for the continuation, even though both share
+the same gFine sample at the source.
+
+This is the key structural lemma the full-run shared-table cacheBad bound consumes at the tag-step
+case of its induction: after the commutation, the IH applies directly at the same query budget
+because tag steps don't consume reader-query budget.
+
+Proved by combining `multipleBadTableFine_run_query_bind'` (unfolding `simulateQ` over the
+`query_bind` of a tag query) with `evalDist_probComp_bind_comm` (commuting the outer
+`gFine ← $ᵗ` past the gFine-independent inner step). -/
+lemma multipleBadTableHandlerFine_full_run_tag_step_commute
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (tag : TagId)
+    (oa : Option (TagTranscript Nonce Digest) → UnlinkAdversary TagId Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    𝒟[(($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                  (Sum.inl tag))) >>= oa)).run p :
+          ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest)))] =
+        𝒟[((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1 >>= fun r =>
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2, multipleBadAdvance tag p.2 r.1))] := by
+  classical
+  -- Unfold the inner simulateQ over the query_bind, then commute the outer gFine past the
+  -- gFine-independent step.
+  have hstep_eq : ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest,
+      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+          ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+              (Sum.inl tag))) >>= oa)).run p =
+        ((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1 >>= fun r =>
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              (oa r.1)).run (r.2, multipleBadAdvance tag p.2 r.1)) := by
+    intro gFine
+    rw [multipleBadTableFine_run_query_bind' g gFine (Sum.inl tag) oa p]
+    simp [multipleBadTableHandlerFine]
+  have hunfold :
+      (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                    (Sum.inl tag))) >>= oa)).run p :
+            ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest))) =
+        (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1 >>= fun r =>
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2, multipleBadAdvance tag p.2 r.1)) := by
+    refine bind_congr fun gFine => ?_
+    exact hstep_eq gFine
+  rw [show 𝒟[_] = 𝒟[_] from congrArg _ hunfold]
+  exact evalDist_probComp_bind_comm
+    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+    ((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1)
+    (fun gFine r => (simulateQ (multipleBadTableHandlerFine (TagId := TagId)
+        (Nonce := Nonce) (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+        (oa r.1)).run (r.2, multipleBadAdvance tag p.2 r.1))
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Tag-step cacheBad preservation, averaged over `gFine ← $ᵗ`.** The shared-table tag step
+does not touch `cacheBad`, so for every reachable output the `cacheBad` flag matches the input.
+This is the tag-side averaged companion to `multipleBadTableHandlerFine_reader_step_cacheBad_avg_le`
+— trivial because the tag branch ignores `gFine` entirely, so the averaging over `gFine ← $ᵗ`
+contributes nothing. -/
+lemma multipleBadTableHandlerFine_tag_step_cacheBad_avg_preserves
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (tag : TagId)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    ∀ z ∈ support
+        (($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= fun gFine =>
+          multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g gFine (Sum.inl tag) p),
+        z.2.2.cacheBad = p.2.cacheBad := by
+  intro z hz
+  obtain ⟨gFine, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+  exact multipleBadTableHandlerFine_tag_preserves_cacheBad
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) g gFine tag p z hz
+
 end UnlinkReduction
 
 end PRFTagReader
