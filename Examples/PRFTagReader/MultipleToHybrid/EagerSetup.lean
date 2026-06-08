@@ -2112,6 +2112,134 @@ lemma readerTranscriptsList_support_nonempty {α : Type} (g : TagId × Nonce →
       rw [mem_support_bind_iff]
       exact ⟨rest, hrest, by simp⟩
 
+/-! ### List-coupled telescoping identity (Step 8 stage (b) Strategy 1, iter-23)
+
+With the shadow's support nonemptiness in hand
+(`readerTranscriptsList_support_nonempty`), we now upgrade
+`multipleBadTableHandlerFine_run_cacheBad_exists_reader_hit` from a *singleton* witness
+(∃ T, cacheBadReader gFine T = true) to a **list-coupled** witness:
+
+  ∀ z ∈ support (Fine run from p), z.2.2.cacheBad = true →
+    p.2.cacheBad ∨ ∃ L ∈ support (readerTranscriptsList g adv p.1),
+      ∃ T ∈ L, cacheBadReader gFine T = true.
+
+The constructive-witness obstacle from iter-21 is resolved exactly as planned at the reader-step
+branch: when `cacheBadReader gFine transcript = true`, we extract `rest ∈ shadow_cont.support`
+from `readerTranscriptsList_support_nonempty` applied at the continuation state, and witness
+`transcript :: rest` as the list. -/
+
+/-- **List-coupled telescoping identity at fixed `gFine`.** Every reachable
+end-state with `cacheBad = true` is witnessed by some reader transcript hit
+inside a shadow list. The shadow is computed against the **table-handler state**
+(`p.1`), independently of `gFine`. -/
+lemma multipleBadTableHandlerFine_run_cacheBad_exists_list_hit {α : Type}
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) adversary).run p),
+        z.2.2.cacheBad = true →
+        p.2.cacheBad = true ∨
+        ∃ L ∈ support (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g adversary p.1),
+          ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true := by
+  induction adversary using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz hzcb
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz
+    -- End state equals starting state, so `p.2.cacheBad = true`.
+    exact Or.inl hzcb
+  | query_bind t f ih =>
+    intro z hz hzcb
+    rw [multipleBadTableFine_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hzcont⟩ := hz
+    cases t with
+    | inl tag =>
+      -- Tag step preserves cacheBad: q.2.2.cacheBad = p.2.cacheBad.
+      have hqcb := multipleBadTableHandlerFine_tag_preserves_cacheBad
+        (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine tag p q hq
+      -- Apply the IH on the continuation.
+      have hih := ih q.1 q.2 z hzcont hzcb
+      -- Need: the table-handler step at the tag query inputs `q.1` matches `q.1` (i.e. `q.1` is
+      -- in the support of `multipleTableHandler g (Sum.inl tag) p.1`) and that we can build the
+      -- shadow list at p as `(none/some transcript).elim rest rest = rest`.
+      -- Concretely: `q.1.1` is the reply, `q.1.2` is the new UnlinkState, and the bad state is
+      -- `multipleBadAdvance tag p.2 q.1.1` (so `q.2.1 = q.1.2` and `q.2.2 = …`).
+      -- For the shadow side: at tag query, `readerQueryProj (Sum.inl tag) = none`, so the
+      -- shadow list at this step is just the recursive `rest`.
+      -- Extract `q.1.1, q.1.2 ∈ support (multipleTableHandler …)` from `hq`.
+      have hq_step : (q.1, q.2.1) ∈ support (multipleTableHandler
+          (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) p.1) := by
+        -- The handler reader/tag step has the shape
+        --   `multipleTableHandler … >>= fun r => pure (r.1, r.2, multipleBadAdvance …)`.
+        change q ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1
+            >>= fun r => pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) at hq
+        obtain ⟨r, hr, hq⟩ := (mem_support_bind_iff _ _ _).mp hq
+        rw [mem_support_pure_iff] at hq
+        subst hq
+        exact hr
+      rcases hih with hpcb | ⟨L, hL, T, hTL, hT⟩
+      · -- IH gives `q.2.cacheBad = true`. Tag-step preserves it back to `p.2.cacheBad = true`.
+        rw [hqcb] at hpcb; exact Or.inl hpcb
+      · -- IH gives a list witness on the continuation. Lift via tag-step shadow expansion.
+        refine Or.inr ⟨L, ?_, T, hTL, hT⟩
+        rw [readerTranscriptsList_query_bind, mem_support_bind_iff]
+        refine ⟨(q.1, q.2.1), hq_step, ?_⟩
+        rw [mem_support_bind_iff]
+        refine ⟨L, hL, ?_⟩
+        simp [readerQueryProj]
+    | inr transcript =>
+      -- Reader step: post-state cacheBad is p.2.cacheBad || cacheBadReader gFine transcript.
+      have hqstate := multipleBadTableHandlerFine_reader_state_eq
+        (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine transcript p q hq
+      have hqcb : q.2.2.cacheBad =
+          (p.2.cacheBad || cacheBadReader (sessionsPerTag := sessionsPerTag)
+            gFine transcript) := by rw [hqstate]; rfl
+      -- Extract `q.1, q.2.1 ∈ support (multipleTableHandler g (Sum.inr transcript) p.1)`.
+      have hq_step : (q.1, q.2.1) ∈ support (multipleTableHandler
+          (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p.1) := by
+        change q ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1
+            >>= fun r => pure (r.1, r.2,
+              multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine
+                transcript p.2)) at hq
+        obtain ⟨r, hr, hq⟩ := (mem_support_bind_iff _ _ _).mp hq
+        rw [mem_support_pure_iff] at hq
+        subst hq
+        exact hr
+      by_cases hpcb : p.2.cacheBad = true
+      · exact Or.inl hpcb
+      have hpcb' : p.2.cacheBad = false := Bool.eq_false_iff.mpr hpcb
+      by_cases hcbr : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = true
+      · -- This reader step fires the predicate. Use shadow nonemptiness to construct `transcript ::
+        -- rest`. The shadow on the continuation must be nonempty.
+        obtain ⟨rest, hrest⟩ := readerTranscriptsList_support_nonempty
+          (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g (f q.1) q.2.1
+        refine Or.inr ⟨transcript :: rest, ?_, transcript, by simp, hcbr⟩
+        rw [readerTranscriptsList_query_bind, mem_support_bind_iff]
+        refine ⟨(q.1, q.2.1), hq_step, ?_⟩
+        rw [mem_support_bind_iff]
+        refine ⟨rest, hrest, ?_⟩
+        simp [readerQueryProj]
+      · -- Predicate false: q.2.cacheBad = p.2.cacheBad = false. Apply IH on the continuation.
+        have hqcb' : q.2.2.cacheBad = false := by
+          rw [hqcb, hpcb']; simp [Bool.eq_false_iff.mpr hcbr]
+        have hih := ih q.1 q.2 z hzcont hzcb
+        rcases hih with hqpcb | ⟨L, hL, T, hTL, hT⟩
+        · rw [hqcb'] at hqpcb; exact absurd hqpcb (by decide)
+        · refine Or.inr ⟨transcript :: L, ?_, T, by exact List.mem_cons_of_mem _ hTL, hT⟩
+          rw [readerTranscriptsList_query_bind, mem_support_bind_iff]
+          refine ⟨(q.1, q.2.1), hq_step, ?_⟩
+          rw [mem_support_bind_iff]
+          refine ⟨L, hL, ?_⟩
+          simp [readerQueryProj]
+
 end UnlinkReduction
 
 end PRFTagReader
