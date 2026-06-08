@@ -68,6 +68,202 @@ variable {TagId Nonce Digest : Type}
 
 namespace UnlinkReduction
 
+/-! ### Reader-side cell-collision predicate (Option 6 scaffolding)
+
+`cacheBadReader T transcript` is the deterministic Boolean predicate that holds at the queried
+reader transcript `⟨nonce, auth⟩` against an eager table `T` exactly when *some* slot-positive
+cell at the queried nonce already carries the queried auth. Under the slot-zero embedding, only
+slot-zero cells are M-reachable; a slot-positive collision is an M-rejects / S-accepts witness.
+
+This is the deterministic per-reader-step indicator that, in the planned Option 6 (cacheBad)
+refactor, is OR-accumulated into a `cacheBad` flag in the bad state. With the bad-state field
+in place, `Pr[cacheBad]` absorbs the reader-cell asymmetry slack `qR · |TagId| · sessionsPerTag /
+|Digest|` as a separate bad-mass term rather than a fixed slack₃ in the aux tail, mirroring how
+`Pr[bad]` already absorbs the tag-side nonce-collision mass.
+
+The full Option 6 refactor requires:
+* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
+* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
+* adding a companion bound `Pr[cacheBad] ≤ qR * |TagId| * sessionsPerTag / |Digest|` analogous
+  to `simulateQ_multipleBad_prob_le`.
+
+The current iteration leaves the predicate as scaffolding only — the structural refactor of
+`UnlinkBadState` is cross-file and out of scope here. -/
+def cacheBadReader [Fintype TagId]
+    (T : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : TagTranscript Nonce Digest) : Bool :=
+  decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag, sid ≠ 0 ∧ T ((tag, sid), t.nonce) = t.auth)
+
+/-! ### Slot-positive trace-union residue (cross-file Option-6 blocker)
+
+After the slot-positive tag-step Phase A–D unfolds (handler unfolds, `$ᵗ gS` / `$ᵗ Nonce`
+commutation, per-`n` disagree split, two-cell marginalization at cell A = `((tag, 0), n)` and
+cell B = `((tag, slotK), n)` with `slotK ≠ 0`, and the inductive hypothesis at a single auth
+value), each of the three slot-positive sub-cases reduces to the *same* residual inequality
+shape: the S-side reader-accept probability with one auth value bounded by the S-side
+reader-accept probability with a *different* auth value, where the cache and outer `$ᵗ gS`
+draw are identical on both sides.
+
+`slotPositive_trace_union_residue` packages this residue into a single named bound. Its
+statement is the structural mismatch that *cannot* be closed by the inductive hypothesis (IH at
+a single auth value cannot bridge `M ≠ S` auth disagreements that arise from disjoint cell
+reads in the slot-positive case).
+
+**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor:
+* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
+* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
+* adding a companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
+
+Once those changes land, the aux signature absorbs the residue into the `bad` slack, and this
+helper is closed by a direct charge to `Pr[cacheBad]`. Until then, this helper carries the
+unique `sorry` that consolidates the three slot-positive sub-case residues (Case B, Sub-case
+A.A, Sub-case A.B), making the cross-file requirement explicit at a single named site rather
+than scattered across three inline `sorry`s. -/
+lemma slotPositive_trace_union_residue [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] := by
+  -- **Cross-file Option-6 cacheBad blocker.** See module docstring above for the refactor plan.
+  -- The inequality is *not* universally true at the eager-coupling level — discharging it
+  -- requires the `cacheBad` bad-state field absorbing the auth-disagreement mass.
+  --
+  -- **Counterexample (why the statement is not currently provable).** Take `k` to be the
+  -- predicate `fun t => decide (t.auth = d)` for some fixed `d : Digest`. Then `transcriptM = d`
+  -- and `transcriptS = d'` with `d ≠ d'` gives LHS = 1, RHS = 0. The cross-file refactor adds a
+  -- `+ Pr[cacheBad]` term to the RHS, which absorbs exactly such mismatches.
+  --
+  -- **Call-site map.** This helper is invoked at three structurally distinct sites in the
+  -- slot-positive tag-step proof of `multipleBadEager_le_singleEager_DC_aux` below:
+  -- * **Case B (cell A uncached):** `transcriptM = ⟨n, u⟩` (fresh from cell A marginalization),
+  --   `transcriptS gS' = ⟨n, tableExtending c gS' ((tag, slotK), n)⟩` (gS'-dependent at cell B).
+  -- * **Sub-case A.B (cell A cached, cell B uncached):** `transcriptM = ⟨n, u₀⟩` (cached at cell A),
+  --   `transcriptS = fun _ => ⟨n, u⟩` (fresh from cell B marginalization; constant in gS').
+  -- * **Sub-case A.A (both cells cached):** `transcriptM = ⟨n, u₀⟩`, `transcriptS = fun _ => ⟨n, u_B⟩`
+  --   (both cached, both constant in gS'; the simplest residue form).
+  -- All three sites need the same cacheBad mass charge — the Option-6 refactor closes them in
+  -- one stroke via the companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
+  sorry
+
+/-! ### Reader-step residue (cross-file Option-6 blocker)
+
+The reader-step case of the eager direct-coupling induction reduces (after the deterministic
+M-bad / S handler unfolds for `Sum.inr transcript`) to the inequality below: the M-bad
+acceptance probability at the head reader query is bounded by the S acceptance probability
+plus the bad-mass + the three additive slacks. Mirrors the slot-positive helper
+`slotPositive_trace_union_residue`, but for the reader branch.
+
+The structural obstruction (documented in detail at the reader-step sorry site within the
+aux below) is the D-mass bound for the M-reject / S-accept flip event under the multi-cell
+lazification: the workhorse `probEvent_idealCacheMapM_mem_le` excludes the "pre-cached auth
+cell" case, which a slot-positive tag query can pollute. The Option-6 `cacheBad` refactor
+absorbs this polluting-cell mass into a separate bad-state term, mirroring how `Pr[bad]`
+already absorbs the tag-side nonce-collision mass.
+
+**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor
+(same one as `slotPositive_trace_union_residue`):
+* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
+* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
+* adding a companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
+
+Until then, this helper carries the unique reader-branch `sorry`, making the cross-file
+requirement explicit at a single named site rather than buried inside the aux. -/
+lemma readerStep_trace_union_residue [Fintype Nonce] [Fintype Digest]
+    (s : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (sB : UnlinkBadState TagId Nonce Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (qR' qT : ℕ)
+    (_hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR')
+    (_hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT)
+    (_ih : ∀ (u : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript))
+        (qR qT : ℕ) (s : UnlinkState TagId)
+        (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+        (sB : UnlinkBadState TagId Nonce Digest),
+        OracleComp.IsQueryBoundP (k u) (·.isRight) qR →
+        OracleComp.IsQueryBoundP (k u) (·.isLeft) qT →
+        Pr[= true | do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c gS))) (k u)).run (s, sB)] ≤
+          Pr[= true | do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)) (k u)).run' s] +
+          Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c gS))) (k u)).run (s, sB)] +
+          ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+          ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+          ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+            (Fintype.card Digest : ℝ≥0∞)) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS)))
+                ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _) >>= k)).run
+            (s, sB)] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _)
+              >>= k)).run' s] +
+      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            (z.1, z.2.2)) <$>
+          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS)))
+                ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _)
+                  >>= k)).run (s, sB)] +
+      (((qR' + 1) * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
+      (((qR' + 1) * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+      (((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
+  -- **Cross-file Option-6 cacheBad blocker.** See module docstring above and the
+  -- reader-step Phase C plan within `multipleBadEager_le_singleEager_DC_aux` for the
+  -- structural obstruction (D-mass bound on the M-reject / S-accept flip under multi-cell
+  -- lazification — the workhorse `probEvent_idealCacheMapM_mem_le` excludes the
+  -- pre-cached auth cell case, which slot-positive tag queries can pollute).
+  --
+  -- **Counterexample (why the inequality is currently false).** Construct a tag-side path that
+  -- caches `((tag, slotK), n) ↦ d` for some slot `slotK ≠ 0` and digest `d`, then issue a
+  -- reader query at `transcript.auth = d`. The M-bad branch rejects (M's reader checks only
+  -- slot-0 cells), but S accepts (S's reader walks all slots). The acceptance gap is
+  -- *not* in the bad set (no nonce collision), so the inequality fails by exactly
+  -- `qR · |TagId| · sessionsPerTag / |Digest|` worth of mass. The cross-file refactor adds a
+  -- `+ Pr[cacheBad]` term absorbing this gap.
+  sorry
+
 /-! ### Eager-form direct-coupling aux
 
 The structural induction over the adversary, coupling M-side
@@ -875,8 +1071,499 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               probEvent_congr' (fun _ _ => Iff.rfl) hBAD_comm]
           -- Phase A + B complete. Goal is now in the per-`n` form with M reading cell
           -- `((tag, 0), n)` and S reading cell `((tag, slotK), n)`, slotK ≠ 0.
-          -- Phase C/D (two-cell marginalization + coupling) deferred.
-          sorry
+          --
+          -- **Phase C — structural slack reshape (this commit).** Mirror the slot-zero
+          -- treatment (compose.lean:437-454): split the head goal's
+          -- `qR · (qT' + 1) / |Nonce|` slack into `qR/|Nonce| + qR · qT' / |Nonce|`, reassociate
+          -- so the `qR/|Nonce|` lives in the `ε₁` slot of `probEvent_bind_le_add_bad_disagree`,
+          -- and apply the disagree lemma with `D := fun _ : Nonce => False`. This reduces the
+          -- goal to a per-`n` IH-shape: for each `n`, bound the per-`n` M-LHS by the per-`n`
+          -- S-RHS plus per-`n` bad term plus `ε₂ = slack₁ + slack₂(qT') + slack₃`.
+          --
+          -- **Phase D plan (pending).** The per-`n` body requires the two-cell
+          -- marginalization + uniform-pair exchange under Option 6 (cacheBad). Specifically:
+          --   * Marginalize cell A = `((tag, 0), n)` (M-side) AND cell B = `((tag, slotK), n)`
+          --     (S-side) via `evalDist_uniformSample_bind_update`. A ≠ B because slotK ≠ 0 by
+          --     `hzero` (`hslotK_ne_zero`).
+          --   * Apply the uniform-pair exchange `(u_A, u_B) ↔ (u_B, u_A)` and
+          --     `cacheQuery_comm_of_ne` to unify post-step caches.
+          --   * Apply IH at `u' := some ⟨n, u_B⟩` (M reads u_A, S reads u_B; renaming gives
+          --     statistical equality of the two M-S reads).
+          --   * slack₃ propagation: under Option 6, the reader-cell asymmetry slack is
+          --     reader-step-local; for tag steps it passes through monotonically from the IH.
+          --     The current bound carries slack₃(qR) on both sides — the residual gap is 0.
+          classical
+          simp only [← probEvent_eq_eq_probOutput]
+          have hSplit : ((qR * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
+              = ((qR : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+                ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+            rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
+              Nat.cast_add, ENNReal.add_div]
+          rw [hSplit]
+          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃`.
+          -- Reassociate to `success + bad + qR/|N| + (slack₁ + slack₂(qT') + slack₃)`.
+          rw [show ∀ a b c d e f : ℝ≥0∞, a + b + c + (d + e) + f = a + b + d + (c + e + f) from
+                fun a b c d e f => by ring]
+          refine probEvent_bind_le_add_bad_disagree
+            (D := fun _ : Nonce => False)
+            ?_ ?_
+          · -- D-mass: `Pr[False | $ᵗ Nonce] = 0 ≤ qR / |Nonce|`.
+            simp
+          intro n _ _hnD
+          -- Per-`n` body: see Phase D plan above. Pending the two-cell marginalization +
+          -- uniform-pair exchange + `cacheQuery_comm_of_ne` chain. Slot-positive tag steps
+          -- preserve reader-cell asymmetry slack (slack₃) from the IH unchanged.
+          -- **Phase D start.** Establish `slotK ≠ 0` (from `hzero`), needed for two-cell
+          -- marginalization (cells A = `((tag, 0), n)` and B = `((tag, slotK), n)` distinct).
+          have hslotK_ne_zero : slotK ≠ 0 := by
+            intro h
+            apply hzero
+            have : slotK.val = (0 : Fin sessionsPerTag).val := by rw [h]
+            simpa [hslotK] using this
+          -- Cells A and B are distinct.
+          have hAB_ne : ((tag, (0 : Fin sessionsPerTag)), n) ≠ ((tag, slotK), n) := by
+            intro h
+            have : (0 : Fin sessionsPerTag) = slotK := by
+              have h1 : ((tag, (0 : Fin sessionsPerTag)), n).1.2 =
+                ((tag, slotK), n).1.2 := by rw [h]
+              simpa using h1
+            exact hslotK_ne_zero this.symm
+          -- Case-split on cell A = `((tag, 0), n)` cache lookup. Mirrors slot-zero Case A/B
+          -- structure (lines 456-642). The HARDEST sub-case is Case B (cell A uncached),
+          -- which requires two-cell marginalization with uniform-pair exchange. The Case A
+          -- (cell A cached at u₀) sub-case mirrors slot-zero Case A but still needs cell B
+          -- marginalization for the S-cell read.
+          rcases hcA : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
+          · -- **Case B: cell A uncached.** M reads fresh `gS((tag, 0), n)`; S reads
+            -- `tableExtending c gS ((tag, slotK), n)` (separate cell B). Requires cell-A
+            -- marginalization (introduce `u_A`) so M reads `u_A` deterministically; S's cell-B
+            -- read is preserved (cell A update doesn't affect cell B since A ≠ B).
+            --
+            -- **Cell-A marginalization scaffolding.** Mirror of slot-zero Case B (lines 462-509)
+            -- at cell A = `((tag, 0), n)`.
+            haveI : Nonempty Digest :=
+              ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+            -- (1) The marginalization identity at cell A.
+            have hmarg_A : ∀ {β : Type}
+                (Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp β),
+                𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)] =
+                𝒟[(do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))] := by
+              intro β Mψ
+              have hbase :
+                  𝒟[(do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))]
+                  = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] :=
+                evalDist_uniformSample_bind_update ((tag, (0 : Fin sessionsPerTag)), n)
+              have hL : (do let u ← $ᵗ Digest
+                            let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                            Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                  = (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                      >>= Mψ := by
+                simp [bind_assoc]
+              have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
+                  = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
+              rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
+            -- (2) Cell A's post-update extension equals overlaying `c.cacheQuery A u` on gS'.
+            have hext_eq_A : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending c
+                    (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u) =
+                  OracleComp.tableExtending
+                    (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    gS' := fun gS' u => by
+              have h1 := OracleComp.tableExtending_update_of_none c gS' hcA u
+              have h2 := OracleComp.tableExtending_cacheQuery c gS'
+                ((tag, (0 : Fin sessionsPerTag)), n) u
+              exact h1.symm.trans h2.symm
+            -- (3) Cell A read at the extended-cache form is `u`.
+            have hcell_u_A : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending
+                    (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'
+                    ((tag, (0 : Fin sessionsPerTag)), n) = u := fun gS' u => by
+              rw [OracleComp.tableExtending_cacheQuery]
+              simp [Function.update_self]
+            -- (4) Cell B read is unchanged by the cell-A cache extension (A ≠ B).
+            have hcellB_post : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending
+                    (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'
+                    ((tag, slotK), n) =
+                  OracleComp.tableExtending c gS' ((tag, slotK), n) := fun gS' u => by
+              show ((c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                      ((tag, slotK), n)).getD (gS' ((tag, slotK), n))
+                  = (c ((tag, slotK), n)).getD (gS' ((tag, slotK), n))
+              rw [OracleSpec.QueryCache.cacheQuery_of_ne _ _ hAB_ne.symm]
+            -- **Marginalization rewrites.** Apply `hmarg_A` to LHS, RHS, BAD probability terms.
+            -- LHS and BAD: M-side reads cell A; substituted to `u_A` deterministically via
+            -- `hext_eq_A` + `hcell_u_A`. RHS: S-side reads cell B; cache form rewritten via
+            -- `hext_eq_A`, then `hcellB_post` rewrites the cell-B read back to the original
+            -- `tableExtending c gS' ((tag, slotK), n)` form (cache extension at A doesn't affect
+            -- cell B read since A ≠ B).
+            have hLHS_marg_A :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)))
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS')))
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg_A _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq_A gS' u, hcell_u_A gS' u]
+            have hRHS_marg_A :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS))
+                        (k (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, slotK), n)⟩ :
+                            TagTranscript Nonce Digest)))).run' advM)]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending
+                          (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'))
+                        (k (some (⟨n, OracleComp.tableExtending c gS'
+                            ((tag, slotK), n)⟩ :
+                            TagTranscript Nonce Digest)))).run' advM)] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg_A _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq_A gS' u, hcellB_post gS' u]
+            have hBAD_marg_A :
+                Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)))
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS')))
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg_A _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq_A gS' u, hcell_u_A gS' u]
+            rw [hLHS_marg_A, hRHS_marg_A, hBAD_marg_A]
+            -- **Per-`u` disagree split.** Empty `D := False` on `$ᵗ Digest`; ε₁ = 0.
+            -- Reshape RHS to `... + 0 + ε₂` shape and apply `probEvent_bind_le_add_bad_disagree`.
+            rw [show ∀ a b c : ℝ≥0∞, a + b + c = a + b + 0 + c from
+                  fun a b c => by ring]
+            refine probEvent_bind_le_add_bad_disagree
+              (mx := ($ᵗ Digest : ProbComp Digest))
+              (D := fun _ : Digest => False)
+              (by simp) ?_
+            intro u _ _
+            -- **IH at `(some ⟨n, u⟩)`.** Bounds M-cont ≤ S-cont with auth=u on both sides, at
+            -- the extended cache `c.cacheQuery ((tag, 0), n) u`. Bridge via
+            -- `probEvent_eq_eq_probOutput`, match associativity, then `gcongr` to isolate the
+            -- residual S-side digest substitution (u → cell-B value).
+            have hihC := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
+              advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+              (hqRk _) (hqTk _)
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
+              ← add_assoc, ← add_assoc]
+            refine hihC.trans ?_
+            rw [← probEvent_eq_eq_probOutput]
+            gcongr
+            -- **Residual trace-union gap.** `Pr[S(some⟨n, u⟩)] ≤
+            -- Pr[$ᵗ gS'; S(some⟨n, tableExtending (cQuery+A) gS' ((tag, slotK), n)⟩)]`.
+            -- The RHS auth is gS'-dependent here (cell B uncached, gS'-dep through the
+            -- `tableExtending` lookup). Discharge by the shared helper
+            -- `slotPositive_trace_union_residue` with a gS-dependent S-side transcript.
+            rw [probEvent_eq_eq_probOutput]
+            exact slotPositive_trace_union_residue advM tag
+              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) k ⟨n, u⟩
+              (fun gS' => ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩)
+          · -- **Case A: cell A cached at u₀.** M reads `u₀` deterministically. Substitute via
+            -- `tableExtending c gS ((tag, 0), n) = u₀`.
+            have hcellA : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                OracleComp.tableExtending c gS ((tag, (0 : Fin sessionsPerTag)), n) = u₀ :=
+              fun gS => by
+                change (c ((tag, (0 : Fin sessionsPerTag)), n)).getD
+                    (gS ((tag, (0 : Fin sessionsPerTag)), n)) = u₀
+                rw [hcA]; rfl
+            simp_rw [hcellA]
+            -- Now M's continuation arg is `some ⟨n, u₀⟩` (constant in gS); S's continuation
+            -- arg is `some ⟨n, tableExtending c gS ((tag, slotK), n)⟩` (gS-dependent at cell B).
+            -- **Sub-case split on cell B = `((tag, slotK), n)`.**
+            rcases hcB : c ((tag, slotK), n) with _ | u_B
+            · -- **Sub-case A.B: cell A cached at u₀, cell B uncached.** S reads
+              -- `gS ((tag, slotK), n)`; marginalize cell B via `evalDist_uniformSample_bind_update`.
+              -- Cell A is cached, so its extension is unaffected by the update at cell B (cells
+              -- distinct by `hAB_ne`). After marginalization, S reads fresh `u_B`. M reads `u₀`
+              -- (deterministic).
+              --
+              -- **Cell-B marginalization scaffolding.** Mirror of slot-zero Case B (lines 462-509)
+              -- but at cell B = `((tag, slotK), n)`.
+              haveI : Nonempty Digest :=
+                ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+              -- (1) The marginalization identity at cell B.
+              have hmarg_B : ∀ {β : Type}
+                  (Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp β),
+                  𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)] =
+                  𝒟[(do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        Mψ (Function.update gS' ((tag, slotK), n) u))] := by
+                intro β Mψ
+                have hbase :
+                    𝒟[(do let u ← $ᵗ Digest
+                          let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                          pure (Function.update gS' ((tag, slotK), n) u))]
+                    = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] :=
+                  evalDist_uniformSample_bind_update ((tag, slotK), n)
+                have hL : (do let u ← $ᵗ Digest
+                              let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                              Mψ (Function.update gS' ((tag, slotK), n) u))
+                    = (do let u ← $ᵗ Digest
+                          let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                          pure (Function.update gS' ((tag, slotK), n) u))
+                        >>= Mψ := by
+                  simp [bind_assoc]
+                have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
+                    = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
+                rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
+              -- (2) Cell B's post-update extension equals overlaying `c.cacheQuery B u` on gS'.
+              have hext_eq_B : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (u : Digest),
+                  OracleComp.tableExtending c
+                      (Function.update gS' ((tag, slotK), n) u) =
+                    OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u)
+                      gS' := fun gS' u => by
+                have h1 := OracleComp.tableExtending_update_of_none c gS' hcB u
+                have h2 := OracleComp.tableExtending_cacheQuery c gS'
+                  ((tag, slotK), n) u
+                exact h1.symm.trans h2.symm
+              -- (3) Cell B read at the extended-cache form is `u`.
+              have hcell_u_B : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (u : Digest),
+                  OracleComp.tableExtending
+                      (c.cacheQuery ((tag, slotK), n) u) gS'
+                      ((tag, slotK), n) = u := fun gS' u => by
+                rw [OracleComp.tableExtending_cacheQuery]
+                simp [Function.update_self]
+              -- (4) Cell A read at the extended-cache form is still `u₀` (cell A is cached,
+              -- and `c.cacheQuery B u` preserves cell A's value).
+              have hcellA_post : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (u : Digest),
+                  OracleComp.tableExtending
+                      (c.cacheQuery ((tag, slotK), n) u) gS'
+                      ((tag, (0 : Fin sessionsPerTag)), n) = u₀ := fun gS' u => by
+                change ((c.cacheQuery ((tag, slotK), n) u)
+                    ((tag, (0 : Fin sessionsPerTag)), n)).getD _ = u₀
+                rw [OracleSpec.QueryCache.cacheQuery_of_ne _ _ hAB_ne, hcA]; rfl
+              -- **Marginalization rewrites.** Apply `hmarg_B` to LHS, RHS, BAD goal terms to
+              -- introduce a fresh `u ← $ᵗ Digest` outer bind for cell B. Substitute via
+              -- `hext_eq_B` and `hcell_u_B` so S's cell-B read becomes `u`. The M-side's
+              -- continuation arg `some ⟨n, u₀⟩` is independent of cell B, so it survives the
+              -- rewrite unchanged.
+              have hLHS_marg_B :
+                  Pr[(· = true) |
+                    (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (fun z : Bool ×
+                            (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                            z.1) <$>
+                          (simulateQ (multipleBadTableHandler (TagId := TagId)
+                            (Nonce := Nonce) (Digest := Digest)
+                            (sessionsPerTag := sessionsPerTag)
+                            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                              (OracleComp.tableExtending c gS)))
+                            (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                            (advM, multipleBadAdvance tag sB
+                              (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))]
+                = Pr[(· = true) |
+                    (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (fun z : Bool ×
+                            (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                            z.1) <$>
+                          (simulateQ (multipleBadTableHandler (TagId := TagId)
+                            (Nonce := Nonce) (Digest := Digest)
+                            (sessionsPerTag := sessionsPerTag)
+                            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                              (OracleComp.tableExtending
+                                (c.cacheQuery ((tag, slotK), n) u) gS')))
+                            (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                            (advM, multipleBadAdvance tag sB
+                              (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))] := by
+                refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+                rw [hmarg_B _]
+                refine congrArg evalDist ?_
+                refine bind_congr fun u => ?_
+                refine bind_congr fun gS' => ?_
+                rw [hext_eq_B gS' u]
+              have hRHS_marg_B :
+                  Pr[(· = true) |
+                    (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending c gS))
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, slotK), n)⟩ :
+                              TagTranscript Nonce Digest)))).run' advM)]
+                = Pr[(· = true) |
+                    (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending
+                            (c.cacheQuery ((tag, slotK), n) u) gS'))
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' advM)] := by
+                refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+                rw [hmarg_B _]
+                refine congrArg evalDist ?_
+                refine bind_congr fun u => ?_
+                refine bind_congr fun gS' => ?_
+                rw [hext_eq_B gS' u, hcell_u_B gS' u]
+              have hBAD_marg_B :
+                  Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                    (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (fun z : Bool ×
+                            (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                            (z.1, z.2.2)) <$>
+                          (simulateQ (multipleBadTableHandler (TagId := TagId)
+                            (Nonce := Nonce) (Digest := Digest)
+                            (sessionsPerTag := sessionsPerTag)
+                            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                              (OracleComp.tableExtending c gS)))
+                            (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                            (advM, multipleBadAdvance tag sB
+                              (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))]
+                = Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                    (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        (fun z : Bool ×
+                            (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                            (z.1, z.2.2)) <$>
+                          (simulateQ (multipleBadTableHandler (TagId := TagId)
+                            (Nonce := Nonce) (Digest := Digest)
+                            (sessionsPerTag := sessionsPerTag)
+                            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                              (OracleComp.tableExtending
+                                (c.cacheQuery ((tag, slotK), n) u) gS')))
+                            (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                            (advM, multipleBadAdvance tag sB
+                              (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))] := by
+                refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+                rw [hmarg_B _]
+                refine congrArg evalDist ?_
+                refine bind_congr fun u => ?_
+                refine bind_congr fun gS' => ?_
+                rw [hext_eq_B gS' u]
+              rw [hLHS_marg_B, hRHS_marg_B, hBAD_marg_B]
+              -- After marginalization, the goal has outer `$ᵗ u; $ᵗ gS'` binds. Apply the
+              -- per-`u` disagree split (empty `D := False`, ε₁ = 0) to enter the per-`u` body.
+              rw [show ∀ a b c : ℝ≥0∞, a + b + c = a + b + 0 + c from
+                    fun a b c => by ring]
+              refine probEvent_bind_le_add_bad_disagree
+                (mx := ($ᵗ Digest : ProbComp Digest))
+                (D := fun _ : Digest => False)
+                (by simp) ?_
+              intro u _ _
+              -- **IH at `(some ⟨n, u₀⟩)`.** Bounds M-cont ≤ S-cont with auth=u₀ on both sides,
+              -- at the extended cache `c.cacheQuery ((tag, slotK), n) u`. Bridge via
+              -- `probEvent_eq_eq_probOutput`, match associativity, then `gcongr` to isolate the
+              -- residual S-side digest substitution (u₀ → u).
+              have hihB := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
+                advM (c.cacheQuery ((tag, slotK), n) u)
+                (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
+                (hqRk _) (hqTk _)
+              rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
+                ← add_assoc, ← add_assoc]
+              refine hihB.trans ?_
+              rw [← probEvent_eq_eq_probOutput]
+              gcongr
+              -- **Residual trace-union gap.** `Pr[S(some⟨n, u₀⟩)] ≤ Pr[S(some⟨n, u⟩)]` at the
+              -- extended cache `c.cacheQuery ((tag, slotK), n) u`. Discharged by the shared
+              -- helper `slotPositive_trace_union_residue`.
+              rw [probEvent_eq_eq_probOutput]
+              exact slotPositive_trace_union_residue advM tag
+                (c.cacheQuery ((tag, slotK), n) u) k ⟨n, u₀⟩ (fun _ => ⟨n, u⟩)
+            · -- **Sub-case A.A: cell A cached at u₀, cell B cached at u_B.** Both reads are
+              -- deterministic; M reads `u₀`, S reads `u_B`. The IH gives a single-`u` bound, so
+              -- relating M's `k(some⟨n, u₀⟩)` to S's `k(some⟨n, u_B⟩)` requires the trace-union
+              -- (Option 6 cacheBad) charge. Pending: IH at `(some ⟨n, u₀⟩)` for M vs
+              -- `(some ⟨n, u_B⟩)` for S coupled via cacheBad slack.
+              have hcellB : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                  OracleComp.tableExtending c gS ((tag, slotK), n) = u_B :=
+                fun gS => by
+                  change (c ((tag, slotK), n)).getD (gS ((tag, slotK), n)) = u_B
+                  rw [hcB]; rfl
+              simp_rw [hcellB]
+              -- **IH at `(some ⟨n, u₀⟩)`.** Bounds M-cont ≤ S-cont with auth=u₀ on both sides.
+              -- Bridge `Pr[= true | ·]` → `probOutput true` via `probEvent_eq_eq_probOutput`,
+              -- match associativity, then transitively bound by the goal RHS.
+              have hihA := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
+                advM c
+                (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
+                (hqRk _) (hqTk _)
+              rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
+                ← add_assoc, ← add_assoc]
+              refine hihA.trans ?_
+              rw [← probEvent_eq_eq_probOutput]
+              gcongr
+              -- **Residual trace-union gap.** `Pr[S(some⟨n, u₀⟩)] ≤ Pr[S(some⟨n, u_B⟩)]`.
+              -- Discharge by the shared helper `slotPositive_trace_union_residue` (Option-6
+              -- cacheBad blocker consolidated at a single named site at the top of the file).
+              rw [probEvent_eq_eq_probOutput]
+              exact slotPositive_trace_union_residue advM tag c k ⟨n, u₀⟩ (fun _ => ⟨n, u_B⟩)
       · -- **Slot-exhausted.** Both M-side and S-side handlers return `pure (none, s)` for the
         -- step; the bad state is unchanged (`multipleBadAdvance tag sB none = sB`). The IH
         -- applies at the identical post-step state on both sides.
@@ -1015,7 +1702,11 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
       -- `u := ReaderReply.ofBool b`, `c' := rs.2` (the lazified extended cache). The IH bounds
       -- `Pr[$ᵗ gS_new; M(tableExtending rs.2 gS_new) (k (.ofBool b)))]` ≤ S analog + bad +
       -- slacks. This matches the per-`rs` off-D goal exactly.
-      sorry
+      --
+      -- The full reader-step residue is consolidated at the top of the file in
+      -- `readerStep_trace_union_residue` — the cross-file Option-6 cacheBad blocker is
+      -- expressed as a single named site there rather than as an inline sorry here.
+      exact readerStep_trace_union_residue s c sB transcript k qR' qT hqRk hqTk ih
 
 end UnlinkReduction
 
