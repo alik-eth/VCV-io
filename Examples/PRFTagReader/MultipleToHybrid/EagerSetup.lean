@@ -2034,6 +2034,84 @@ identified the constructive-witness obstacle precisely; documented the iter-22 r
 above so the next iteration can directly execute the support-nonemptiness sub-induction without
 re-deriving the issue. No new sorries introduced; the file's sorry count is unchanged. -/
 
+/-! ### Step 8 stage (b) Strategy 1 sub-induction — support nonemptiness (iter-22)
+
+The list-coupled telescoping identity needs to witness a list of reader transcripts at every
+reachable execution. At the reader-step branch where `cacheBadReader gFine transcript = true`,
+we want to construct `transcript :: rest` for some `rest ∈ support (shadow on continuation)`.
+For that, `readerTranscriptsList` must have a nonempty support at every reachable state.
+
+Strategy: per-branch support nonemptiness for `multipleTableHandler`, then a joint induction
+on the adversary feeding the per-branch nonemptiness into the `query_bind` arm of
+`readerTranscriptsList_query_bind`. The pure arm is trivially nonempty (`pure []`). -/
+
+/-- The per-tag-query step of `multipleTableHandler` has nonempty support: on the slot-exhausted
+branch it returns `pure (none, s)`; on the slot-available branch it samples from `$ᵗ Nonce`
+(nonempty by `SampleableType Nonce`) and returns `pure`. -/
+lemma multipleTableHandler_tag_support_nonempty (g : TagId × Nonce → Digest)
+    (tag : TagId) (s : UnlinkState TagId) :
+    (support (multipleTableHandler (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) s)).Nonempty := by
+  by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+  · rw [multipleTableHandler_tag_run_of_lt _ _ _ hslot]
+    -- `($ᵗ Nonce) >>= pure ...`: pick any `n` in `support ($ᵗ Nonce)`.
+    haveI : Nonempty Nonce := ⟨(SampleableType.selectElem (β := Nonce)).defaultResult⟩
+    obtain ⟨n, hn⟩ : (support ($ᵗ Nonce : ProbComp Nonce)).Nonempty := by
+      rw [Set.nonempty_iff_ne_empty, ne_eq, ← probFailure_eq_one_iff]; simp
+    refine ⟨(some ⟨n, g (tag, n)⟩,
+      { sessionsUsed := Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }), ?_⟩
+    change _ ∈ support (($ᵗ Nonce : ProbComp Nonce) >>= _)
+    rw [mem_support_bind_iff]
+    refine ⟨n, hn, ?_⟩
+    rfl
+  · rw [multipleTableHandler_tag_run_of_not_lt _ _ _ hslot]
+    refine ⟨(none, s), ?_⟩
+    change (none, s) ∈ ({(none, s)} : Set _)
+    simp
+
+/-- The per-reader-query step of `multipleTableHandler` has nonempty support: it is
+deterministically `pure (ReaderReply.ofBool …, s)`. -/
+lemma multipleTableHandler_reader_support_nonempty (g : TagId × Nonce → Digest)
+    (transcript : TagTranscript Nonce Digest) (s : UnlinkState TagId) :
+    (support (multipleTableHandler (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) s)).Nonempty := by
+  rw [multipleTableHandler_reader_run]
+  set y : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript) × UnlinkState TagId :=
+    (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId)
+      (fun tag nonce => g (tag, nonce))
+      (multiplePattern sessionsPerTag) transcript), s)
+  refine ⟨y, ?_⟩
+  change y ∈ ({y} : Set _)
+  simp
+
+/-- **Reader-transcripts shadow support is nonempty.** For every adversary and every starting
+`UnlinkState`, the shadow's support contains at least one list. Proved by structural induction
+on the adversary, using `multipleTableHandler_tag_support_nonempty` and
+`multipleTableHandler_reader_support_nonempty` at the `query_bind` arm. -/
+lemma readerTranscriptsList_support_nonempty {α : Type} (g : TagId × Nonce → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (advM : UnlinkState TagId) :
+    (support (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g adversary advM)).Nonempty := by
+  induction adversary using OracleComp.inductionOn generalizing advM with
+  | pure x =>
+      rw [readerTranscriptsList_pure]; exact ⟨[], by simp⟩
+  | query_bind t f ih =>
+      rw [readerTranscriptsList_query_bind]
+      -- The bind is `multipleTableHandler g t advM >>= fun r => recurse >>= …`.
+      -- Both the outer step and the inner recursion have nonempty supports.
+      have hstep : (support (multipleTableHandler (sessionsPerTag := sessionsPerTag)
+          g t advM)).Nonempty := by
+        rcases t with tag | transcript
+        · exact multipleTableHandler_tag_support_nonempty g tag advM
+        · exact multipleTableHandler_reader_support_nonempty g transcript advM
+      obtain ⟨r, hr⟩ := hstep
+      obtain ⟨rest, hrest⟩ := ih r.1 r.2
+      refine ⟨(readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          t).elim rest (· :: rest), ?_⟩
+      rw [mem_support_bind_iff]
+      refine ⟨r, hr, ?_⟩
+      rw [mem_support_bind_iff]
+      exact ⟨rest, hrest, by simp⟩
+
 end UnlinkReduction
 
 end PRFTagReader
