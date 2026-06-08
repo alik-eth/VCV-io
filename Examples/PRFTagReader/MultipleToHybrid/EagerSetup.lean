@@ -1860,6 +1860,180 @@ The closing strategies (one of which the next iteration should execute):
 Steps 9-12 of the Option-6 plan (the two `sorry`s in `DirectCoupling/Compose.lean`) consume this
 bound; until it lands, those sorries remain. -/
 
+/-! ### Reader-transcripts shadow primitive (Step 8 stage (b) Strategy 1 scaffolding)
+
+The Strategy 1 direct-Fubini decomposition for the shared-table cacheBad bound needs a
+**gFine-independent** ProbComp that exposes the reader-step transcripts encountered along a run.
+The key observation: the table-handler step `multipleTableHandler g (Sum.inr transcript)` is
+gFine-independent — it only reads `g`. So we can run a "shadow" of the simulation that mirrors
+the table-handler's randomness (which is purely the table-extending uniform sample) and projects
+only the reader-step transcripts, never touching `gFine`.
+
+The shadow is `readerTranscriptsList g adversary p₁ : ProbComp (List (TagTranscript Nonce Digest))`,
+defined by structural recursion on the adversary:
+* `pure b` ↦ `pure []`
+* `query (Sum.inl tag) >>= k` ↦ run the tag-step handler, recurse on the continuation with the
+  observed reply, concatenate `[]` (no reader transcript here)
+* `query (Sum.inr transcript) >>= k` ↦ run the reader-step handler, recurse on the continuation
+  with the observed reply, **prepend** `transcript` to the recursive list
+
+The length bound `length ≤ qR` follows by structural induction on the adversary, using
+`IsQueryBoundP adversary (·.isRight) qR` to bound the reader-step count.
+
+The telescoping identity to be proved in a follow-on iteration:
+  `∀ gFine, ∀ z ∈ support (Fine g gFine adv .run p),`
+  `  z.2.2.cacheBad = (p.2.cacheBad ||`
+  `    OR_{T ∈ readerTranscriptsList g adv p.1} cacheBadReader gFine T)`
+where the OR ranges over the (random) list at the same correlated execution trace.
+
+That identity, combined with Fubini-swap of the outer `gFine ← $ᵗ` past the gFine-independent
+shadow, yields the headline bound at union-bound + stage (a) per-cell. -/
+
+/-- **Reader-transcripts shadow.** Recursively projects the reader-step transcripts an adversary
+issues against the (gFine-independent) `multipleTableHandler g` shadow, returning them as a list.
+Tag steps contribute nothing to the list; reader steps prepend their queried transcript.
+
+Genuine recursive definition via `OracleComp.construct`. At each query node, the per-query
+table-handler `multipleTableHandler g t s` is run to advance the `UnlinkState`; for a reader
+query (`t = Sum.inr transcript`), the queried `transcript` is prepended to the recursive list
+from the continuation; for a tag query (`t = Sum.inl _`), the recursive list is returned as-is.
+
+Pure-additive Strategy 1 scaffolding: at fixed `gFine`, this list determines the cacheBad-end
+deterministically. -/
+@[reducible] def readerQueryProj
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain) :
+    Option (TagTranscript Nonce Digest) :=
+  Sum.elim (fun _ => none) some t
+
+/-- Genuine recursive definition of the reader-transcripts shadow via `OracleComp.construct`. -/
+noncomputable def readerTranscriptsList {α : Type} (g : TagId × Nonce → Digest) :
+    OracleComp (UnlinkOracleSpec TagId Nonce Digest) α →
+    UnlinkState TagId → ProbComp (List (TagTranscript Nonce Digest)) :=
+  fun adversary => OracleComp.construct
+    (C := fun _ => UnlinkState TagId → ProbComp (List (TagTranscript Nonce Digest)))
+    (fun _ _ => pure [])
+    (fun t _ rec advM => do
+      let r ← multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t advM
+      let rest ← rec r.1 r.2
+      pure ((readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest) t).elim
+        rest (· :: rest)))
+    adversary
+
+@[simp] lemma readerTranscriptsList_pure {α : Type} (g : TagId × Nonce → Digest)
+    (x : α) (advM : UnlinkState TagId) :
+    readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g (pure x) advM = pure [] := by
+  rfl
+
+lemma readerTranscriptsList_query_bind {α : Type} (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (advM : UnlinkState TagId) :
+    readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (liftM (OracleSpec.query t) >>= f) advM =
+      (do
+        let r ← multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g t advM
+        let rest ← readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g (f r.1) r.2
+        pure ((readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest) t).elim
+          rest (· :: rest))) := by
+  -- Unfold `readerTranscriptsList` and apply `construct_query_bind`.
+  unfold readerTranscriptsList
+  rw [OracleComp.construct_query_bind]
+
+/-- **Length bound for the reader-transcripts shadow.** Every element of the shadow's support has
+length at most `qR`, the reader-step query budget on the adversary. Proved by structural induction
+on the adversary using `IsQueryBoundP adversary (·.isRight) qR`. -/
+lemma readerTranscriptsList_length_le {α : Type} (g : TagId × Nonce → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (advM : UnlinkState TagId) (qR : ℕ)
+    (hqR : OracleComp.IsQueryBoundP adversary (·.isRight) qR) :
+    ∀ l ∈ support (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g adversary advM),
+        l.length ≤ qR := by
+  induction adversary using OracleComp.inductionOn generalizing advM qR with
+  | pure x =>
+      intro l hl
+      rw [readerTranscriptsList_pure, mem_support_pure_iff] at hl
+      subst hl
+      exact Nat.zero_le _
+  | query_bind t f ih =>
+      intro l hl
+      rw [readerTranscriptsList_query_bind, mem_support_bind_iff] at hl
+      obtain ⟨r, _, hl⟩ := hl
+      rw [mem_support_bind_iff] at hl
+      obtain ⟨rest, hrest, hl⟩ := hl
+      -- Extract the budget bound on the continuation from `IsQueryBoundP`.
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hqR
+      obtain ⟨hpos, hcont⟩ := hqR
+      rcases t with tag | transcript
+      · -- Tag query: predicate `(·.isRight)` is false, budget unchanged. List = `rest`.
+        have hih := ih r.1 r.2 qR (by simpa using hcont r.1) rest hrest
+        simp only [readerQueryProj, Sum.elim_inl, Option.elim, mem_support_pure_iff] at hl
+        subst hl
+        exact hih
+      · -- Reader query: predicate is true; cont has budget `qR - 1` and `0 < qR`.
+        have hp : (Sum.inr transcript : (UnlinkOracleSpec TagId Nonce Digest).Domain).isRight :=
+          rfl
+        have hqRpos : 0 < qR := by
+          rcases hpos with h | h
+          · simp at h
+          · exact h
+        have hih := ih r.1 r.2 (qR - 1) (by simpa using hcont r.1) rest hrest
+        simp only [readerQueryProj, Sum.elim_inr, Option.elim, mem_support_pure_iff] at hl
+        subst hl
+        simp only [List.length_cons]
+        omega
+
+/-! ### Iter-21 status report: structural obstacle and revised plan for the telescoping identity
+
+The naive joint structural induction for the **list-coupled telescoping identity** (`∀ z ∈
+support (Fine run), z.2.2.cacheBad = true → ∃ L ∈ support shadow, ∃ T ∈ L, cacheBadReader gFine T
+= true`) hits a constructive-witness obstacle at the reader-step branch where the per-step
+predicate `cacheBadReader gFine transcript = true` fires:
+
+  * The IH, applied at the continuation state `q.2.2`, has the form
+    `z.cacheBad → q.cacheBad ∨ ∃ L ∈ shadow_cont, ∃ T ∈ L, cacheBadReader gFine T`.
+  * In our branch `q.2.2.cacheBad = (false || true) = true`, so the IH *always* takes its left
+    disjunct — never reaching the existential. We end up needing to construct a list witness
+    *without* the IH's existential.
+  * The only path forward is to find SOME `rest ∈ support (shadow on continuation)` and use the
+    list `transcript :: rest`. This requires proving `shadow's support is always nonempty`
+    for any reachable adversary continuation.
+
+The latter — `readerTranscriptsList_support_nonempty` — is itself a structural induction with
+sub-obligations on `multipleTableHandler` supports. The reader-query sub-case is trivial (pure
+`return`); the tag-query sub-case requires case-splitting on the session-cap guard
+`sessionsUsed tag < sessionsPerTag` and threading through the `do let st ← get; …` StateT
+unfold. While conceptually clean, the Lean mechanics here involve several non-trivial unfolds
+(`unlinkTagQueryImpl`, `QueryImpl.add`, `StateT.run`).
+
+**Revised plan (iter-22)**:
+1. Prove `multipleTableHandler_tag_support_nonempty` and
+   `multipleTableHandler_reader_support_nonempty` (small surgical structural lemmas).
+2. Prove `readerTranscriptsList_support_nonempty` by joint induction on the adversary, consuming
+   the two step-level nonemptiness lemmas at the `query_bind` arm.
+3. With shadow support nonemptiness in hand, prove the list-coupled telescoping identity above:
+   at the reader-step branch where `cacheBadReader gFine transcript = true`, witness
+   `transcript :: rest` using `rest` from `readerTranscriptsList_support_nonempty`.
+4. With the list-coupled identity in hand, the headline `simulateQ_multipleBadTableHandlerFine
+   _cacheBad_prob_le` closes via Fubini-swap of the outer `gFine ← $ᵗ` past the gFine-independent
+   shadow, then `probEvent_or_le_add` over the list (union bound: `Pr[OR_i p(T_i)] ≤ Σ_i Pr[
+   p(T_i)]`), then the stage (a) per-cell `probEvent_cacheBadReader_uniformSample_le` bound on
+   each summand (cap of `qR` summands since `length ≤ qR`).
+
+Estimated 200-300 LOC for steps 1-3, plus 30-50 for step 4. The Option-6 plan steps 9-12 close
+the two Compose.lean sorries mechanically after the headline lands.
+
+**Iter-21 contribution**: confirmed the iter-20 shadow scaffolding (the recursive shadow
+definition + length bound) compiles cleanly; explored the joint structural induction at depth and
+identified the constructive-witness obstacle precisely; documented the iter-22 revised plan
+above so the next iteration can directly execute the support-nonemptiness sub-induction without
+re-deriving the issue. No new sorries introduced; the file's sorry count is unchanged. -/
+
 end UnlinkReduction
 
 end PRFTagReader
