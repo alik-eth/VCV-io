@@ -663,12 +663,26 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         refine (ih none qR qT' s c sB (hqRk none) (hqTk none)).trans ?_
         gcongr <;> first | rfl | omega
     | inr transcript =>
-      -- **Reader query.** `mReader_accepts_imp_sReader_accepts` (Session 2) gives the
-      -- M-accept → S-accept direction deterministically. The S-accepts-but-M-rejects gap (in
-      -- the favorable direction for the headline inequality when output `true` on accept) is
-      -- bounded by the cell-cardinality slack `|TagId| · sessionsPerTag / |Digest|` per reader
-      -- query — the same shape as `probEvent_eagerReaderFlip_le` in `MultipleToHybrid/Eager.lean`
-      -- but with `sessionsPerTag`-times more cells on the S side. See DC Session 6 task.
+      -- **Reader query (Phase A: handler unfolds).** Both readers are deterministic; the M-bad
+      -- handler returns `pure (.ofBool M_accepts, s, sB)` and the S-handler returns
+      -- `pure (.ofBool S_accepts, s)`. M_accepts ⇒ S_accepts (Session 2). The "M rejects, S
+      -- accepts" flip gap is bounded by slack₃ per reader query.
+      have hqRsplit := hqR
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hqRsplit
+      have hqRpos : 0 < qR := hqRsplit.1.resolve_left (fun h => absurd rfl h)
+      obtain ⟨qR', rfl⟩ : ∃ qR', qR = qR' + 1 := ⟨qR - 1, by omega⟩
+      have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR' := fun u => by
+        simpa using hqRsplit.2 u
+      have hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT := by
+        have := hqT
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+        simpa using this.2
+      -- **Phase B-C (next commit).** Lift handler unfolds, case-split on `M_accepts(gS)`,
+      -- bound the (M rejects, S accepts) "flip" event by Pr[flip | $ᵗ gS] ≤
+      -- `|TagId| · sp / |Digest|` via a deterministic disagree-lemma application on
+      -- `mx := $ᵗ gS` with `D := flip event`. Off-flip: M-cont and S-cont use the SAME
+      -- `k (.ofBool b)` with `b = M_acc gS = S_acc gS`; apply IH at each `b ∈ {T, F}` via
+      -- case-split inside the bind.
       sorry
 
 end UnlinkReduction
