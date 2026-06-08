@@ -429,12 +429,39 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           -- **Phase D.** Per-`n` bound. Case-split on `c ((tag, 0), n)`.
           rcases hc : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
           · -- **Case B: cache miss.** Cell value is `gS ((tag, 0), n)`; marginalize.
-            -- Plan: convert `$ᵗ gS >>= ψ(gS)` to `$ᵗ u; $ᵗ gS'; ψ(Function.update gS' ((tag, 0), n) u)`
-            -- via `evalDist_uniformSample_bind_update_map`. Inside,
-            -- `tableExtending c (Function.update gS' ((tag, 0), n) u) ((tag, 0), n) = u`
-            -- (`tableExtending_update_of_none` + `hc`), and the surrounding cache extends to
-            -- `c.cacheQuery ((tag, 0), n) u` (`tableExtending_cacheQuery`). Apply IH per-`u` at
-            -- the extended cache; integrate over `$ᵗ u` to recover the goal RHS shape.
+            -- Computation-valued marginalization, derived inline from the pure-form
+            -- `evalDist_uniformSample_bind_update` by binding with the continuation.
+            haveI : Nonempty Digest :=
+              ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+            have hmarg : ∀ {β : Type}
+                (Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp β),
+                𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)] =
+                𝒟[(do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))] := by
+              intro β Mψ
+              have hbase :
+                  𝒟[(do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))]
+                  = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] :=
+                evalDist_uniformSample_bind_update ((tag, (0 : Fin sessionsPerTag)), n)
+              -- Bind both sides with `Mψ`.
+              have hL : (do let u ← $ᵗ Digest
+                            let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                            Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                  = (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                      >>= Mψ := by
+                simp [bind_assoc]
+              have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
+                  = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
+              rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
+            -- **Phase D Case B (continued).** Use `hmarg` to rewrite LHS, RHS, BAD goal terms
+            -- into the marginalized form. Then for each fresh `u : Digest`, apply IH at the
+            -- extended cache `c.cacheQuery ((tag, 0), n) u`. Integrate via a second-level
+            -- disagree-lemma application on the `$ᵗ Digest` draw (empty `D`).
             sorry
           · -- **Case A: cache hit `u₀`.** Cell read is `u₀` regardless of `gS`. Substitute via
             -- `OracleComp.tableExtending c gS ((tag, 0), n) = u₀`, then apply IH at unchanged
