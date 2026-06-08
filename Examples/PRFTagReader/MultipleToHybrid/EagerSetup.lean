@@ -1543,6 +1543,126 @@ lemma multipleBadTableHandlerFine_reader_cacheBad_eq
   rw [h]
   rfl
 
+/-! ### Averaged-cacheBad base cases for the shared-table full run (Step 8 stage (b)) -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Pure-adversary base case for the shared-table full-run cacheBad bound.** For a `pure b`
+adversary, the simulateQ run is `pure (b, p)`, so the cacheBad-end equals `p.2.cacheBad`. Starting
+from `p.2.cacheBad = false`, the cacheBad-end probability is exactly `0`, trivially below the
+target `qR * |TagId| * sessionsPerTag / |Digest|`. This base case is consumed at the `pure` arm
+of the inductive proof of `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`. -/
+lemma simulateQ_multipleBadTableHandlerFine_pure_cacheBad_prob_eq_zero
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (b : Bool)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest)
+    (hcb : p.2.cacheBad = false) :
+    Pr[fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              ((pure b : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool))).run p)] = 0 := by
+  classical
+  have hrw :
+      (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+            ((pure b : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool))).run p :
+          ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest))) =
+        (do let _ ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+            (pure (b, p) :
+              ProbComp (Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest)))) := by
+    refine bind_congr fun gFine => ?_
+    simp [simulateQ_pure, StateT.run_pure]
+  rw [hrw, probEvent_bind_eq_tsum]
+  simp only [probEvent_pure, hcb, Bool.false_eq_true, ite_false, mul_zero, tsum_zero]
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Tag-headed adversary recursion identity for the shared-table full-run cacheBad bound.**
+Using the tag-step gFine commute, the cacheBad-end probability for a tag-headed adversary
+`liftM (query (Sum.inl tag)) >>= oa` (averaged over `gFine ← $ᵗ`) equals the table-handler bind
+of the continuation cacheBad-end probabilities (each at the post-tag-advance state with
+`gFine` re-sampled). This is the structural reduction used at the `query_bind Sum.inl` arm of the
+inductive proof of `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`. -/
+lemma probEvent_multipleBadTableHandlerFine_tag_avg_cacheBad_eq
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (tag : TagId)
+    (oa : Option (TagTranscript Nonce Digest) → UnlinkAdversary TagId Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    Pr[fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                  (Sum.inl tag))) >>= oa)).run p)] =
+      ∑' r : Option (TagTranscript Nonce Digest) × UnlinkState TagId,
+        Pr[= r | (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1] *
+        Pr[fun y : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            y.2.2.cacheBad = true |
+          (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2, multipleBadAdvance tag p.2 r.1))] := by
+  classical
+  -- Transport the goal through the tag-step commute equality.
+  have hcomm := multipleBadTableHandlerFine_full_run_tag_step_commute
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) g tag oa p
+  have hgoal_eq := probEvent_congr' (p := fun z : Bool ×
+      (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.2.2.cacheBad = true)
+    (q := fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+      z.2.2.cacheBad = true)
+    (fun _ _ => Iff.rfl) hcomm
+  rw [hgoal_eq, probEvent_bind_eq_tsum]
+  rfl
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Reader-headed adversary recursion identity for the shared-table full-run cacheBad bound.**
+Using the reader-step gFine commute, the cacheBad-end probability for a reader-headed adversary
+`liftM (query (Sum.inr transcript)) >>= oa` (averaged over `gFine ← $ᵗ`) equals the table-handler
+bind of the continuation cacheBad-end probabilities (each at the post-reader-advance state with
+`gFine` re-sampled INSIDE the table-handler bind). This is the structural reduction used at the
+`query_bind Sum.inr` arm of the inductive proof. -/
+lemma probEvent_multipleBadTableHandlerFine_reader_avg_cacheBad_eq
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (transcript : TagTranscript Nonce Digest)
+    (oa : ReaderReply → UnlinkAdversary TagId Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    Pr[fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+              ((liftM (OracleSpec.query (spec := UnlinkOracleSpec TagId Nonce Digest)
+                  (Sum.inr transcript))) >>= oa)).run p)] =
+      ∑' r : ReaderReply × UnlinkState TagId,
+        Pr[= r | (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1] *
+        Pr[fun y : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            y.2.2.cacheBad = true |
+          (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine)
+                (oa r.1)).run (r.2,
+                  multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine
+                    transcript p.2))] := by
+  classical
+  have hcomm := multipleBadTableHandlerFine_full_run_reader_step_commute
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) g transcript oa p
+  have hgoal_eq := probEvent_congr' (p := fun z : Bool ×
+      (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.2.2.cacheBad = true)
+    (q := fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+      z.2.2.cacheBad = true)
+    (fun _ _ => Iff.rfl) hcomm
+  rw [hgoal_eq, probEvent_bind_eq_tsum]
+  rfl
+
 /-! ### Full-run shared-table cacheBad bound (Step 8 stage (b))
 
 The headline bound the Option-6 plan calls for: starting from a state with `cacheBad = false` and
@@ -1557,7 +1677,7 @@ coupling at the reader step: a shared `gFine` is reused across all reader querie
 inductive proof's continuation must operate at the *same* `gFine` as the current step rather than
 sampling a fresh one.
 
-**Status (Iteration 14).** The full-run shared-table bound below is the remaining open target of
+**Status (Iteration 16).** The full-run shared-table bound below is the remaining open target of
 Step 8 stage (b). Prior iterations built up the supporting scaffolding:
 
 * Iter 9-10: per-step FineFresh bound (`multipleBadTableHandlerFineFresh_reader_step_cacheBad_le`)
@@ -1571,6 +1691,14 @@ Step 8 stage (b). Prior iterations built up the supporting scaffolding:
   (`multipleBadTableHandlerFine_full_run_reader_step_commute`) — Fubini equality for the
   reader-headed adversary, completing the structural primitives the inductive bound consumes
   at both branches of its case-split.
+* Iter 15: per-step `cacheBad`-end identity at fixed `gFine`
+  (`multipleBadTableHandlerFine_reader_cacheBad_eq`).
+* Iter 16: **inductive base case + recursion identities**
+  (`simulateQ_multipleBadTableHandlerFine_pure_cacheBad_prob_eq_zero`,
+  `probEvent_multipleBadTableHandlerFine_tag_avg_cacheBad_eq`,
+  `probEvent_multipleBadTableHandlerFine_reader_avg_cacheBad_eq`) — turning the three arms of the
+  inductive proof into mechanical tsum-rewrites that consume the iter-11/14 commutes and the
+  iter-15 cacheBad identity.
 
 With this iteration's reader-step commute, the inductive proof now has symmetric structural
 primitives at both tag and reader branches: the table-handler step is gFine-independent in both
