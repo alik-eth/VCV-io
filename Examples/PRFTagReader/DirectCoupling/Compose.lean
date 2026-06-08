@@ -83,16 +83,49 @@ statement is the structural mismatch that *cannot* be closed by the inductive hy
 a single auth value cannot bridge `M ≠ S` auth disagreements that arise from disjoint cell
 reads in the slot-positive case).
 
-**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor:
-* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
-* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
-* adding a companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
+**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor.
+**Status (post iter-26).** The upstream infrastructure has LANDED in
+`Examples/PRFTagReader/MultipleToHybrid/EagerSetup.lean`:
+* `cacheBad : Bool` field on `UnlinkBadState` (Defs.lean), `cacheBad := false` in `init`;
+* `cacheBadReader` predicate + `multipleBadReaderAdvance` advance combinator;
+* `multipleBadTableHandlerFine g gFine` — the fine-grained cacheBad-instrumented variant
+  (output-marginally-equivalent to the existing `multipleBadTableHandler g` but with the
+  reader branch ORing `cacheBadReader gFine transcript` into `cacheBad`);
+* companion headline `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le` giving
+  `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|` over a fresh `gFine ← $ᵗ`.
 
-Once those changes land, the aux signature absorbs the residue into the `bad` slack, and this
-helper is closed by a direct charge to `Pr[cacheBad]`. Until then, this helper carries the
-unique `sorry` that consolidates the three slot-positive sub-case residues (Case B, Sub-case
-A.A, Sub-case A.B), making the cross-file requirement explicit at a single named site rather
-than scattered across three inline `sorry`s. -/
+**Remaining gap to close this helper.** The handler currently used in the aux is the
+COARSE `multipleBadTableHandler g` (cacheBad invariant). To absorb the slot-positive auth
+residue into a `Pr[cacheBad]` slack, the aux must be re-stated against
+`multipleBadTableHandlerFine g gFine` with an outer `gFine ← $ᵗ`.
+
+**Technical obstacle (iter-28 finding).** A bridge lemma of the form
+`Pr[P | coarse run from p] = Pr[P | Fine run from p]` for cacheBad-independent `P` is
+NOT a single straightforward induction. The reason: at a `query_bind`, after
+`probEvent_bind_eq_tsum` the goal splits into a tsum over `r`, but the per-`r` factor
+`(handler t s).probOutput r` involves the post-advance state, and the advance produces
+*different* values of `r.2.2.cacheBad` between coarse (`p.2.cacheBad`) and Fine
+(`p.2.cacheBad || cacheBadReader gFine transcript`). The `r`-indices don't align across
+the two tsum's, so tsum-congr cannot be applied pointwise. A correct proof must reindex
+the tsum (e.g. by quotienting out cacheBad on `r`) or use a stronger structural
+"projection on r" framework. Estimated effort: a full-day implementation in EagerSetup.lean
+with intermediate "support up to cacheBad" lemmas.
+
+**Alternative path (simpler bound).** Rather than the full handler-swap bridge, prove
+DIRECTLY: `Pr[bad | coarse] + Pr[helper residue contribution]` ≤
+`Pr[bad ∨ cacheBad | Fine] + Pr[cacheBad | Fine]` where the helper residue at each
+slot-positive site contributes a Bernoulli `cacheBadReader gFine` mass. This avoids
+the global handler swap by treating cacheBad as a *witness flag* threaded only through
+the bad-mass accounting, leaving the M-side output distribution untouched at the coarse
+level. Requires a per-step probabilistic charge lemma matching `Pr[cacheBadReader ...]`
+to a fresh `gFine ← $ᵗ` slot-mass bound.
+
+With either path:
+* the aux gains a `Pr[cacheBad over multipleBadTableHandlerFine]` slack term on its RHS;
+* that slack absorbs the helper-residue auth disagreement at slot-positive tag-step sites;
+* the headline `multipleIdeal_le_singleIdeal_add_bad_DC` bounds the new term via
+  `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`, yielding the final
+  `qR · |TagId| · sessionsPerTag / |Digest|` charge. -/
 lemma slotPositive_trace_union_residue [Fintype Nonce] [Fintype Digest]
     (advM : UnlinkState TagId) (tag : TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
@@ -148,13 +181,16 @@ absorbs this polluting-cell mass into a separate bad-state term, mirroring how `
 already absorbs the tag-side nonce-collision mass.
 
 **Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor
-(same one as `slotPositive_trace_union_residue`):
-* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
-* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
-* adding a companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
+(same one as `slotPositive_trace_union_residue`).
 
-Until then, this helper carries the unique reader-branch `sorry`, making the cross-file
-requirement explicit at a single named site rather than buried inside the aux. -/
+**Status (post iter-26).** Upstream infrastructure has LANDED in
+`Examples/PRFTagReader/MultipleToHybrid/EagerSetup.lean` (see the status block on
+`slotPositive_trace_union_residue` for the inventory). The remaining gap to close this
+helper is the SAME aux-handler-swap from `multipleBadTableHandler g` to
+`multipleBadTableHandlerFine g gFine` — once the aux is re-stated against the Fine handler
+with an outer `gFine ← $ᵗ`, the reader-step D-mass residue absorbs into the
+`Pr[multipleBadTableHandlerFine ⋯ z.2.2.cacheBad]` slack via
+`simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`. -/
 lemma readerStep_trace_union_residue [Fintype Nonce] [Fintype Digest]
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
