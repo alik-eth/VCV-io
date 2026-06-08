@@ -28,6 +28,7 @@ import Examples.PRFTagReader.BadEvent
 import Examples.PRFTagReader.Collision
 import Examples.PRFTagReader.Defs
 import Examples.PRFTagReader.DirectCoupling
+import Examples.PRFTagReader.DirectCoupling.Compose
 import Examples.PRFTagReader.Hybrid
 import Examples.PRFTagReader.HybridToSingle
 import Examples.PRFTagReader.MultipleBadCollision
