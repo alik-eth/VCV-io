@@ -964,9 +964,57 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             (Sum.inr transcript) s
           = pure (ReaderReply.ofBool (Sacc gS), s) := fun gS =>
         singleTableHandler_reader_run (OracleComp.tableExtending c gS) transcript s
-      -- **Phase C (next commit).** Lift unfolds via `simp only [..., hMstep_with_bad, hSstep]`,
-      -- case-split on `Macc gS` and the `(Macc, Sacc) = (F, T)` flip event, bound flip mass
-      -- by `|TagId| · sp / |Digest|`, apply IH at each `b ∈ {T, F}` for the off-flip branch.
+      -- **Phase C plan (refined after structural analysis).**
+      --
+      -- The IH integrates over a FRESH `gS_new ← $ᵗ`; but `Macc gS` and `Sacc gS` depend on the
+      -- OUTER `gS`. Per-gS bound (the form the disagree lemma needs) does NOT match the IH's
+      -- integrated form. **Multi-cell marginalization required.**
+      --
+      -- **Step 1 — lift unfolds.** `simp only [multipleBadTable_run_query_bind',
+      -- singleTable_run'_query_bind', map_bind]` then `bind_congr` + `hMstep_with_bad`/`hSstep`
+      -- collapse the head reader query to deterministic `pure (.ofBool (Macc gS), s, sB)` (M-bad)
+      -- and `pure (.ofBool (Sacc gS), s)` (S). Result: each goal term has shape
+      -- `$ᵗ gS >>= Mψ gS` where `Mψ gS` uses `k (.ofBool (Macc gS))` or `k (.ofBool (Sacc gS))`.
+      --
+      -- **Step 2 — multi-cell lazify via the existing workhorse.** Define
+      -- `cells_at_n₀ := ((Finset.univ : Finset (TagId × Fin sessionsPerTag)).toList).map
+      --   (fun slot => (slot, transcript.nonce))` — the S-side cells at `transcript.nonce`.
+      -- The lazification lemma `evalDist_idealCacheMapM_bind_uniformTable_comp`
+      -- (Table.lean:467) gives
+      -- `𝒟[$ᵗ gS >>= fun gS => Mψ (tableExtending c gS)]` =
+      -- `𝒟[idealCacheMapM cells_at_n₀ c >>= fun r => $ᵗ gS_new; Mψ (tableExtending r.2 gS_new)]`.
+      -- After lazification, `Macc(tableExtending r.2 gS_new)` and `Sacc(tableExtending r.2 gS_new)`
+      -- are deterministic functions of `r.2` (since all cells at `transcript.nonce` are in the
+      -- extended cache, and Macc/Sacc only read those cells).
+      --
+      -- **Step 3 — disagree lemma.** Apply `probEvent_bind_le_add_bad_disagree` with
+      -- `mx := idealCacheMapM cells_at_n₀ c`, `D := λ rs, Macc(rs.2) = false ∧ Sacc(rs.2) = true`
+      -- (the flip event — by `mReader_accepts_imp_sReader_accepts`, the symmetric flip is
+      -- impossible). Slack reshape: split slack₁/₂/₃ at qR = qR'+1 into ε₁ + IH-slack:
+      --   slack₁: `(qR'+1) * |TagId| / |D|` = `|TagId|/|D|` (ε₁) + IH.
+      --   slack₂: `(qR'+1) * qT / |N|`     = `qT/|N|` (ε₁)     + IH.
+      --   slack₃: `(qR'+1) * |TagId| * sp / |D|` = `|TagId|*sp/|D|` (ε₁) + IH.
+      -- Total ε₁ ≈ `|TagId|/|D| + qT/|N| + |TagId|*sp/|D|`.
+      --
+      -- **Step 4 — D-mass bound (THE BLOCKER).** Want `Pr[D | idealCacheMapM cells_at_n₀ c]
+      -- ≤ |TagId|*sp / |D|`. The workhorse is `probEvent_idealCacheMapM_mem_le`
+      -- (HybridToSingle.lean:53): bounds `Pr[v ∈ rs.1 ∧ ∀ d ∈ l, c d ≠ some v]
+      -- ≤ l.length / |Digest|`. **Catch:** the hypothesis `∀ d ∈ l, c d ≠ some v` EXCLUDES the
+      -- "pre-cached auth cell" case. If `c ((tag, sid≠0), transcript.nonce) = some auth` for
+      -- some prior `tag, sid`, that cell deterministically contributes `D = true`, giving
+      -- D-mass = 1 on those configurations — defeats the per-query `|TagId|*sp/|D|` budget.
+      --
+      -- **Resolution requires aux signature refactor.** Add `hCacheBound`-style invariant
+      -- counting "potentially polluting" cells (analogous to M→Hybrid `Eager.lean:898-902` using
+      -- `qRInit - qR`). Without this, the slot-positive case ALSO has the same issue (a
+      -- slot-positive query caches `((tag, slotK), n)` with a fresh uniform, which may match a
+      -- future `transcript.auth`). See `dc-track-progress` memo for the refactor plan.
+      --
+      -- **Step 5 — off-D IH application (works once D-mass is bounded).** Off-D, `Macc(rs.2) =
+      -- Sacc(rs.2) =: b`. Case-split on `b ∈ {true, false}`. For each `b`, apply IH at
+      -- `u := ReaderReply.ofBool b`, `c' := rs.2` (the lazified extended cache). The IH bounds
+      -- `Pr[$ᵗ gS_new; M(tableExtending rs.2 gS_new) (k (.ofBool b)))]` ≤ S analog + bad +
+      -- slacks. This matches the per-`rs` off-D goal exactly.
       sorry
 
 end UnlinkReduction
