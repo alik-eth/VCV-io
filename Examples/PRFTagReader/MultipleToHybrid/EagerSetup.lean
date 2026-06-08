@@ -448,6 +448,63 @@ lemma probEvent_cacheBadReader_uniformSample_le [Fintype Nonce] [Fintype Digest]
       = ((Fintype.card TagId : ℝ≥0∞) * (sessionsPerTag : ℝ≥0∞) *
           (Fintype.card Digest : ℝ≥0∞)⁻¹) by ring]
 
+/-! ### Step 8 stage (b) preservation helpers
+
+The two single-step state-shape lemmas used by the full-run cacheBad bound (Step 8 stage (b),
+landing in a follow-up iteration). They make the per-step state-transition transparent so the
+inductive proof of the cacheBad bound can apply the IH directly on the continuation, threading
+the (possibly-flipped) `cacheBad` field through the step.
+
+* `multipleBadTableHandlerFine_tag_preserves_cacheBad`: tag-step does not touch `cacheBad`.
+* `multipleBadTableHandlerFine_reader_state_eq`: reader-step advances `p.2` to
+  `multipleBadReaderAdvance gFine transcript p.2`, leaving the `UnlinkState` (`p.1`) untouched
+  modulo the deterministic table read.
+
+Both are pure-add scaffolding — they leave the existing stage (a) bound and downstream
+consumers untouched. -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- Tag-step `cacheBad`-preservation observation: `multipleBadTableHandlerFine` on a tag query
+keeps `p.2.cacheBad` unchanged across every reachable output. This is the deterministic
+companion to `multipleBadAdvance` preserving `cacheBad` (only the `bad` field is touched). -/
+lemma multipleBadTableHandlerFine_tag_preserves_cacheBad (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest) (tag : TagId)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    ∀ z ∈ support (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine (Sum.inl tag) p),
+        z.2.2.cacheBad = p.2.cacheBad := by
+  intro z hz
+  change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1
+      >>= fun r => pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) at hz
+  obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+  rw [mem_support_pure_iff] at hz
+  subst hz
+  show (multipleBadAdvance tag p.2 r.1).cacheBad = p.2.cacheBad
+  cases r.1 <;> simp [multipleBadAdvance]
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- Reader-step state shape: every reachable output of `multipleBadTableHandlerFine` on a reader
+query has bad-state component exactly `multipleBadReaderAdvance gFine transcript p.2`. The
+`UnlinkState` (`p.1`) advances exactly as the deterministic reader handler dictates. -/
+lemma multipleBadTableHandlerFine_reader_state_eq (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    ∀ z ∈ support (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine (Sum.inr transcript) p),
+        z.2.2 =
+          multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2 := by
+  intro z hz
+  change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1
+      >>= fun r => pure (r.1, r.2,
+        multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2)) at hz
+  obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+  rw [mem_support_pure_iff] at hz
+  subst hz
+  rfl
+
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution
 (output bit, multiple-ideal state and bad-world state) as sampling a full random-oracle table `g`,
