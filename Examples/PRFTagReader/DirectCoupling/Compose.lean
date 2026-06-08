@@ -99,6 +99,7 @@ freshness predicate. The direct M-S coupling is invariant-free at the eager leve
 lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR qT : ℕ)
     (s : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (sB : UnlinkBadState TagId Nonce Digest)
     (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT) :
@@ -107,18 +108,20 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
           (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
             (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-            (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS)) oa).run (s, sB)] ≤
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS))) oa).run (s, sB)] ≤
       Pr[= true | do
         let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
         (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) gS) oa).run' s] +
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)) oa).run' s] +
       Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
         let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
         (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
             (z.1, z.2.2)) <$>
           (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
             (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-            (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS)) oa).run (s, sB)] +
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS))) oa).run (s, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
       ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
@@ -143,7 +146,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
   -- See `DirectCoupling.lean`'s Session 5 handoff comment (lines ~390–417) for the detailed
   -- per-step structural usage of the primitives.
   classical
-  induction oa using OracleComp.inductionOn generalizing qR qT s sB with
+  induction oa using OracleComp.inductionOn generalizing qR qT s c sB with
   | pure b =>
     -- Both sides collapse the simulateQ to a `pure b` under the outer `$ᵗ gS`. LHS and the
     -- S-side leading RHS term reduce to the same ProbComp; remaining RHS terms (bad + three
@@ -161,13 +164,33 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         · -- **Tag-zero step.** M and S read the SAME cell `gS((tag, 0), n)` (Session 3 lemma
           -- `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`).
           -- LHS step = S-side step (modulo the `multipleBadAdvance` bad-flag bookkeeping that
-          -- M wraps around it). Plan: unfold `multipleBadTable_run_query_bind'` and
-          -- `singleTable_run'_query_bind'`; rewrite the M-handler step into the S-handler step
-          -- under the outer `$ᵗ gS` via Session 3's pointwise equality; apply IH at the
-          -- post-step state. The g-sharing issue requires the IH to be applied per-gS — or
-          -- alternatively, marginalize the cell `((tag, 0), n)` of `gS` via
-          -- `evalDist_uniformSample_bind_update` so the IH's outer `$ᵗ gS` becomes a fresh
-          -- draw on the rest of the table.
+          -- M wraps around it).
+          --
+          -- **Structural blocker on the current aux signature.** Applying the IH at the
+          -- post-step state requires the cell `((tag, 0), n)` of `gS` to be marginalized out:
+          --
+          --   1. Unfold step + swap outer `$ᵗ gS` with inner `$ᵗ Nonce` via
+          --      `evalDist_probComp_bind_comm` (used at Eager.lean:343).
+          --   2. Marginalize cell `((tag, 0), n)` via `evalDist_uniformSample_bind_update`
+          --      (VCVio/OracleComp/Constructions/SampleableType.lean:427): `$ᵗ gS` becomes
+          --      `$ᵗ u; $ᵗ gS'; Function.update gS' ((tag, 0), n) u`.
+          --   3. Rewrite `tableExtending_cacheQuery + tableExtending_update_of_none`
+          --      (EagerTable.lean:54,65) to absorb the update into a cache extension:
+          --      `tableExtending (c.cacheQuery ((tag, 0), n) u) gS' = Function.update ...`.
+          --   4. IH at the extended cache `c.cacheQuery ((tag, 0), n) u` applies against a
+          --      fresh `$ᵗ gS'`, which matches the marginalized form.
+          --
+          -- Steps 3-4 require the aux to carry a **cache parameter** `c : (((TagId × Fin
+          -- sessionsPerTag) × Nonce) →ₒ Digest).QueryCache` and run M/S against
+          -- `slotZeroSubTable (tableExtending c gS)` / `tableExtending c gS`. The current
+          -- aux uses raw `gS` (= `tableExtending ∅ gS`), so the slot-zero step can't extend
+          -- the cache and the IH degenerates.
+          --
+          -- **Next session (#45)**: reformulate the aux signature with a cache parameter,
+          -- specialize the headline at `c = ∅` via `OracleComp.tableExtending_empty`. Mirror
+          -- the cache-threading structure of `multipleBadEager_le_hybridEager_aux`
+          -- (Eager.lean:85), where M's cache `sM.2` and Hybrid's cache `sH.2` are independent
+          -- — for DC they're a SINGLE shared cache on the S-domain.
           sorry
         · -- **Tag slot-positive step (slot available).** M reads `gS((tag, 0), n)` (sub-table);
           -- S reads `gS((tag, k), n)` for `k = s.sessionsUsed tag ≥ 1`. Off-bad (fresh nonce),
@@ -215,7 +238,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           hMstep, hSstep]
         -- IH at `k none` and unchanged state; slack `qR * qT' / |Nonce|` weakens to
         -- `qR * (qT' + 1) / |Nonce|` via `gcongr`.
-        refine (ih none qR qT' s sB (hqRk none) (hqTk none)).trans ?_
+        refine (ih none qR qT' s c sB (hqRk none) (hqTk none)).trans ?_
         gcongr <;> first | rfl | omega
     | inr transcript =>
       -- **Reader query.** `mReader_accepts_imp_sReader_accepts` (Session 2) gives the
