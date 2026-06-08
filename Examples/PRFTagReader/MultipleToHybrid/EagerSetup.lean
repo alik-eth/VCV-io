@@ -1395,6 +1395,36 @@ lemma multipleBadTableHandlerFine_step_preserves_cacheBad
     show (p.2.cacheBad || _ : Bool) = true
     rw [hcb, Bool.true_or]
 
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Full-run cacheBad monotonicity for the shared-table Fine handler.** Starting
+`simulateQ multipleBadTableHandlerFine` from a state whose `cacheBad` flag is set, every
+reachable output keeps `cacheBad = true`. Direct induction on the adversary using the
+per-step monotonicity lemma `multipleBadTableHandlerFine_step_preserves_cacheBad`.
+
+Shared-table analogue of the `multipleBadTableHandlerFine_run_preserves_bad` pattern. Consumed
+at the IH application site of the full-run shared-table cacheBad bound: once a reader step has
+flipped `cacheBad` to `true`, the continuation cannot un-flip it, so the IH at the post-step
+state covers the residual mass trivially. -/
+lemma multipleBadTableHandlerFine_run_preserves_cacheBad {α : Type}
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hcb : p.2.cacheBad = true) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) oa).run p),
+        z.2.2.cacheBad = true := by
+  induction oa using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hcb
+  | query_bind t f ih =>
+    intro z hz
+    rw [multipleBadTableFine_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hz⟩ := hz
+    exact ih q.1 q.2
+      (multipleBadTableHandlerFine_step_preserves_cacheBad g gFine t p hcb q hq) z hz
+
 /-! ### Full-run shared-table cacheBad bound (Step 8 stage (b))
 
 The headline bound the Option-6 plan calls for: starting from a state with `cacheBad = false` and
