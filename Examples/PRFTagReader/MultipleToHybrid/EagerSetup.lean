@@ -2240,6 +2240,261 @@ lemma multipleBadTableHandlerFine_run_cacheBad_exists_list_hit {α : Type}
           refine ⟨L, hL, ?_⟩
           simp [readerQueryProj]
 
+/-- **`multipleTableHandler` step never fails.** Both branches reduce to
+`$ᵗ Nonce >>= pure` / `pure …` which never fail. -/
+lemma multipleTableHandler_probFailure_zero (g : TagId × Nonce → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain) (s : UnlinkState TagId) :
+    Pr[⊥ | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g t s] = 0 := by
+  classical
+  rcases t with tag | transcript
+  · by_cases hslot : s.sessionsUsed tag < sessionsPerTag
+    · rw [multipleTableHandler_tag_run_of_lt _ _ _ hslot]
+      simp [probFailure_bind_eq_add_tsum]
+    · rw [multipleTableHandler_tag_run_of_not_lt _ _ _ hslot]
+      simp
+  · rw [multipleTableHandler_reader_run]
+    simp
+
+/-- **Reader-transcripts shadow never fails.** Structural induction on the adversary, leveraging
+`multipleTableHandler_probFailure_zero` at the per-step level. -/
+lemma readerTranscriptsList_probFailure_zero {α : Type} (g : TagId × Nonce → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (advM : UnlinkState TagId) :
+    Pr[⊥ | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g adversary advM] = 0 := by
+  classical
+  induction adversary using OracleComp.inductionOn generalizing advM with
+  | pure x => rw [readerTranscriptsList_pure]; simp
+  | query_bind t f ih =>
+      rw [readerTranscriptsList_query_bind]
+      rw [probFailure_bind_eq_add_tsum]
+      rw [multipleTableHandler_probFailure_zero, zero_add]
+      have hinner : ∀ r : (UnlinkOracleSpec TagId Nonce Digest).Range t × UnlinkState TagId,
+          Pr[= r | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g t advM] *
+          Pr[⊥ | (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) g (f r.1) r.2 >>= fun rest =>
+                pure ((readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  t).elim rest (· :: rest)))] = 0 := by
+        intro r
+        rw [probFailure_bind_eq_add_tsum]
+        rw [ih r.1 r.2]
+        simp
+      simp_rw [hinner]
+      exact tsum_zero
+
+/-! ### Fixed-`gFine` cacheBad ≤ shadow-hit coupling (Step 8 stage (b) Strategy 1, iter-24)
+
+With the list-coupled witness identity
+(`multipleBadTableHandlerFine_run_cacheBad_exists_list_hit`), we now lift it to a *probability*
+inequality at fixed `gFine`. Both the LHS `(Fine g gFine).run p` and the RHS shadow
+`readerTranscriptsList g adv p.1` decompose recursively over the same `multipleTableHandler g t
+p.1` step, so the induction couples directly without any joint Fubini step:
+
+  `Pr[z.2.2.cacheBad = true | (Fine g gFine).run p] ≤`
+  `  Pr[fun L => ∃ T ∈ L, cacheBadReader gFine T = true | readerTranscriptsList g adv p.1]`
+
+(under `p.2.cacheBad = false`). This is the per-`gFine` slice of the headline. Averaging over
+`gFine ← $ᵗ` and applying the length-bound + per-cell stage (a) bound
+`probEvent_cacheBadReader_uniformSample_le` will land the final headline. -/
+
+lemma probEvent_multipleBadTableHandlerFine_cacheBad_le_shadow_hit {α : Type}
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (adversary : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest)
+    (hcb : p.2.cacheBad = false) :
+    Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+          (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) adversary).run p] ≤
+      Pr[fun L : List (TagTranscript Nonce Digest) =>
+          ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+        readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g adversary p.1] := by
+  classical
+  induction adversary using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    rw [simulateQ_pure, StateT.run_pure, probEvent_pure]
+    simp only [hcb, Bool.false_eq_true, ite_false]
+    exact zero_le _
+  | query_bind t f ih =>
+    rw [multipleBadTableFine_run_query_bind']
+    rw [readerTranscriptsList_query_bind]
+    cases t with
+    | inl tag =>
+      -- Tag step: `multipleBadAdvance tag p.2 r.1` preserves cacheBad.
+      have hcomp_lhs :
+          Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+              z.2.2.cacheBad = true |
+            (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g gFine (Sum.inl tag) p) >>= fun q =>
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) (f q.1)).run q.2] =
+            ∑' r : Option (TagTranscript Nonce Digest) × UnlinkState TagId,
+              Pr[= r | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) p.1] *
+              Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  z.2.2.cacheBad = true |
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) (f r.1)).run
+                  (r.2, multipleBadAdvance tag p.2 r.1)] := by
+        change Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            z.2.2.cacheBad = true |
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) p.1 >>= fun r =>
+              pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) >>= _] = _
+        rw [bind_assoc, probEvent_bind_eq_tsum]
+        refine tsum_congr fun r => ?_
+        congr 1
+      have hcomp_rhs :
+          Pr[fun L : List (TagTranscript Nonce Digest) =>
+              ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) p.1) >>= fun r =>
+              readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (f r.1) r.2 >>= fun rest =>
+              pure ((readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (Sum.inl tag)).elim rest (· :: rest))] =
+            ∑' r : Option (TagTranscript Nonce Digest) × UnlinkState TagId,
+              Pr[= r | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inl tag) p.1] *
+              Pr[fun L : List (TagTranscript Nonce Digest) =>
+                  ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+                readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) g (f r.1) r.2] := by
+        rw [probEvent_bind_eq_tsum]
+        refine tsum_congr fun r => ?_
+        congr 1
+        -- Inner: Pr[event | shadow >>= pure ∘ id] = Pr[event | shadow] since `Sum.inl tag` elim = id.
+        simp only [readerQueryProj, Sum.elim_inl, Option.elim]
+        rw [bind_pure]
+      rw [hcomp_lhs, hcomp_rhs]
+      refine ENNReal.tsum_le_tsum fun r => ?_
+      refine mul_le_mul' le_rfl ?_
+      have hcb_cont : (multipleBadAdvance tag p.2 r.1).cacheBad = false := by
+        rcases hr1 : r.1 with _ | tr
+        · change p.2.cacheBad = false; exact hcb
+        · change (UnlinkBadState.mk _ _ _ _).cacheBad = false; exact hcb
+      exact ih r.1 (r.2, multipleBadAdvance tag p.2 r.1) hcb_cont
+    | inr transcript =>
+      -- Reader step.
+      have hcomp_lhs :
+          Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+              z.2.2.cacheBad = true |
+            (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g gFine (Sum.inr transcript) p) >>= fun q =>
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) (f q.1)).run q.2] =
+            ∑' r : ReaderReply × UnlinkState TagId,
+              Pr[= r | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p.1] *
+              Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  z.2.2.cacheBad = true |
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) (f r.1)).run
+                  (r.2, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                    gFine transcript p.2)] := by
+        change Pr[fun z : α × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            z.2.2.cacheBad = true |
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p.1 >>= fun r =>
+              pure (r.1, r.2, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                gFine transcript p.2)) >>= _] = _
+        rw [bind_assoc, probEvent_bind_eq_tsum]
+        refine tsum_congr fun r => ?_
+        congr 1
+      have hcomp_rhs :
+          Pr[fun L : List (TagTranscript Nonce Digest) =>
+              ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p.1) >>= fun r =>
+              readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (f r.1) r.2 >>= fun rest =>
+              pure ((readerQueryProj (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (Sum.inr transcript)).elim rest (· :: rest))] =
+            ∑' r : ReaderReply × UnlinkState TagId,
+              Pr[= r | multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p.1] *
+              Pr[fun L : List (TagTranscript Nonce Digest) =>
+                  ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+                (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) g (f r.1) r.2) >>= fun rest =>
+                  (pure (transcript :: rest) : ProbComp _)] := by
+        rw [probEvent_bind_eq_tsum]
+        refine tsum_congr fun r => ?_
+        simp [readerQueryProj]
+      rw [hcomp_lhs, hcomp_rhs]
+      refine ENNReal.tsum_le_tsum fun r => ?_
+      refine mul_le_mul' le_rfl ?_
+      by_cases hcbr : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript = true
+      · -- Predicate fires: RHS = 1.
+        have hrhs_eq_one :
+            Pr[fun L : List (TagTranscript Nonce Digest) =>
+                ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+              (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (f r.1) r.2) >>= fun rest =>
+                (pure (transcript :: rest) : ProbComp _)] = 1 := by
+          rw [probEvent_bind_eq_tsum]
+          have hone : ∀ rest : List (TagTranscript Nonce Digest),
+              Pr[fun L => ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+                (pure (transcript :: rest) : ProbComp _)] = 1 := by
+            intro rest
+            rw [probEvent_pure]
+            rw [if_pos]
+            refine ⟨transcript, ?_, hcbr⟩
+            exact List.mem_cons_self
+          simp_rw [hone, mul_one]
+          -- ∑' r, Pr[= r | shadow] = 1 - Pr[⊥ | shadow] = 1 (shadow is a ProbComp, never fails)
+          have hsupp_one : ∑' rest : List (TagTranscript Nonce Digest),
+              Pr[= rest | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (f r.1) r.2] +
+                Pr[⊥ | readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) g (f r.1) r.2] = 1 := by
+            rw [tsum_probOutput_add_probFailure]
+          have hpf : Pr[⊥ | readerTranscriptsList (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (f r.1) r.2] = 0 :=
+            readerTranscriptsList_probFailure_zero (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (f r.1) r.2
+          rw [hpf, add_zero] at hsupp_one
+          exact hsupp_one
+        rw [hrhs_eq_one]; exact probEvent_le_one
+      · -- Predicate doesn't fire: continuation cacheBad-state is `false`.
+        have hcb_cont :
+            (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+              gFine transcript p.2).cacheBad = false := by
+          rw [multipleBadReaderAdvance_cacheBad, hcb, Bool.false_or]
+          exact Bool.eq_false_iff.mpr hcbr
+        have hih := ih r.1 (r.2, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+            gFine transcript p.2) hcb_cont
+        have hrhs_simp :
+            Pr[fun L : List (TagTranscript Nonce Digest) =>
+                ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+              (readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (f r.1) r.2) >>= fun rest =>
+                (pure (transcript :: rest) : ProbComp _)] =
+              Pr[fun L : List (TagTranscript Nonce Digest) =>
+                  ∃ T ∈ L, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true |
+                readerTranscriptsList (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) g (f r.1) r.2] := by
+          rw [probEvent_bind_eq_tsum]
+          rw [probEvent_eq_tsum_ite (mx := readerTranscriptsList (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (f r.1) r.2)]
+          refine tsum_congr fun rest => ?_
+          rw [probEvent_pure]
+          by_cases hex : ∃ T ∈ rest, cacheBadReader (sessionsPerTag := sessionsPerTag) gFine T = true
+          · obtain ⟨T, hT, hTcb⟩ := hex
+            rw [if_pos ⟨T, List.mem_cons_of_mem _ hT, hTcb⟩, mul_one,
+                if_pos ⟨T, hT, hTcb⟩]
+          · rw [if_neg, if_neg hex, mul_zero]
+            rintro ⟨T, hTmem, hTcb⟩
+            rcases List.mem_cons.mp hTmem with rfl | hTrest
+            · exact hcbr hTcb
+            · exact hex ⟨T, hTrest, hTcb⟩
+        rw [hrhs_simp]
+        exact hih
+
 end UnlinkReduction
 
 end PRFTagReader
