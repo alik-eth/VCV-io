@@ -458,11 +458,141 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
                   = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
               rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
-            -- **Phase D Case B (continued).** Use `hmarg` to rewrite LHS, RHS, BAD goal terms
-            -- into the marginalized form. Then for each fresh `u : Digest`, apply IH at the
-            -- extended cache `c.cacheQuery ((tag, 0), n) u`. Integrate via a second-level
-            -- disagree-lemma application on the `$ᵗ Digest` draw (empty `D`).
-            sorry
+            -- **Cell-eval + cache-extension equality.** Inside the marginalized form, the
+            -- `Function.update` at cell `((tag, 0), n)` with `u` corresponds to the cache
+            -- extension `c.cacheQuery ((tag, 0), n) u` (since `c ((tag, 0), n) = none` by `hc`):
+            --   `tableExtending c (Function.update gS' ((tag, 0), n) u)` =
+            --   `tableExtending (c.cacheQuery ((tag, 0), n) u) gS'`.
+            have hext_eq : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending c
+                    (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u) =
+                  OracleComp.tableExtending (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    gS' := fun gS' u => by
+              have h1 := OracleComp.tableExtending_update_of_none c gS' hc u
+              have h2 := OracleComp.tableExtending_cacheQuery c gS'
+                ((tag, (0 : Fin sessionsPerTag)), n) u
+              exact h1.symm.trans h2.symm
+            -- Cell read at the extended-cache form is `u`.
+            have hcell_u : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending
+                    (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'
+                    ((tag, (0 : Fin sessionsPerTag)), n) = u := fun gS' u => by
+              rw [OracleComp.tableExtending_cacheQuery]
+              simp [Function.update_self]
+            -- **Marginalization rewrites.** Use `hmarg` to rewrite LHS, RHS, BAD goal terms
+            -- into the `$ᵗ u >>= $ᵗ gS' >>= ...` form with cell read substituted.
+            have hLHS_marg :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)))
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS')))
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq gS' u, hcell_u gS' u]
+            have hRHS_marg :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS))
+                        (k (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                            TagTranscript Nonce Digest)))).run' advM)]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending
+                          (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'))
+                        (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' advM)] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq gS' u, hcell_u gS' u]
+            have hBAD_marg :
+                Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)))
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS')))
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_eq gS' u, hcell_u gS' u]
+            rw [hLHS_marg, hRHS_marg, hBAD_marg]
+            -- **Per-`u` disagree.** Empty `D` on `$ᵗ Digest`; per-`u` IH at extended cache.
+            -- Reshape the goal RHS to match the lemma's `... + ε₁ + ε₂` shape (ε₁ = 0,
+            -- ε₂ = the IH slack bundle).
+            rw [show ∀ a b c : ℝ≥0∞, a + b + c = a + b + 0 + c from
+                  fun a b c => by ring]
+            refine probEvent_bind_le_add_bad_disagree
+              (mx := ($ᵗ Digest : ProbComp Digest))
+              (D := fun _ : Digest => False)
+              (by simp) ?_
+            intro u _ _
+            have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
+              advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+              (hqRk _) (hqTk _)
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput, ← add_assoc, ← add_assoc]
+            exact hihB
           · -- **Case A: cache hit `u₀`.** Cell read is `u₀` regardless of `gS`. Substitute via
             -- `OracleComp.tableExtending c gS ((tag, 0), n) = u₀`, then apply IH at unchanged
             -- cache `c`.
