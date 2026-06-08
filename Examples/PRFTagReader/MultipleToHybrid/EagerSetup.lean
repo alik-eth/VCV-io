@@ -39,6 +39,69 @@ variable {TagId Nonce Digest K : Type}
   [DecidableEq Digest] [SampleableType Digest]
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
 
+/-! ### Reader-side cell-collision predicate (Option 6 scaffolding)
+
+`cacheBadReader T transcript` is the deterministic Boolean predicate that holds at the queried
+reader transcript `⟨nonce, auth⟩` against an eager fine-grained table `T` exactly when *some*
+slot-positive cell at the queried nonce already carries the queried auth. Under the slot-zero
+embedding, only slot-zero cells are M-reachable; a slot-positive collision is an
+M-rejects / S-accepts witness — the structural origin of the trace-union residue blockers in
+`DirectCoupling/Compose.lean`.
+
+This is the deterministic per-reader-step indicator that, in the Option 6 (cacheBad) refactor,
+is OR-accumulated into a `cacheBad` flag in the bad state via `multipleBadReaderAdvance`. With
+the bad-state field in place, `Pr[cacheBad]` absorbs the reader-cell asymmetry slack
+`qR · |TagId| * sessionsPerTag / |Digest|` as a separate bad-mass term, mirroring how
+`Pr[bad]` already absorbs the tag-side nonce-collision mass.
+
+Lives in this module (rather than `DirectCoupling.Compose`) so that the instrumented fine handler
+`multipleBadTableHandlerFine` defined below can reach it without inducing an import cycle. -/
+def cacheBadReader [Fintype TagId]
+    (T : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : TagTranscript Nonce Digest) : Bool :=
+  decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag, sid ≠ 0 ∧ T ((tag, sid), t.nonce) = t.auth)
+
+/-- Reader-step bad-state advance: OR `cacheBadReader gFine transcript` into the `cacheBad`
+flag, leaving every other field of the bad state untouched. This is the reader-side analogue of
+`multipleBadAdvance`, but mutating `cacheBad` instead of `bad`. The two flags are independent:
+reader steps never touch `bad`, tag steps never touch `cacheBad`. -/
+def multipleBadReaderAdvance [Fintype TagId]
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) : UnlinkBadState TagId Nonce Digest :=
+  { sB with cacheBad := sB.cacheBad ||
+      cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcript }
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- `multipleBadReaderAdvance` preserves the tag-side `bad` flag (it only ORs into `cacheBad`). -/
+@[simp] lemma multipleBadReaderAdvance_bad
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).bad =
+      sB.bad := rfl
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- `multipleBadReaderAdvance` preserves `sessionsUsed`. -/
+@[simp] lemma multipleBadReaderAdvance_sessionsUsed
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).sessionsUsed =
+      sB.sessionsUsed := rfl
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- `multipleBadReaderAdvance` preserves `responses`. -/
+@[simp] lemma multipleBadReaderAdvance_responses
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (transcript : TagTranscript Nonce Digest)
+    (sB : UnlinkBadState TagId Nonce Digest) :
+    (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB).responses =
+      sB.responses := rfl
+
 /-! ### Multiple-to-hybrid: the eager-table instrumented multiple handler
 
 The `MultipleHybridCoupling`-`inductionOn` route for the coupling bound is a proven dead end: a
@@ -133,6 +196,112 @@ lemma multipleBadTableHandler_run_preserves_bad {α : Type} (g : TagId × Nonce 
     rw [multipleBadTable_run_query_bind', mem_support_bind_iff] at hz
     obtain ⟨q, hq, hz⟩ := hz
     exact ih q.1 q.2 (multipleBadTableHandler_step_preserves_bad g t p hbad q hq) z hz
+
+/-! ### Fine-grained eager handler (Option-6 scaffolding)
+
+`multipleBadTableHandlerFine g gFine` is a *parallel* eager handler that runs identical M-side
+dynamics to `multipleBadTableHandler g` (same coarse table `g : TagId × Nonce → Digest` for the
+multiple-ideal output computation, so output-distribution-equivalent) but additionally threads a
+fine-grained eager table `gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest` through the
+reader branch to advance the `cacheBad` flag via `multipleBadReaderAdvance`.
+
+This is the Option-6 instrumented variant: invariant on the `bad` flag, on the multiple-ideal
+output, and on `sessionsUsed` / `responses`; it only differs from `multipleBadTableHandler` in
+the `cacheBad` field of the bad state on the reader branch.
+
+The companion bound `Pr[cacheBad] ≤ qR · |TagId| * sessionsPerTag / |Digest|` (Step 8 of the
+Option-6 plan) is stated against this handler. -/
+noncomputable def multipleBadTableHandlerFine
+    (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest) :
+    QueryImpl (UnlinkOracleSpec TagId Nonce Digest)
+      (StateT (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) ProbComp) :=
+  fun q => fun p => match q with
+    | Sum.inl tag =>
+        (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1 >>= fun r =>
+          pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)
+    | Sum.inr transcript =>
+        (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+          pure (r.1, r.2,
+            multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2)
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- `simulateQ multipleBadTableHandlerFine` of a `query_bind`, run from a state. Analogue of
+`multipleBadTable_run_query_bind'`. -/
+lemma multipleBadTableFine_run_query_bind' {α : Type} (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (f : (UnlinkOracleSpec TagId Nonce Digest).Range t →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (s : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine) (liftM (OracleSpec.query t) >>= f)).run s =
+      (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine t s) >>= fun p =>
+        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) g gFine) (f p.1)).run p.2 := by
+  rw [simulateQ_query_bind, StateT.run_bind]
+  rfl
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Fine eager-table single-step bad monotonicity.** If `bad` is set in the multiple-bad state
+`p.2`, every reachable output of `multipleBadTableHandlerFine g gFine t p` keeps `bad = true`. The
+reader branch ORs into `cacheBad` but never touches `bad`. -/
+lemma multipleBadTableHandlerFine_step_preserves_bad (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : (UnlinkOracleSpec TagId Nonce Digest).Domain)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
+    ∀ z ∈ support (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g gFine t p), z.2.2.bad = true := by
+  cases t with
+  | inl tag =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inl tag)) p.1
+        >>= fun r => pure (r.1, r.2, multipleBadAdvance tag p.2 r.1)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    show (multipleBadAdvance tag p.2 r.1).bad = true
+    rcases r.1 with _ | tr
+    · exact hbad
+    · show (p.2.bad || _ : Bool) = true
+      rw [hbad, Bool.true_or]
+  | inr transcript =>
+    intro z hz
+    change z ∈ support ((multipleTableHandler (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1
+        >>= fun r => pure (r.1, r.2,
+          multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2)) at hz
+    obtain ⟨r, _, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
+    rw [mem_support_pure_iff] at hz
+    subst hz
+    show (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+      gFine transcript p.2).bad = true
+    rw [multipleBadReaderAdvance_bad]; exact hbad
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Fine eager-table full-run bad monotonicity.** Starting `simulateQ multipleBadTableHandlerFine`
+from a state whose `bad` flag is set, every reachable output keeps `bad = true`. -/
+lemma multipleBadTableHandlerFine_run_preserves_bad {α : Type} (g : TagId × Nonce → Digest)
+    (gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
+    ∀ z ∈ support ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) oa).run p),
+        z.2.2.bad = true := by
+  induction oa using OracleComp.inductionOn generalizing p with
+  | pure b =>
+    intro z hz
+    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
+    subst hz; exact hbad
+  | query_bind t f ih =>
+    intro z hz
+    rw [multipleBadTableFine_run_query_bind', mem_support_bind_iff] at hz
+    obtain ⟨q, hq, hz⟩ := hz
+    exact ih q.1 q.2 (multipleBadTableHandlerFine_step_preserves_bad g gFine t p hbad q hq) z hz
 
 /-- **Eager-table equivalence for the instrumented multiple handler.** Running the instrumented
 multiple handler `multipleBadQueryImpl` from `((s, c), sB)` has the same *full-output* distribution

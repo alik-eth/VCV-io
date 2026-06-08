@@ -133,11 +133,16 @@ structure UnlinkState (TagId : Type) where
   sessionsUsed : TagId → ℕ
 
 /-- Bad-world state for the multiple-session unlinkability proof: session counters, the list of
-random-function responses seen for each `(tag, nonce)` pair, and the bad-event flag. -/
+random-function responses seen for each `(tag, nonce)` pair, the tag-side bad-event flag, and a
+separate reader-side bad-event flag (`cacheBad`) used by the direct-coupling argument to absorb
+slot-positive trace-union residue on the reader branch. The two flags are independent: tag steps
+may flip `bad` but never touch `cacheBad`; reader steps may flip `cacheBad` but never touch `bad`.
+-/
 structure UnlinkBadState (TagId Nonce Digest : Type) where
   sessionsUsed : TagId → ℕ
   responses : ((TagId × Nonce) →ₒ List Digest).QueryCache
   bad : Bool
+  cacheBad : Bool
 
 section UnlinkState
 
@@ -153,6 +158,7 @@ def UnlinkBadState.init : UnlinkBadState TagId Nonce Digest where
   sessionsUsed := fun _ => 0
   responses := ∅
   bad := false
+  cacheBad := false
 
 end UnlinkState
 
@@ -479,7 +485,8 @@ def unlinkBadTagQueryImpl :
           set
             ({ sessionsUsed := Function.update st.sessionsUsed tag (st.sessionsUsed tag + 1)
                responses := st.responses.cacheQuery (tag, nonce) outputs
-               bad := bad } : UnlinkBadState TagId Nonce Digest)
+               bad := bad
+               cacheBad := st.cacheBad } : UnlinkBadState TagId Nonce Digest)
           return some transcript
         else
           return none

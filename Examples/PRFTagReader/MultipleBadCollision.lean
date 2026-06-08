@@ -198,7 +198,7 @@ lemma multipleBadStep_bad_le
               (pure (some (⟨x, r.1⟩ : TagTranscript Nonce Digest), advU, r.2) : ProbComp _)
               (fun y => (multipleBadAdvance tag sB y.1).bad = true) = 1 := by
           intro r
-          simp [multipleBadAdvance, hbad, hcached]
+          simp [probEvent_pure, multipleBadAdvance, hbad, hcached]
         simp_rw [hkey, mul_one]
         exact HasEvalPMF.tsum_probOutput_eq_one _
       · have hcached' : (sB.responses (tag, x)).isSome = false := Bool.eq_false_iff.mpr hcached

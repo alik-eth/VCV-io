@@ -316,7 +316,8 @@ lemma MHBInv_tag_step
             Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1),
           responses := sB.responses.cacheQuery (tag, n)
             (u :: Option.getD (sB.responses (tag, n)) []),
-          bad := sB.bad || (sB.responses (tag, n)).isSome } :
+          bad := sB.bad || (sB.responses (tag, n)).isSome,
+          cacheBad := sB.cacheBad } :
           UnlinkBadState TagId Nonce Digest) := by
   obtain ⟨hcMH, hcMB, hbad, hsupp, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
   -- the bad-world `responses` cell `(tag, n)` is empty off-collision
@@ -369,7 +370,8 @@ def multipleBadAdvance (tag : TagId)
       { sessionsUsed := Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1)
         responses := sB.responses.cacheQuery (tag, tr.nonce)
           (tr.auth :: Option.getD (sB.responses (tag, tr.nonce)) [])
-        bad := sB.bad || (sB.responses (tag, tr.nonce)).isSome }
+        bad := sB.bad || (sB.responses (tag, tr.nonce)).isSome
+        cacheBad := sB.cacheBad }
 
 /-- `multipleIdealQueryImpl` re-targeted to the larger `MultipleBadState` monad: runs the
 multiple-ideal handler on the inner state component and threads the extra `UnlinkBadState`
@@ -767,7 +769,8 @@ lemma MultipleHybridCoupling_tag_step
             Function.update sB.sessionsUsed tag (sB.sessionsUsed tag + 1),
           responses := sB.responses.cacheQuery (tag, n)
             (u :: Option.getD (sB.responses (tag, n)) []),
-          bad := sB.bad || (sB.responses (tag, n)).isSome } :
+          bad := sB.bad || (sB.responses (tag, n)).isSome,
+          cacheBad := sB.cacheBad } :
           UnlinkBadState TagId Nonce Digest) := by
   obtain ⟨hcMH, hcMB, hbad, hbadcol, hcorr, hcollfree, hwo, hrec, hcons⟩ := hInv
   set sid : Fin sessionsPerTag := ⟨sM.1.sessionsUsed tag, hslot⟩ with hsid

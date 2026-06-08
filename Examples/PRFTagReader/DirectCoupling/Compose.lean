@@ -68,32 +68,6 @@ variable {TagId Nonce Digest : Type}
 
 namespace UnlinkReduction
 
-/-! ### Reader-side cell-collision predicate (Option 6 scaffolding)
-
-`cacheBadReader T transcript` is the deterministic Boolean predicate that holds at the queried
-reader transcript `⟨nonce, auth⟩` against an eager table `T` exactly when *some* slot-positive
-cell at the queried nonce already carries the queried auth. Under the slot-zero embedding, only
-slot-zero cells are M-reachable; a slot-positive collision is an M-rejects / S-accepts witness.
-
-This is the deterministic per-reader-step indicator that, in the planned Option 6 (cacheBad)
-refactor, is OR-accumulated into a `cacheBad` flag in the bad state. With the bad-state field
-in place, `Pr[cacheBad]` absorbs the reader-cell asymmetry slack `qR · |TagId| · sessionsPerTag /
-|Digest|` as a separate bad-mass term rather than a fixed slack₃ in the aux tail, mirroring how
-`Pr[bad]` already absorbs the tag-side nonce-collision mass.
-
-The full Option 6 refactor requires:
-* adding `cacheBad : Bool` to `UnlinkBadState` in `Examples/PRFTagReader/Defs.lean`,
-* updating `multipleBadTableHandler`'s reader branch to OR in `cacheBadReader`,
-* adding a companion bound `Pr[cacheBad] ≤ qR * |TagId| * sessionsPerTag / |Digest|` analogous
-  to `simulateQ_multipleBad_prob_le`.
-
-The current iteration leaves the predicate as scaffolding only — the structural refactor of
-`UnlinkBadState` is cross-file and out of scope here. -/
-def cacheBadReader [Fintype TagId]
-    (T : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
-    (t : TagTranscript Nonce Digest) : Bool :=
-  decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag, sid ≠ 0 ∧ T ((tag, sid), t.nonce) = t.auth)
-
 /-! ### Slot-positive trace-union residue (cross-file Option-6 blocker)
 
 After the slot-positive tag-step Phase A–D unfolds (handler unfolds, `$ᵗ gS` / `$ᵗ Nonce`
