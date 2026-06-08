@@ -1181,6 +1181,89 @@ lemma simulateQ_multipleBadTableHandlerFineFresh_cacheBad_prob_le
         rw [hbase]
       exact le_of_eq heq
 
+/-! ### Per-step shared-table cacheBad bound (Step 8 stage (b) bridge) -/
+
+omit [Nonempty TagId] in
+/-- **Per-reader-step cacheBad bound for the shared-table handler, averaged over `gFine ← $ᵗ`.**
+
+For the shared-table `multipleBadTableHandlerFine g gFine`, the gFine parameter is read only at
+the reader-step OR into cacheBad. Sampling `gFine ← $ᵗ` outside one reader step and asking for
+`cacheBad = true` after the step gives the same marginal as the FineFresh per-step bound,
+because the only gFine-dependence in a single reader step is the final OR. The intermediate
+state advance (sessionsUsed, responses, bad) is gFine-independent.
+
+Conditional on `p.2.cacheBad = false` going in, this probability is bounded by the stage (a)
+uniform-table bound `|TagId| * sessionsPerTag / |Digest|`.
+
+The proof commutes the outer `gFine ← $ᵗ` past the gFine-independent table-handler step using
+`evalDist_probComp_bind_comm`. After the commutation, the computation is the exact shape of the
+FineFresh reader-step, and the FineFresh per-step bound applies. -/
+lemma multipleBadTableHandlerFine_reader_step_cacheBad_avg_le
+    [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (g : TagId × Nonce → Digest) (transcript : TagTranscript Nonce Digest)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest)
+    (hcb : p.2.cacheBad = false) :
+    Pr[fun z : ReaderReply × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+          z.2.2.cacheBad = true |
+        do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+           multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+             (sessionsPerTag := sessionsPerTag) g gFine (Sum.inr transcript) p] ≤
+      ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  -- Unfold the reader branch of `multipleBadTableHandlerFine`.
+  change Pr[fun z : ReaderReply × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+        z.2.2.cacheBad = true |
+      do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+         (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+            pure (r.1, r.2,
+              multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                gFine transcript p.2)] ≤ _
+  -- Commute the outer `gFine` sample past the gFine-independent inner step at the `𝒟[·]` level.
+  -- After the commutation, the computation is the exact shape of the FineFresh reader-step.
+  have hcomm :
+      𝒟[(do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+            (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+              pure (r.1, r.2,
+                multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                  gFine transcript p.2) :
+            ProbComp (ReaderReply × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest)))] =
+        𝒟[((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r => do
+            let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+            pure (r.1, r.2,
+              multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                gFine transcript p.2))] := by
+    exact evalDist_probComp_bind_comm ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+      ((multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1)
+      (fun gFine r => pure (r.1, r.2,
+        multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript p.2))
+  -- Transport via the evalDist equality and then apply the FineFresh bound.
+  have heq :
+      Pr[fun z : ReaderReply × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            z.2.2.cacheBad = true |
+          (do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))
+              (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript)) p.1 >>= fun r =>
+              pure (r.1, r.2,
+                multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                  gFine transcript p.2) :
+              ProbComp _)] =
+        Pr[fun z : ReaderReply × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+            z.2.2.cacheBad = true |
+          multipleBadTableHandlerFineFresh (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) g (Sum.inr transcript) p] :=
+    probEvent_congr' (fun _ _ => Iff.rfl) hcomm
+  -- Apply the equality and then the FineFresh bound.
+  refine heq.trans_le ?_
+  exact multipleBadTableHandlerFineFresh_reader_step_cacheBad_le
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    (sessionsPerTag := sessionsPerTag) g transcript p hcb
+
 end UnlinkReduction
 
 end PRFTagReader
