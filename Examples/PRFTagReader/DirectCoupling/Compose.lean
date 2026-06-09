@@ -742,28 +742,36 @@ private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     -- Tag query (Sum.inl) vs reader query (Sum.inr). Each case decomposes further.
     cases t with
     | inl T =>
-      -- Tag query: handler draws fresh nonce, reads cell `(T, sid_T, n')`, returns transcript.
-      -- The cache extensions at `(tag, 0)` and `(tag, slotK)` only affect cells `(tag, ·, ·)`.
-      -- * Sub-case T = tag: by `hAdv`, sessions ≥ slotK + 1, so reads at sid ≥ slotK + 1 ∉ {0, slotK}.
-      --   Cell read identical on both sides; updated state advances sessions.
-      -- * Sub-case T ≠ tag: cells at `(T, ·, ·)` are untouched by either extension.
-      --   Cell reads identical pointwise.
-      -- In both sub-cases, the handler step gives identical responses and state updates;
-      -- IH on continuation closes.
-      sorry
+      -- Tag query: handler draws fresh nonce, reads cell `((T, sid_T), n')`, returns transcript.
+      -- Key fact: by `tableExtending_cacheQuery`,
+      --   `tableExtending (c.cacheQuery t u) gS = Function.update (tableExtending c gS) t u`,
+      -- so LHS and RHS tables differ from `tableExtending c gS` only by an update at
+      -- `((tag, 0), n)` and `((tag, slotK), n)` respectively.
+      by_cases hT : T = tag
+      · -- Sub-case T = tag: by `_hAdv`, `sessionsUsed tag ≥ slotK + 1`, so the handler reads at
+        -- `sid_T = sessionsUsed tag ≥ slotK + 1 ∉ {0, slotK}`. Neither LHS nor RHS update is hit;
+        -- cell read identical (= `gS ((tag, sid_T), nonce)`). Step responses pointwise equal;
+        -- IH on continuation with `advT s = sessionsUsed tag + 1` (still > slotK + 1).
+        sorry
+      · -- Sub-case T ≠ tag: cells at `((T, ·), ·)` are not touched by the cache extension
+        -- (Function.update only fires at the specific cell). Both LHS and RHS tables agree
+        -- pointwise on `((T, sid), n')` cells. Handler step responses identical; IH closes.
+        sorry
     | inr transcript =>
-      -- Reader query at `transcript = ⟨n', V⟩`: the handler returns
-      -- `ReaderReply.ofBool (unlinkReaderAccepts (tableExtending c' gS) singlePattern transcript)`.
-      -- The acceptance is `∃ T sid', tableExtending c' gS ((T, sid'), n') = V`.
-      -- * Sub-case n' ≠ n: extensions at `((tag, ·), n)` don't affect cells at nonce n'.
-      --   Existential value pointwise equal; IH closes.
-      -- * Sub-case n' = n: existential reads cells `((tag, 0), n)` and `((tag, slotK), n)`.
-      --   LHS: `((tag, 0), n) = u (cached)`, `((tag, slotK), n) = gS@K (uniform)`.
-      --   RHS: `((tag, 0), n) = gS@0 (uniform)`, `((tag, slotK), n) = u (cached)`.
-      --   Marginal distribution of the existential at this nonce is the same in LHS and RHS
-      --   (both involve `(u = V) ∨ (uniform = V) ∨ rest`), via
-      --   `evalDist_uniformSample_bind_update_two_map`. IH closes the continuation.
-      sorry
+      -- Reader query: deterministic acceptance check
+      -- `∃ T sid, tableExtending c' gS ((T, sid), transcript.nonce) = transcript.auth`.
+      by_cases hn : transcript.nonce = n
+      · -- Sub-case `transcript.nonce = n`: the existential reads BOTH cached cells.
+        -- LHS sees `((tag, 0), n) = u`, `((tag, slotK), n) = gS@K (uniform)`.
+        -- RHS sees `((tag, 0), n) = gS@0 (uniform)`, `((tag, slotK), n) = u`.
+        -- Two-cell marginalization via `evalDist_uniformSample_bind_update_two_map`: under
+        -- joint uniform `(gS@0, gS@K)`, the existential values
+        --   `(u = V) ∨ (gS@K = V) ∨ rest` and `(gS@0 = V) ∨ (u = V) ∨ rest`
+        -- are functions of the same form of `(u, fresh_uniform)`. Distributional equality.
+        sorry
+      · -- Sub-case `transcript.nonce ≠ n`: cache extensions are at nonce `n`, so cells at
+        -- `transcript.nonce` are untouched. Existential value pointwise equal; IH closes.
+        sorry
 
 /-! ### Eager-form direct-coupling aux
 
