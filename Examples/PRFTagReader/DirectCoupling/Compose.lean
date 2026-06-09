@@ -729,7 +729,9 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (sB : UnlinkBadState TagId Nonce Digest)
     (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR)
-    (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT) :
+    (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT)
+    (hcInv : ∀ tag : TagId, ∀ sid : Fin sessionsPerTag, sid ≠ 0 →
+        ∀ n : Nonce, c ((tag, sid), n) = none) :
     Pr[= true | do
         let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
         let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
@@ -762,7 +764,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
   -- through both the LHS success and RHS bad terms. Each induction case is staged as a `sorry`
   -- to be closed in Phases 9.1–9.5; see the recon document for the per-case strategy.
   classical
-  induction oa using OracleComp.inductionOn generalizing qR qT s c sB with
+  induction oa using OracleComp.inductionOn generalizing qR qT s c sB hcInv with
   | pure b =>
     -- Phase 9.1: pure b — both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
     -- becomes `do gS ← $ᵗ; gFine ← $ᵗ; pure b` (`bind_const` shape since `pure b` ignores
@@ -1427,10 +1429,19 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               (D := fun _ : Digest => False)
               (by simp) ?_
             intro u _ _
+            have hcInv' : ∀ tag' : TagId, ∀ sid' : Fin sessionsPerTag, sid' ≠ 0 →
+                ∀ n' : Nonce,
+                  (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    ((tag', sid'), n') = none := by
+              intro tag' sid' hsid' n'
+              have hne : ((tag', sid'), n') ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
+                intro h
+                exact hsid' (congrArg (fun p => p.1.2) h)
+              simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
             have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
               advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
               (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _)
+              (hqRk _) (hqTk _) hcInv'
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihB
@@ -1446,7 +1457,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             have hihA := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
               advM c
               (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _)
+              (hqRk _) (hqTk _) hcInv
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
@@ -2036,7 +2047,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             probEvent_congr' (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_eq)]
         -- Now LHS / RHS / BAD all evaluate `k none` at the unchanged state `(s, sB)`. Apply IH at
         -- `qT'`; the two `qT`-bearing slacks weaken back via `gcongr` + `Nat.le_succ`.
-        refine (ih none qR qT' s c sB (hqRk none) (hqTk none)).trans ?_
+        refine (ih none qR qT' s c sB (hqRk none) (hqTk none) hcInv).trans ?_
         gcongr
         · exact_mod_cast Nat.le_succ _
         · exact_mod_cast Nat.le_succ _
@@ -2397,7 +2408,7 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
   have haux := multipleBadEager_le_singleEager_DC_aux (sessionsPerTag := sessionsPerTag)
     adversary qReader qTag UnlinkState.init
     (∅ : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init
-    hqReader hqTag
+    hqReader hqTag (fun _ _ _ _ => rfl)
   simp only [OracleComp.tableExtending_empty] at haux
   -- The aux bound is term-by-term ≤ the headline RHS; the extra outermost
   -- `qTag * sessionsPerTag / |Digest|` slack (reserved for the eventual ε_cb
