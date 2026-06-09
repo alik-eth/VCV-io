@@ -709,8 +709,11 @@ Under `hcInv` (`c` has no slot-positive entries) and the post-step invariant
 /-- **Swap-bridge for `singleTableHandler`.** Under `hcInv` (no slot-positive cache entries) and
 `hAdv` (`sessionsUsed tag` has advanced past `slotK`), the cache extensions at `(tag, 0)` and
 `(tag, slotK)` produce the same distribution of `oa` outputs when run through `singleTableHandler`
-over a uniform `gS`. This is the workhorse for the slot-positive Case M-miss closure. -/
-lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
+over a uniform `gS`. This is the workhorse for the slot-positive Case M-miss closure.
+
+**Privacy.** Kept `private` while the body contains `sorry`s so downstream callers cannot
+depend on the unverified claim. Will be exported once the four query_bind sub-cases close. -/
+private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (tag : TagId) (slotK : Fin sessionsPerTag) (_hslotK : slotK ≠ 0)
