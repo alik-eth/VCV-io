@@ -68,136 +68,33 @@ variable {TagId Nonce Digest : Type}
 
 namespace UnlinkReduction
 
-/-! ### Slot-positive trace-union residue (cross-file Option-6 blocker)
-
-After the slot-positive tag-step Phase A–D unfolds (handler unfolds, `$ᵗ gS` / `$ᵗ Nonce`
-commutation, per-`n` disagree split, two-cell marginalization at cell A = `((tag, 0), n)` and
-cell B = `((tag, slotK), n)` with `slotK ≠ 0`, and the inductive hypothesis at a single auth
-value), each of the three slot-positive sub-cases reduces to the *same* residual inequality
-shape: the S-side reader-accept probability with one auth value bounded by the S-side
-reader-accept probability with a *different* auth value, where the cache and outer `$ᵗ gS`
-draw are identical on both sides.
-
-`slotPositive_trace_union_residue` packages this residue into a single named bound. Its
-statement is the structural mismatch that *cannot* be closed by the inductive hypothesis (IH at
-a single auth value cannot bridge `M ≠ S` auth disagreements that arise from disjoint cell
-reads in the slot-positive case).
-
-**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor.
-**Status (post iter-26).** The upstream infrastructure has LANDED in
-`Examples/PRFTagReader/MultipleToHybrid/EagerSetup.lean`:
-* `cacheBad : Bool` field on `UnlinkBadState` (Defs.lean), `cacheBad := false` in `init`;
-* `cacheBadReader` predicate + `multipleBadReaderAdvance` advance combinator;
-* `multipleBadTableHandlerFine g gFine` — the fine-grained cacheBad-instrumented variant
-  (output-marginally-equivalent to the existing `multipleBadTableHandler g` but with the
-  reader branch ORing `cacheBadReader gFine transcript` into `cacheBad`);
-* companion headline `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le` giving
-  `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|` over a fresh `gFine ← $ᵗ`.
-
-**Remaining gap to close this helper.** The handler currently used in the aux is the
-COARSE `multipleBadTableHandler g` (cacheBad invariant). To absorb the slot-positive auth
-residue into a `Pr[cacheBad]` slack, the aux must be re-stated against
-`multipleBadTableHandlerFine g gFine` with an outer `gFine ← $ᵗ`.
-
-**Technical obstacle (iter-28 finding).** A bridge lemma of the form
-`Pr[P | coarse run from p] = Pr[P | Fine run from p]` for cacheBad-independent `P` is
-NOT a single straightforward induction. The reason: at a `query_bind`, after
-`probEvent_bind_eq_tsum` the goal splits into a tsum over `r`, but the per-`r` factor
-`(handler t s).probOutput r` involves the post-advance state, and the advance produces
-*different* values of `r.2.2.cacheBad` between coarse (`p.2.cacheBad`) and Fine
-(`p.2.cacheBad || cacheBadReader gFine transcript`). The `r`-indices don't align across
-the two tsum's, so tsum-congr cannot be applied pointwise. A correct proof must reindex
-the tsum (e.g. by quotienting out cacheBad on `r`) or use a stronger structural
-"projection on r" framework. Estimated effort: a full-day implementation in EagerSetup.lean
-with intermediate "support up to cacheBad" lemmas.
-
-**Alternative path (simpler bound).** Rather than the full handler-swap bridge, prove
-DIRECTLY: `Pr[bad | coarse] + Pr[helper residue contribution]` ≤
-`Pr[bad ∨ cacheBad | Fine] + Pr[cacheBad | Fine]` where the helper residue at each
-slot-positive site contributes a Bernoulli `cacheBadReader gFine` mass. This avoids
-the global handler swap by treating cacheBad as a *witness flag* threaded only through
-the bad-mass accounting, leaving the M-side output distribution untouched at the coarse
-level. Requires a per-step probabilistic charge lemma matching `Pr[cacheBadReader ...]`
-to a fresh `gFine ← $ᵗ` slot-mass bound.
-
-With either path:
-* the aux gains a `Pr[cacheBad over multipleBadTableHandlerFine]` slack term on its RHS;
-* that slack absorbs the helper-residue auth disagreement at slot-positive tag-step sites;
-* the headline `multipleIdeal_le_singleIdeal_add_bad_DC` bounds the new term via
-  `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`, yielding the final
-  `qR · |TagId| · sessionsPerTag / |Digest|` charge. -/
-lemma slotPositive_trace_union_residue [Fintype Nonce] [Fintype Digest]
-    (advM : UnlinkState TagId) (tag : TagId)
-    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
-    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
-      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
-    (transcriptM : TagTranscript Nonce Digest)
-    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
-      TagTranscript Nonce Digest) :
-    Pr[= true | do
-        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
-            (k (some transcriptM))).run' advM] ≤
-      Pr[= true | do
-        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
-            (k (some (transcriptS gS)))).run' advM] +
-      ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) := by
-  -- **Cross-file Option-6 cacheBad blocker.** See module docstring above for the refactor plan.
-  -- The inequality is *not* universally true at the eager-coupling level — discharging it
-  -- requires the `cacheBad` bad-state field absorbing the auth-disagreement mass.
-  --
-  -- **Counterexample (why the statement is not currently provable).** Take `k` to be the
-  -- predicate `fun t => decide (t.auth = d)` for some fixed `d : Digest`. Then `transcriptM = d`
-  -- and `transcriptS = d'` with `d ≠ d'` gives LHS = 1, RHS = 0. The cross-file refactor adds a
-  -- `+ Pr[cacheBad]` term to the RHS, which absorbs exactly such mismatches.
-  --
-  -- **Call-site map.** This helper is invoked at three structurally distinct sites in the
-  -- slot-positive tag-step proof of `multipleBadEager_le_singleEager_DC_aux` below:
-  -- * **Case B (cell A uncached):** `transcriptM = ⟨n, u⟩` (fresh from cell A marginalization),
-  --   `transcriptS gS' = ⟨n, tableExtending c gS' ((tag, slotK), n)⟩` (gS'-dependent at cell B).
-  -- * **Sub-case A.B (cell A cached, cell B uncached):** `transcriptM = ⟨n, u₀⟩` (cached at cell A),
-  --   `transcriptS = fun _ => ⟨n, u⟩` (fresh from cell B marginalization; constant in gS').
-  -- * **Sub-case A.A (both cells cached):** `transcriptM = ⟨n, u₀⟩`, `transcriptS = fun _ => ⟨n, u_B⟩`
-  --   (both cached, both constant in gS'; the simplest residue form).
-  -- All three sites need the same cacheBad mass charge — the Option-6 refactor closes them in
-  -- one stroke via the companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
-  sorry
-
 /-! ### Slot-positive trace-union residue with explicit disagreement-mass hypothesis
 
-`slotPositive_trace_union_residue_with_slack` is an additive-slack variant of the unconditional
-helper above. It accepts an explicit hypothesis bounding the *disagreement mass*
-`Pr[transcriptM ≠ transcriptS gS | gS ← $ᵗ]` by a parameter `ε`, and concludes the same
-inequality with `+ ε` on the RHS. This is provable unconditionally (no `cacheBad` infrastructure
-needed) because the disagreement mass is paid as a slack, while the per-`gS` off-disagreement
-contributions cancel pointwise (both ProbComps coincide when `transcriptM = transcriptS gS`).
+`slotPositive_trace_union_residue_with_slack` is an additive-slack variant: it accepts an
+explicit hypothesis bounding the *disagreement mass*
+`Pr[transcriptM ≠ transcriptS gS | gS ← $ᵗ]` by a parameter `ε`, and concludes that the S-side
+reader-accept probability at `transcriptM` is bounded by the S-side reader-accept probability
+at `transcriptS gS` plus `ε`. Provable unconditionally because the disagreement mass is paid
+as a slack, while the per-`gS` off-disagreement contributions cancel pointwise (both ProbComps
+coincide when `transcriptM = transcriptS gS`).
 
-**Call-site analysis.** At each of the three slot-positive sub-cases, the disagreement event
+**Call-site analysis.** At each of the three slot-positive sub-cases of
+`multipleBadEager_le_singleEager_DC_aux`, the disagreement event
 `fun gS => transcriptM ≠ transcriptS gS` corresponds to a *single-cell read* of `gS`:
 * **Case B:** `transcriptM = ⟨n, u⟩` (fixed `u`); `transcriptS gS' = ⟨n, tableExtending c gS' ((tag, slotK), n)⟩`
   with `slotK ≠ 0`. The disagreement is `gS' ((tag, slotK), n) ≠ u` (for the uncached case),
   whose probability over fresh `gS'` is `1 - 1/|Digest|` — NOT bounded by the small slack.
 * **Sub-case A.B:** Similar — `transcriptS gS' = ⟨n, u⟩` for a *fresh* `u ← $ᵗ Digest`, not `gS'`.
-  After lifting the `$ᵗ u` out (already done in Compose.lean at the call site), the disagreement
-  is a deterministic constant in `gS'`, mass 0 or 1.
+  After lifting the `$ᵗ u` out at the call site, the disagreement is a deterministic constant
+  in `gS'`, mass 0 or 1.
 * **Sub-case A.A:** Both transcripts are *constants* in `gS'`. Disagreement is 0 or 1.
 
 The plain disagreement-mass slack `ε` does NOT match the call-site shapes (it's either too loose
-or trivially 0/1). The **cacheBad refactor** bypasses this by replacing the per-`gS` pointwise
+or trivially 0/1). The `cacheBad` refactor bypasses this by replacing the per-`gS` pointwise
 agreement requirement with the structural observation that an auth-equality `t.auth = gS(cell)`
 for a slot-positive cell exactly matches the `cacheBadReader` predicate, whose AVERAGED mass
 over `gS ← $ᵗ` is `|TagId| * sessionsPerTag / |Digest|` (proved as `probEvent_cacheBadReader_uniformSample_le`
-in EagerSetup.lean:398).
-
-This helper is therefore a **scaffold for the cacheBad refactor**, not a direct closer of the
-sorry above: it isolates the disagreement-mass component into an explicit hypothesis so the
-remaining gap is precisely the call-site bound `Pr[t.auth = gS(cell)] ≤ |TagId|*sessionsPerTag/|Digest|`.
-The unconditional helper above will close once the three call sites supply this disagreement
-hypothesis via the cacheBad infrastructure. -/
+in EagerSetup.lean). -/
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 lemma slotPositive_trace_union_residue_with_slack [Fintype Nonce] [Fintype Digest]
     (advM : UnlinkState TagId) (tag : TagId)
@@ -661,119 +558,6 @@ lemma caseB_disagreement_mass [Fintype Nonce] [Fintype Digest]
   -- Any probability is ≤ 1; this trivial bound is the right one because the disagreement
   -- mass for Case-B transcripts is structurally large (≈ 1 for large |Digest|).
   exact probEvent_le_one
-
-/-! ### Reader-step residue (cross-file Option-6 blocker)
-
-The reader-step case of the eager direct-coupling induction reduces (after the deterministic
-M-bad / S handler unfolds for `Sum.inr transcript`) to the inequality below: the M-bad
-acceptance probability at the head reader query is bounded by the S acceptance probability
-plus the bad-mass + the three additive slacks. Mirrors the slot-positive helper
-`slotPositive_trace_union_residue`, but for the reader branch.
-
-The structural obstruction (documented in detail at the reader-step sorry site within the
-aux below) is the D-mass bound for the M-reject / S-accept flip event under the multi-cell
-lazification: the workhorse `probEvent_idealCacheMapM_mem_le` excludes the "pre-cached auth
-cell" case, which a slot-positive tag query can pollute. The Option-6 `cacheBad` refactor
-absorbs this polluting-cell mass into a separate bad-state term, mirroring how `Pr[bad]`
-already absorbs the tag-side nonce-collision mass.
-
-**Cross-file blocker.** Discharging this residue requires the Option-6 cacheBad refactor
-(same one as `slotPositive_trace_union_residue`).
-
-**Status (post iter-26).** Upstream infrastructure has LANDED in
-`Examples/PRFTagReader/MultipleToHybrid/EagerSetup.lean` (see the status block on
-`slotPositive_trace_union_residue` for the inventory). The remaining gap to close this
-helper is the SAME aux-handler-swap from `multipleBadTableHandler g` to
-`multipleBadTableHandlerFine g gFine` — once the aux is re-stated against the Fine handler
-with an outer `gFine ← $ᵗ`, the reader-step D-mass residue absorbs into the
-`Pr[multipleBadTableHandlerFine ⋯ z.2.2.cacheBad]` slack via
-`simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`. -/
-lemma readerStep_trace_union_residue [Fintype Nonce] [Fintype Digest]
-    (s : UnlinkState TagId)
-    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
-    (sB : UnlinkBadState TagId Nonce Digest)
-    (transcript : TagTranscript Nonce Digest)
-    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript) →
-      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
-    (qR' qT : ℕ)
-    (_hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR')
-    (_hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT)
-    (_ih : ∀ (u : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript))
-        (qR qT : ℕ) (s : UnlinkState TagId)
-        (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
-        (sB : UnlinkBadState TagId Nonce Digest),
-        OracleComp.IsQueryBoundP (k u) (·.isRight) qR →
-        OracleComp.IsQueryBoundP (k u) (·.isLeft) qT →
-        Pr[= true | do
-            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
-              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
-                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
-                  (OracleComp.tableExtending c gS))) (k u)).run (s, sB)] ≤
-          Pr[= true | do
-            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)) (k u)).run' s] +
-          Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
-            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
-                (z.1, z.2.2)) <$>
-              (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
-                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
-                  (OracleComp.tableExtending c gS))) (k u)).run (s, sB)] +
-          ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-          ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
-          ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-            (Fintype.card Digest : ℝ≥0∞) +
-          ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-            (Fintype.card Digest : ℝ≥0∞)) :
-    Pr[= true | do
-        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
-          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
-            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
-              (OracleComp.tableExtending c gS)))
-                ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _) >>= k)).run
-            (s, sB)] ≤
-      Pr[= true | do
-        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
-            ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _)
-              >>= k)).run' s] +
-      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | do
-        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
-        (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
-            (z.1, z.2.2)) <$>
-          (simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
-            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
-            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
-              (OracleComp.tableExtending c gS)))
-                ((liftM (OracleSpec.query (Sum.inr transcript)) : OracleComp _ _)
-                  >>= k)).run (s, sB)] +
-      (((qR' + 1) * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      (((qR' + 1) * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
-      (((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) +
-      ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) := by
-  -- **Cross-file Option-6 cacheBad blocker.** See module docstring above and the
-  -- reader-step Phase C plan within `multipleBadEager_le_singleEager_DC_aux` for the
-  -- structural obstruction (D-mass bound on the M-reject / S-accept flip under multi-cell
-  -- lazification — the workhorse `probEvent_idealCacheMapM_mem_le` excludes the
-  -- pre-cached auth cell case, which slot-positive tag queries can pollute).
-  --
-  -- **Counterexample (why the inequality is currently false).** Construct a tag-side path that
-  -- caches `((tag, slotK), n) ↦ d` for some slot `slotK ≠ 0` and digest `d`, then issue a
-  -- reader query at `transcript.auth = d`. The M-bad branch rejects (M's reader checks only
-  -- slot-0 cells), but S accepts (S's reader walks all slots). The acceptance gap is
-  -- *not* in the bad set (no nonce collision), so the inequality fails by exactly
-  -- `qR · |TagId| · sessionsPerTag / |Digest|` worth of mass. The cross-file refactor adds a
-  -- `+ Pr[cacheBad]` term absorbing this gap.
-  sorry
 
 /-! ### Eager-form direct-coupling aux
 
@@ -1646,9 +1430,9 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         · exact_mod_cast Nat.le_succ _
         · exact_mod_cast Nat.le_succ _
     | inr transcript =>
-      -- Phase 9.5: reader query. Helper `readerStep_trace_union_residue` is itself swapped to
-      -- the Fine handler so that the slot-positive `cacheBadReader gFine` mass closes the
-      -- M-rejects/S-accepts gap.
+      -- Phase 9.5: reader query under the Fine handler. The slot-positive `cacheBadReader gFine`
+      -- mass closes the M-rejects/S-accepts gap once the per-step Fine/coarse bridge lemma is
+      -- threaded — see the Stage 9 plan in the module header.
       sorry
 
 end UnlinkReduction
