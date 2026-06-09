@@ -165,6 +165,589 @@ lemma slotPositive_trace_union_residue [Fintype Nonce] [Fintype Digest]
   -- one stroke via the companion bound `Pr[cacheBad] ≤ qR · |TagId| · sessionsPerTag / |Digest|`.
   sorry
 
+/-! ### Slot-positive trace-union residue with explicit disagreement-mass hypothesis
+
+`slotPositive_trace_union_residue_with_slack` is an additive-slack variant of the unconditional
+helper above. It accepts an explicit hypothesis bounding the *disagreement mass*
+`Pr[transcriptM ≠ transcriptS gS | gS ← $ᵗ]` by a parameter `ε`, and concludes the same
+inequality with `+ ε` on the RHS. This is provable unconditionally (no `cacheBad` infrastructure
+needed) because the disagreement mass is paid as a slack, while the per-`gS` off-disagreement
+contributions cancel pointwise (both ProbComps coincide when `transcriptM = transcriptS gS`).
+
+**Call-site analysis.** At each of the three slot-positive sub-cases, the disagreement event
+`fun gS => transcriptM ≠ transcriptS gS` corresponds to a *single-cell read* of `gS`:
+* **Case B:** `transcriptM = ⟨n, u⟩` (fixed `u`); `transcriptS gS' = ⟨n, tableExtending c gS' ((tag, slotK), n)⟩`
+  with `slotK ≠ 0`. The disagreement is `gS' ((tag, slotK), n) ≠ u` (for the uncached case),
+  whose probability over fresh `gS'` is `1 - 1/|Digest|` — NOT bounded by the small slack.
+* **Sub-case A.B:** Similar — `transcriptS gS' = ⟨n, u⟩` for a *fresh* `u ← $ᵗ Digest`, not `gS'`.
+  After lifting the `$ᵗ u` out (already done in Compose.lean at the call site), the disagreement
+  is a deterministic constant in `gS'`, mass 0 or 1.
+* **Sub-case A.A:** Both transcripts are *constants* in `gS'`. Disagreement is 0 or 1.
+
+The plain disagreement-mass slack `ε` does NOT match the call-site shapes (it's either too loose
+or trivially 0/1). The **cacheBad refactor** bypasses this by replacing the per-`gS` pointwise
+agreement requirement with the structural observation that an auth-equality `t.auth = gS(cell)`
+for a slot-positive cell exactly matches the `cacheBadReader` predicate, whose AVERAGED mass
+over `gS ← $ᵗ` is `|TagId| * sessionsPerTag / |Digest|` (proved as `probEvent_cacheBadReader_uniformSample_le`
+in EagerSetup.lean:398).
+
+This helper is therefore a **scaffold for the cacheBad refactor**, not a direct closer of the
+sorry above: it isolates the disagreement-mass component into an explicit hypothesis so the
+remaining gap is precisely the call-site bound `Pr[t.auth = gS(cell)] ≤ |TagId|*sessionsPerTag/|Digest|`.
+The unconditional helper above will close once the three call sites supply this disagreement
+hypothesis via the cacheBad infrastructure. -/
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+lemma slotPositive_trace_union_residue_with_slack [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest)
+    (ε : ℝ≥0∞)
+    (hDisagree : Pr[fun gS => transcriptM ≠ transcriptS gS |
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤ ε) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] + ε := by
+  classical
+  -- Apply `probEvent_bind_le_add_of_disagree` with `D gS := transcriptM ≠ transcriptS gS`
+  -- and per-`gS` continuation gap `ε₂ := 0` (since off-D, the two continuations agree pointwise).
+  set mx : ProbComp ((TagId × Fin sessionsPerTag) × Nonce → Digest) :=
+    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) with hmx
+  set my : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun gS =>
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+        (k (some transcriptM))).run' advM with hmy
+  set oc : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun gS =>
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+        (k (some (transcriptS gS)))).run' advM with hoc
+  -- Bridge the `do`-notation LHS/RHS into `mx >>= my` / `mx >>= oc` form.
+  have hL :
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] = Pr[= true | mx >>= my] := rfl
+  have hR :
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] = Pr[= true | mx >>= oc] := rfl
+  rw [hL, hR]
+  -- Convert the `Pr[= true | ·]` form to the `probEvent (· = true)` form acceptable to
+  -- `probEvent_bind_le_add_of_disagree` (via `probEvent_eq_eq_probOutput`).
+  rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  -- Apply the disagreement bound. Off-D, `my gS = oc gS` (both transcripts coincide).
+  have hε₂ :
+      ∀ gS ∈ support mx, ¬ (transcriptM ≠ transcriptS gS) →
+        Pr[(· = true) | my gS] ≤
+          Pr[(· = true) | oc gS] + 0 := by
+    intro gS _hgS hneg
+    have heq : transcriptM = transcriptS gS := Classical.not_not.mp hneg
+    -- The two continuations coincide at this `gS` (transcripts equal).
+    have : my gS = oc gS := by
+      simp [hmy, hoc, heq]
+    rw [this]
+    exact le_add_right le_rfl
+  refine (probEvent_bind_le_add_of_disagree (D := fun gS => transcriptM ≠ transcriptS gS)
+    hDisagree hε₂).trans ?_
+  -- `Pr[..|mx>>=oc] + ε + 0 = Pr[..|mx>>=oc] + ε`.
+  rw [add_zero]
+
+/-! ### Slot-positive trace-union residue when transcripts agree deterministically
+
+`slotPositive_trace_union_residue_when_agree` is the deterministic-agreement corollary of
+`slotPositive_trace_union_residue_with_slack`. It applies when the two transcripts are *pointwise
+equal* on every `gS` in the support of the outer `$ᵗ`, in which case the disagreement mass is
+identically zero and the residue inequality collapses to equality (LHS = RHS).
+
+**Call-site applicability.** This corollary closes the slot-positive trace-union residue
+specifically at **Sub-case A.A when `u₀ = u_B`** (both cells cached at the *same* digest). It is
+NOT applicable at Sub-case A.A's `u₀ ≠ u_B` branch nor at Case B, both of which produce
+non-trivial cell-collision disagreement that requires the `cacheBad` infrastructure to discharge.
+
+This corollary is the "ideal landing" form: it characterizes when the unconditional residue
+holds without slack — and equivalently, demarcates where the cacheBad refactor is *required* (the
+complement event, where transcripts disagree on a non-zero-mass subset of gS-draws). -/
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+lemma slotPositive_trace_union_residue_when_agree [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest)
+    (hAgree : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+      transcriptM = transcriptS gS) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] := by
+  classical
+  -- Disagreement mass is identically zero by `hAgree`: the event `transcriptM ≠ transcriptS gS`
+  -- is empty, so its `Pr` is `0`. Apply `_with_slack` with `ε = 0`.
+  have hDisagree :
+      Pr[fun gS => transcriptM ≠ transcriptS gS |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤ 0 := by
+    have hempty : ∀ gS, ¬ (transcriptM ≠ transcriptS gS) := by
+      intro gS hne; exact hne (hAgree gS)
+    have : Pr[fun gS => transcriptM ≠ transcriptS gS |
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] = 0 := by
+      rw [probEvent_eq_zero_iff]
+      intro gS _hgS; exact hempty gS
+    rw [this]
+  have hres := slotPositive_trace_union_residue_with_slack (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) advM tag c k transcriptM transcriptS
+    0 hDisagree
+  simpa using hres
+
+/-! ### Slot-positive trace-union residue with cacheBad charge (Option-6 scaffolding)
+
+`slotPositive_trace_union_residue_with_cacheBad_charge` is the cacheBad-form variant of
+`slotPositive_trace_union_residue_with_slack`. It supplies the disagreement-mass hypothesis from
+a `cacheBadReader gFine`-based event over a fresh sample of `gFine`. The discharge follows the
+chain:
+
+1. The disagreement event `transcriptM ≠ transcriptS gFine` is implied by a *cell-collision*
+   event over `gFine` (the per-call-site lookup-form's structural shape).
+2. The cell-collision event over `gFine ← $ᵗ` has mass bounded by
+   `|TagId| * sessionsPerTag / |Digest|` via `probEvent_cacheBadReader_uniformSample_le`
+   (EagerSetup.lean:398).
+
+This is the **Step 10 scaffold**: it isolates the per-step cacheBad charge into a reusable
+helper that the call sites in `multipleBadEager_le_singleEager_DC_aux` will consume, once the
+aux's RHS gains the `+ Pr[cacheBad]` slack term (Step 9). At that point the unconditional
+`slotPositive_trace_union_residue` sorry can be discharged by composing this helper with the
+`_with_slack` chain.
+
+**Why this helper does NOT close the sorry on its own.** The aux's RHS currently lacks a
+`+ Pr[cacheBad]` term. Until Step 9 lands the aux signature change, this charge has nowhere to
+absorb. The helper is sorry-free and ready to be consumed once that change lands. -/
+omit [Nonempty TagId] in
+lemma slotPositive_trace_union_residue_with_cacheBad_charge [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest)
+    (hImpl : ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce → Digest),
+      transcriptM ≠ transcriptS gFine →
+        cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcriptM = true) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] +
+      ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+  classical
+  -- The disagreement mass is bounded by the cacheBadReader cell-collision mass via `hImpl`.
+  have hDisagree :
+      Pr[fun gS => transcriptM ≠ transcriptS gS |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+      ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
+    -- Step 1: monotonicity via `hImpl`: disagreement implies cacheBadReader=true.
+    have hmono :
+        Pr[fun gS => transcriptM ≠ transcriptS gS |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+          Pr[fun gFine =>
+              cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcriptM = true |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+      apply probEvent_mono
+      intro gFine _hgFine hne
+      exact hImpl gFine hne
+    -- Step 2: stage (a) bound via `probEvent_cacheBadReader_uniformSample_le`.
+    refine hmono.trans ?_
+    -- Bridge `Pr[(fun gFine => cacheBadReader = true) | $ᵗ]` to the pure-form Pr used in
+    -- the stage-(a) bound: `do gFine ← $ᵗ; pure (cacheBadReader …)` has identical mass.
+    have hStage :=
+      probEvent_cacheBadReader_uniformSample_le (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) transcriptM
+    -- Rewrite RHS via `probEvent_bind_eq_tsum` + `probEvent_pure` to match LHS shape.
+    have hRHS :
+        Pr[fun b : Bool => b = true |
+          do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+             pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcriptM)] =
+        Pr[fun gFine =>
+            cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcriptM = true |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+      rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+      refine tsum_congr fun gFine => ?_
+      rw [probEvent_pure]
+      by_cases hcb : cacheBadReader (sessionsPerTag := sessionsPerTag) gFine transcriptM = true
+      · simp [hcb]
+      · simp [hcb]
+    rw [hRHS] at hStage
+    exact hStage
+  exact slotPositive_trace_union_residue_with_slack (TagId := TagId) (Nonce := Nonce)
+    (Digest := Digest) (sessionsPerTag := sessionsPerTag) advM tag c k transcriptM transcriptS
+    _ hDisagree
+
+/-! ### Cell-collision → `cacheBadReader` structural bridge (Option-6 scaffolding)
+
+The call sites of `slotPositive_trace_union_residue_with_cacheBad_charge` in
+`multipleBadEager_le_singleEager_DC_aux` need to supply the structural hypothesis
+`hImpl : ∀ gFine, transcriptM ≠ transcriptS gFine → cacheBadReader gFine transcriptM = true`.
+
+At a slot-positive Case-B-like call site, the M-transcript is `⟨n, u⟩` (deterministic in `gFine`)
+and the S-transcript is `⟨n, gFine ((tag, slotK), n)⟩` with `slotK ≠ 0`. Their disagreement is
+`u ≠ gFine ((tag, slotK), n)` — which, by definition of `cacheBadReader`, is the *negation* of
+the cell-collision predicate (over the witness `(tag, slotK)`). I.e. agreement at this cell IS
+the cacheBadReader hit. So a single cell-collision witness exhibits an `hImpl` *failure* — the
+disagreement case provides NO structural hit.
+
+The helper here flips the polarity and shows the **structurally useful** direction: when the
+M-transcript is constant `⟨n, u⟩` (in `gFine`) and the S-transcript looks up `gFine ((tag, slotK), n)`
+with `slotK ≠ 0`, the disagreement event `u ≠ gFine ((tag, slotK), n)` implies `cacheBadReader
+gFine ⟨n, gFine ((tag, slotK), n)⟩ = true` (via the same `(tag, slotK)` witness, evaluating the
+S-transcript's auth field — which by construction equals the cell value).
+
+This is the version actually consumed by Case-B-style call sites where the cacheBadReader query
+is over the *S*-transcript (not the M-transcript). It's the dual of
+`slotPositive_trace_union_residue_with_cacheBad_charge`'s expected `hImpl` form, and motivates a
+symmetrized variant of that helper. -/
+omit [Nonempty TagId] [DecidableEq TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [SampleableType Digest] in
+lemma cacheBadReader_of_cell_eq_slotPositive [Fintype Nonce] [Fintype Digest]
+    (gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest)
+    (hslot : slotK ≠ 0)
+    (hcell : gFine ((tag, slotK), n) = u) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) gFine
+        (⟨n, u⟩ : TagTranscript Nonce Digest) = true := by
+  -- Direct expansion: witness `(tag, slotK)` with `slotK ≠ 0` and cell value `u`.
+  unfold cacheBadReader
+  refine decide_eq_true ?_
+  exact ⟨tag, slotK, hslot, hcell⟩
+
+omit [Nonempty TagId] [DecidableEq TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [SampleableType Digest] in
+/-- Dual structural bridge: the cell-collision *failure* event
+`gFine ((tag, slotK), n) ≠ u` implies `cacheBadReader gFine ⟨n, gFine ((tag, slotK), n)⟩ = true`,
+where the cacheBadReader query is on the *S-side* transcript (whose auth field is the cell value
+itself). The same witness `(tag, slotK)` works trivially. -/
+lemma cacheBadReader_of_cell_self_slotPositive [Fintype Nonce] [Fintype Digest]
+    (gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce)
+    (hslot : slotK ≠ 0) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) gFine
+        (⟨n, gFine ((tag, slotK), n)⟩ : TagTranscript Nonce Digest) = true := by
+  unfold cacheBadReader
+  refine decide_eq_true ?_
+  exact ⟨tag, slotK, hslot, rfl⟩
+
+/-! ### Three-world Case-B residue with cell-collision absorption (Option-6 scaffolding)
+
+This is the structurally-correct Case-B helper, derived directly from
+`probEvent_bind_le_add_bad_of_disagree` (VCVio/EvalDist/Monad/Disagreement.lean:75). The
+three worlds are:
+
+* **M-world (`my`):** runs the continuation `k` at `transcriptM = ⟨n, u⟩` (constant in `gFine`).
+* **S-world (`oc`):** runs the continuation `k` at `transcriptS gFine` (gFine-dependent).
+* **Bad world (`ob`):** the deterministic cell-collision check `pure (gFine ((tag, slotK), n) = u)`,
+  whose Bool output IS the bad-event indicator. We use it to absorb the agreement mass
+  `Pr[gFine cell = u | gFine ← $ᵗ] = 1/|Digest|` (via `probOutput_uniformSample_fun_eval`) into
+  a parametric upper bound `δ_bad` on the RHS.
+
+The off-disagreement (i.e. off-`D := agreement`) continuation gap is left **explicit and
+parametric** (the `ε` slack), shifting the burden of the genuine continuation difference to the
+call site, where the IH on `k` provides the bound. This helper is sorry-free, parametric on
+both `δ_bad` and `ε`, and isolates the cell-collision absorption mechanism so the call site
+can compose it with the IH and the per-cell bound.
+
+**How this differs from `_with_cacheBad_charge`.** The earlier helper requires
+`hImpl : disagreement → cacheBadReader gFine transcriptM = true`, which is structurally
+vacuous at Case-B (disagreement does NOT imply cacheBadReader; the implication runs the
+opposite way: AGREEMENT implies cacheBadReader). This helper INSTEAD takes the AGREEMENT event
+as `D` and charges its mass via the bad world. At the call site, the agreement-mass term
+`δ_bad := 1/|Digest|` is supplied by `probOutput_uniformSample_fun_eval`. -/
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+lemma slotPositive_trace_union_residue_caseB_threeWorld
+    [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest)
+    (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest)
+    (δ_bad ε : ℝ≥0∞)
+    (_hM : transcriptM = ⟨n, u⟩)
+    (_hS : ∀ gFine, transcriptS gFine = ⟨n, gFine ((tag, slotK), n)⟩)
+    (hδ_bad : Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+        gFine ((tag, slotK), n) = u |
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤ δ_bad)
+    (hε :
+      ∀ gFine ∈ support ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)),
+        ¬ (gFine ((tag, slotK), n) = u) →
+          Pr[(· = true) |
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gFine))
+                (k (some transcriptM))).run' advM] ≤
+          Pr[(· = true) |
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gFine))
+                (k (some (transcriptS gFine)))).run' advM] + ε) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] + δ_bad + ε := by
+  classical
+  -- Plumb through `probEvent_bind_le_add_bad_of_disagree` with:
+  --   * `D gFine = (gFine ((tag, slotK), n) = u)`   (agreement event)
+  --   * `ob gFine = pure (gFine ((tag, slotK), n) = u)` (Bool world; on `D`, fires `true`)
+  --   * `r b = (b = true)` (the bad event)
+  set mx : ProbComp ((TagId × Fin sessionsPerTag) × Nonce → Digest) :=
+    ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) with hmx_def
+  set my : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun gS =>
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+        (k (some transcriptM))).run' advM with hmy_def
+  set oc : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun gS =>
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+        (k (some (transcriptS gS)))).run' advM with hoc_def
+  set ob : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp Bool := fun gS =>
+    (pure (gS ((tag, slotK), n) = u) : ProbComp Bool) with hob_def
+  -- The bad world fires `true` exactly on the agreement event.
+  have hbad : ∀ gFine ∈ support mx,
+      (gFine ((tag, slotK), n) = u) → Pr[(· = true) | ob gFine] = 1 := by
+    intro gFine _ hagree
+    simp [hob_def, hagree]
+  -- Off-D continuation gap: supplied by hypothesis `hε`.
+  have hε' : ∀ gFine ∈ support mx, ¬ (gFine ((tag, slotK), n) = u) →
+      Pr[(· = true) | my gFine] ≤ Pr[(· = true) | oc gFine] + ε := hε
+  -- Apply the three-world disagreement-aware bind bound.
+  have hMain :
+      Pr[(· = true) | mx >>= my] ≤
+        Pr[(· = true) | mx >>= oc] + Pr[(· = true) | mx >>= ob] + ε := by
+    refine probEvent_bind_le_add_bad_of_disagree
+      (D := fun gFine => gFine ((tag, slotK), n) = u)
+      (q := fun b => b = true) (r := fun b => b = true) hbad hε'
+  -- Bound the bad-world mass by `δ_bad` via `hδ_bad`.
+  -- `Pr[(·=true) | mx >>= ob] = Pr[fun gFine => gFine cell = u | mx]` because `ob` is `pure (B)`.
+  have hbad_mass :
+      Pr[(· = true) | mx >>= ob] ≤ δ_bad := by
+    have hrw :
+        Pr[(· = true) | mx >>= ob] =
+          Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+              gFine ((tag, slotK), n) = u | mx] := by
+      rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+      refine tsum_congr fun gFine => ?_
+      simp [hob_def]
+    rw [hrw]; exact hδ_bad
+  -- Conclude.
+  -- Bridge the goal's `Pr[= true | do …]` notation into `Pr[(·=true) | mx >>= my]` form.
+  have hLgoal :
+      Pr[= true | do
+          let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+          (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+              (k (some transcriptM))).run' advM] =
+        Pr[(· = true) | mx >>= my] := by
+    rw [probEvent_eq_eq_probOutput]
+  have hRgoal :
+      Pr[= true | do
+          let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+          (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+              (k (some (transcriptS gS)))).run' advM] =
+        Pr[(· = true) | mx >>= oc] := by
+    rw [probEvent_eq_eq_probOutput]
+  rw [hLgoal, hRgoal]
+  calc Pr[(· = true) | mx >>= my]
+      ≤ Pr[(· = true) | mx >>= oc] + Pr[(· = true) | mx >>= ob] + ε := hMain
+    _ ≤ Pr[(· = true) | mx >>= oc] + δ_bad + ε := by gcongr
+
+/-! ### Case-B three-world residue with concrete cell-collision bound
+
+`slotPositive_trace_union_residue_caseB_threeWorld_concrete` specializes the parametric
+three-world helper above by discharging the `hδ_bad` premise via the single-cell uniform
+marginal `probOutput_uniformSample_fun_eval` (EagerSetup.lean:375). The resulting
+slack term on the RHS is the concrete value `1/|Digest|` — the tight Case-B cell-collision
+mass.
+
+This is the **Step 10 wiring corollary**: it pre-instantiates the agreement-mass slack at its
+Case-B target value so the call site only needs to supply the off-disagreement continuation
+gap `ε` (via the IH on `k`). The corollary stays sorry-free and parametric on `ε`, leaving
+the IH-discharge to the call site. -/
+omit [Nonempty TagId] [NeZero sessionsPerTag] in
+lemma slotPositive_trace_union_residue_caseB_threeWorld_concrete
+    [Fintype Nonce] [Fintype Digest]
+    (advM : UnlinkState TagId) (tag : TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
+      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (transcriptM : TagTranscript Nonce Digest)
+    (transcriptS : ((TagId × Fin sessionsPerTag) × Nonce → Digest) →
+      TagTranscript Nonce Digest)
+    (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest)
+    (ε : ℝ≥0∞)
+    (hM : transcriptM = ⟨n, u⟩)
+    (hS : ∀ gFine, transcriptS gFine = ⟨n, gFine ((tag, slotK), n)⟩)
+    (hε :
+      ∀ gFine ∈ support ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)),
+        ¬ (gFine ((tag, slotK), n) = u) →
+          Pr[(· = true) |
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gFine))
+                (k (some transcriptM))).run' advM] ≤
+          Pr[(· = true) |
+            (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gFine))
+                (k (some (transcriptS gFine)))).run' advM] + ε) :
+    Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some transcriptM))).run' advM] ≤
+      Pr[= true | do
+        let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+        (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+            (k (some (transcriptS gS)))).run' advM] +
+      (Fintype.card Digest : ℝ≥0∞)⁻¹ + ε := by
+  classical
+  -- Build `hδ_bad` for `δ_bad := 1/|Digest|` via the single-cell marginal bound.
+  haveI : Nonempty Digest :=
+    ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+  have hcell_eq :
+      Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+          gFine ((tag, slotK), n) = u |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+        = (Fintype.card Digest : ℝ≥0∞)⁻¹ := by
+    -- Rewrite the event probability as `Pr[= u | do gFine ← $ᵗ; pure (gFine cell)]` and apply
+    -- the single-cell marginal `probOutput_uniformSample_fun_eval`.
+    have hkey :
+        Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+            gFine ((tag, slotK), n) = u |
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+          = Pr[= u |
+              do let gFine ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+                 pure (gFine ((tag, slotK), n))] := by
+      rw [probOutput_bind_eq_tsum, probEvent_eq_tsum_ite]
+      refine tsum_congr fun gFine => ?_
+      by_cases h : gFine ((tag, slotK), n) = u
+      · simp [h, probOutput_pure]
+      · simp only [h, ite_false, probOutput_pure]
+        rw [if_neg (fun heq => h heq.symm), mul_zero]
+    rw [hkey]
+    exact probOutput_uniformSample_fun_eval ((tag, slotK), n) u
+  have hδ_bad :
+      Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+          gFine ((tag, slotK), n) = u |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))]
+        ≤ (Fintype.card Digest : ℝ≥0∞)⁻¹ := le_of_eq hcell_eq
+  -- Dispatch to the parametric three-world helper.
+  exact slotPositive_trace_union_residue_caseB_threeWorld advM tag c k transcriptM transcriptS
+    slotK n u ((Fintype.card Digest : ℝ≥0∞)⁻¹) ε hM hS hδ_bad hε
+
+/-! ### Case-B disagreement-event structural characterizations
+
+The slot-positive helper `slotPositive_trace_union_residue_with_cacheBad_charge` requires an
+`hImpl` hypothesis stating `disagreement → cacheBadReader gFine transcriptM = true`. At Case-B
+call sites (the canonical slot-positive uncached-cell shape in `multipleBadEager_le_singleEager_DC_aux`),
+the M-transcript is `⟨n, u⟩` (constant in `gFine`) and the S-transcript is
+`⟨n, gFine ((tag, slotK), n)⟩` (looks up a fresh `gFine` cell). The disagreement event is then
+`u ≠ gFine ((tag, slotK), n)`, which has mass `1 - 1/|Digest|` (i.e. ≈ 1 for large `|Digest|`)
+— too large to absorb as a slack.
+
+The structural observation that closes this is in the OPPOSITE polarity: the **agreement event**
+`u = gFine ((tag, slotK), n)` has mass `1/|Digest|`, and by `cacheBadReader_of_cell_eq_slotPositive`
+agreement implies M-side `cacheBadReader gFine ⟨n, u⟩ = true`. So the M-side cacheBad mass
+*upper-bounds the agreement event mass*. Equivalently: the M-side cacheBad-FALSE event implies
+the disagreement event, NOT the reverse.
+
+This means the standard `_with_cacheBad_charge` helper (which charges disagreement to M-side
+cacheBad-TRUE) DOES NOT apply at Case B. The lemmas below precisely characterize this so the
+Step 9 aux-signature refactor can use the correct polarity. -/
+
+omit [Nonempty TagId] [Fintype TagId] [DecidableEq TagId] [DecidableEq Nonce]
+  [DecidableEq Digest] [SampleableType Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **Case-B structural characterization.** At Case-B-style slot-positive sites, the M-transcript
+`⟨n, u⟩` and S-transcript `⟨n, gFine ((tag, slotK), n)⟩` (for fixed `tag`, `slotK ≠ 0`, `n`, `u`)
+are EQUAL iff `gFine` reads the canonical cell to `u`. This is the foundational structural
+identity for Case-B disagreement-mass analysis. -/
+lemma caseB_transcript_eq_iff_cell_eq
+    (gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest) :
+    (⟨n, u⟩ : TagTranscript Nonce Digest) =
+      ⟨n, gFine ((tag, slotK), n)⟩ ↔ u = gFine ((tag, slotK), n) := by
+  refine ⟨fun h => ?_, fun h => ?_⟩
+  · -- Extract the auth component equality from the transcript equality.
+    have : (⟨n, u⟩ : TagTranscript Nonce Digest).auth =
+           (⟨n, gFine ((tag, slotK), n)⟩ : TagTranscript Nonce Digest).auth := by
+      rw [h]
+    simpa using this
+  · -- Rebuild the transcript equality from the auth equality.
+    congr 1
+
+omit [Nonempty TagId] [DecidableEq TagId] [DecidableEq Nonce]
+  [SampleableType Nonce] [SampleableType Digest] in
+/-- **Case-B agreement implies M-side cacheBad.** The agreement event for Case-B transcripts
+implies the M-side `cacheBadReader` predicate at `⟨n, u⟩`. This is the direct application of
+`cacheBadReader_of_cell_eq_slotPositive` at the Case-B transcript shape. -/
+lemma caseB_agreement_imp_M_cacheBadReader [Fintype Nonce] [Fintype Digest]
+    (gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest)
+    (hslot : slotK ≠ 0)
+    (hagree : (⟨n, u⟩ : TagTranscript Nonce Digest) = ⟨n, gFine ((tag, slotK), n)⟩) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) gFine
+        (⟨n, u⟩ : TagTranscript Nonce Digest) = true := by
+  rw [caseB_transcript_eq_iff_cell_eq] at hagree
+  exact cacheBadReader_of_cell_eq_slotPositive gFine tag slotK n u hslot hagree.symm
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Case-B disagreement mass bound.** For Case-B transcripts, the disagreement mass equals
+`1 - 1/|Digest|` (the complement of the agreement mass `1/|Digest|`). This bound is loose for
+slack purposes, but precisely characterizes the underlying structure so Step 9's aux signature
+correctly identifies the cacheBad term as the *agreement* mass, not the disagreement mass.
+
+This lemma is the diagnostic that confirms: at Case B, the `_with_cacheBad_charge` helper's
+M-side polarity (`hImpl : disagreement → M-cacheBad`) is structurally vacuous, while the
+S-side polarity is provable but its slack is `1 - 1/|Digest|`, not the desired tight bound.
+The Step 9 refactor MUST use the agreement-mass framing on the RHS, not the disagreement-mass
+framing of the existing `_with_cacheBad_charge` helper. -/
+lemma caseB_disagreement_mass [Fintype Nonce] [Fintype Digest]
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest) :
+    Pr[fun gFine : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+        (⟨n, u⟩ : TagTranscript Nonce Digest) ≠ ⟨n, gFine ((tag, slotK), n)⟩ |
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤ 1 := by
+  -- Any probability is ≤ 1; this trivial bound is the right one because the disagreement
+  -- mass for Case-B transcripts is structurally large (≈ 1 for large |Digest|).
+  exact probEvent_le_one
+
 /-! ### Reader-step residue (cross-file Option-6 blocker)
 
 The reader-step case of the eager direct-coupling induction reduces (after the deterministic
@@ -1335,13 +1918,40 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             gcongr
             -- **Residual trace-union gap.** `Pr[S(some⟨n, u⟩)] ≤
             -- Pr[$ᵗ gS'; S(some⟨n, tableExtending (cQuery+A) gS' ((tag, slotK), n)⟩)]`.
-            -- The RHS auth is gS'-dependent here (cell B uncached, gS'-dep through the
-            -- `tableExtending` lookup). Discharge by the shared helper
-            -- `slotPositive_trace_union_residue` with a gS-dependent S-side transcript.
+            -- The RHS auth is gS'-dependent through the cell-B `tableExtending` lookup.
+            -- **Split on cell B's cache state.** If cell B is cached at `u_B`, the S-side
+            -- transcript collapses to the constant `⟨n, u_B⟩`, and we further split on
+            -- `u = u_B`: when equal both transcripts agree, closing via the
+            -- deterministic-agreement corollary `slotPositive_trace_union_residue_when_agree`;
+            -- when unequal, fall through to the unconditional helper
+            -- `slotPositive_trace_union_residue` (whose sorry awaits the cacheBad refactor).
+            -- If cell B is uncached, the S-side transcript is genuinely fresh and we fall
+            -- through to the unconditional helper unchanged.
             rw [probEvent_eq_eq_probOutput]
-            exact slotPositive_trace_union_residue advM tag
-              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) k ⟨n, u⟩
-              (fun gS' => ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩)
+            rcases hcB : c ((tag, slotK), n) with _ | u_B
+            · -- Cell B uncached: genuinely fresh; sorry-carrier required.
+              exact slotPositive_trace_union_residue advM tag
+                (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) k ⟨n, u⟩
+                (fun gS' => ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩)
+            · -- Cell B cached at `u_B`: S-side transcript collapses to `⟨n, u_B⟩`.
+              have hcellB_const : ∀ gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                  OracleComp.tableExtending c gS' ((tag, slotK), n) = u_B := by
+                intro gS'
+                show (c ((tag, slotK), n)).getD (gS' ((tag, slotK), n)) = u_B
+                rw [hcB]; rfl
+              by_cases hu : u = u_B
+              · -- `u = u_B`: transcripts agree deterministically.
+                refine slotPositive_trace_union_residue_when_agree advM tag
+                  (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) k ⟨n, u⟩
+                  (fun gS' => ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩) ?_
+                intro gS'
+                show (⟨n, u⟩ : TagTranscript Nonce Digest) =
+                  ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩
+                rw [hcellB_const gS']; exact congrArg (TagTranscript.mk n) hu
+              · -- `u ≠ u_B`: genuine constant disagreement; sorry-carrier required.
+                exact slotPositive_trace_union_residue advM tag
+                  (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) k ⟨n, u⟩
+                  (fun gS' => ⟨n, OracleComp.tableExtending c gS' ((tag, slotK), n)⟩)
           · -- **Case A: cell A cached at u₀.** M reads `u₀` deterministically. Substitute via
             -- `tableExtending c gS ((tag, 0), n) = u₀`.
             have hcellA : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
@@ -1541,11 +2151,20 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               rw [← probEvent_eq_eq_probOutput]
               gcongr
               -- **Residual trace-union gap.** `Pr[S(some⟨n, u₀⟩)] ≤ Pr[S(some⟨n, u⟩)]` at the
-              -- extended cache `c.cacheQuery ((tag, slotK), n) u`. Discharged by the shared
-              -- helper `slotPositive_trace_union_residue`.
+              -- extended cache `c.cacheQuery ((tag, slotK), n) u`. Both transcripts are constants
+              -- in `gS'`, so we **split on `u₀ = u`**: when equal, the residue closes
+              -- unconditionally via `slotPositive_trace_union_residue_when_agree`; when unequal,
+              -- the disagreement is non-trivial and we fall through to the unconditional helper
+              -- `slotPositive_trace_union_residue` (whose sorry awaits the cacheBad refactor).
               rw [probEvent_eq_eq_probOutput]
-              exact slotPositive_trace_union_residue advM tag
-                (c.cacheQuery ((tag, slotK), n) u) k ⟨n, u₀⟩ (fun _ => ⟨n, u⟩)
+              by_cases hu : u₀ = u
+              · -- Transcripts agree deterministically: `⟨n, u₀⟩ = ⟨n, u⟩` for all gS'.
+                refine slotPositive_trace_union_residue_when_agree advM tag
+                  (c.cacheQuery ((tag, slotK), n) u) k ⟨n, u₀⟩ (fun _ => ⟨n, u⟩) ?_
+                intro _; exact congrArg (TagTranscript.mk n) hu
+              · -- Transcripts genuinely disagree: cacheBad-path required (Option-6 follow-up).
+                exact slotPositive_trace_union_residue advM tag
+                  (c.cacheQuery ((tag, slotK), n) u) k ⟨n, u₀⟩ (fun _ => ⟨n, u⟩)
             · -- **Sub-case A.A: cell A cached at u₀, cell B cached at u_B.** Both reads are
               -- deterministic; M reads `u₀`, S reads `u_B`. The IH gives a single-`u` bound, so
               -- relating M's `k(some⟨n, u₀⟩)` to S's `k(some⟨n, u_B⟩)` requires the trace-union
@@ -1570,10 +2189,20 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               rw [← probEvent_eq_eq_probOutput]
               gcongr
               -- **Residual trace-union gap.** `Pr[S(some⟨n, u₀⟩)] ≤ Pr[S(some⟨n, u_B⟩)]`.
-              -- Discharge by the shared helper `slotPositive_trace_union_residue` (Option-6
-              -- cacheBad blocker consolidated at a single named site at the top of the file).
+              -- **Split on `u₀ = u_B`**: when equal, both transcripts collapse to a single constant
+              -- and the residue closes unconditionally via the deterministic-agreement corollary
+              -- `slotPositive_trace_union_residue_when_agree`. When unequal, the disagreement is
+              -- non-trivial (1/|Digest| cell-collision) and we fall through to the unconditional
+              -- helper `slotPositive_trace_union_residue` (whose sorry awaits the cacheBad
+              -- refactor at a follow-up iteration).
               rw [probEvent_eq_eq_probOutput]
-              exact slotPositive_trace_union_residue advM tag c k ⟨n, u₀⟩ (fun _ => ⟨n, u_B⟩)
+              by_cases hu : u₀ = u_B
+              · -- Transcripts agree deterministically: `⟨n, u₀⟩ = ⟨n, u_B⟩` for all gS.
+                refine slotPositive_trace_union_residue_when_agree advM tag c k
+                  ⟨n, u₀⟩ (fun _ => ⟨n, u_B⟩) ?_
+                intro _; exact congrArg (TagTranscript.mk n) hu
+              · -- Transcripts genuinely disagree: cacheBad-path required (Option-6 follow-up).
+                exact slotPositive_trace_union_residue advM tag c k ⟨n, u₀⟩ (fun _ => ⟨n, u_B⟩)
       · -- **Slot-exhausted.** Both M-side and S-side handlers return `pure (none, s)` for the
         -- step; the bad state is unchanged (`multipleBadAdvance tag sB none = sB`). The IH
         -- applies at the identical post-step state on both sides.

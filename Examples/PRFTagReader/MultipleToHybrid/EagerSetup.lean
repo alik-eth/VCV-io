@@ -61,6 +61,32 @@ def cacheBadReader [Fintype TagId]
     (t : TagTranscript Nonce Digest) : Bool :=
   decide (∃ tag : TagId, ∃ sid : Fin sessionsPerTag, sid ≠ 0 ∧ T ((tag, sid), t.nonce) = t.auth)
 
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- **`cacheBadReader = true` characterization.** Unfolds the `decide` wrapper to its
+existential form, exposing the slot-positive witness used by the Step-10/11 structural bridges
+in `DirectCoupling/Compose.lean`. -/
+lemma cacheBadReader_eq_true_iff [Fintype TagId]
+    (T : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : TagTranscript Nonce Digest) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) T t = true ↔
+      ∃ tag : TagId, ∃ sid : Fin sessionsPerTag, sid ≠ 0 ∧ T ((tag, sid), t.nonce) = t.auth := by
+  unfold cacheBadReader; exact decide_eq_true_iff
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+  [SampleableType Digest] in
+/-- **`cacheBadReader = false` characterization.** No slot-positive cell at the transcript's
+nonce carries the transcript's auth. The dual of `cacheBadReader_eq_true_iff`, useful for the
+disagreement-mass arguments at slot-positive call sites in `DirectCoupling/Compose.lean`. -/
+lemma cacheBadReader_eq_false_iff [Fintype TagId]
+    (T : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (t : TagTranscript Nonce Digest) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) T t = false ↔
+      ∀ tag : TagId, ∀ sid : Fin sessionsPerTag, sid ≠ 0 → T ((tag, sid), t.nonce) ≠ t.auth := by
+  rw [← Bool.not_eq_true, cacheBadReader_eq_true_iff]
+  push_neg
+  rfl
+
 /-- Reader-step bad-state advance: OR `cacheBadReader gFine transcript` into the `cacheBad`
 flag, leaving every other field of the bad state untouched. This is the reader-side analogue of
 `multipleBadAdvance`, but mutating `cacheBad` instead of `bad`. The two flags are independent:
