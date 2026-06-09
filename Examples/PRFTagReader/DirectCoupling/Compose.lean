@@ -1451,9 +1451,11 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
         · -- Phase 9.3: slot-positive (1 ≤ k < sp). M reads slot-0 cell, S reads slot-K cell (K ≠ 0).
-          -- The two-cell disagreement is bounded via `slotPositive_cell_collision_le_cacheBadReader`
-          -- + `probEvent_cacheBadReader_uniformSample_le`, absorbed by the
-          -- `|TagId| * sessionsPerTag / |Digest|` charge in the ε_cb slack budget.
+          -- **Cell-pair independence strategy.** The two cells of a uniform `gS` are independent
+          -- uniforms when `slotK ≠ 0`, so two-cell marginalization + index rename closes the gap
+          -- via `evalDist_uniformSample_bind_update_two_map` — no per-step cacheBadReader charge
+          -- needed at this site. The `qT · |TagId| · sp / |Digest|` budget in the aux signature is
+          -- reserved for the reader case (Phase 9.5); it weakens back here via `gcongr`.
           have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
             have := hqR
             rw [OracleComp.isQueryBoundP_query_bind_iff] at this
@@ -1472,16 +1474,124 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           set slotK : Fin sessionsPerTag := ⟨s.sessionsUsed tag, hslot⟩ with hslotK
           have hslotK_ne : slotK ≠ 0 := slotPositive_slotK_ne_zero (sessionsPerTag' := sessionsPerTag)
             hslot hzero
-          -- M-Fine and S step shapes via the Phase 9.4a helpers.
-          have hMstep := fun gS gFine =>
-            slotPositive_MFine_tag_step (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-              (sessionsPerTag := sessionsPerTag) c gS gFine tag s sB hslot
-          have hSstep := fun gS =>
-            slotPositive_S_tag_step (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+          -- M-Fine and S step shapes via the Phase 9.4a helpers. Note: M reads slot-0 cell of
+          -- `gS` (via `slotZeroSubTable`) regardless of `hzero`; S reads slot-K cell where
+          -- `slotK = ⟨s.sessionsUsed tag, hslot⟩` is non-zero by `hslotK_ne`.
+          have hMstep : ∀ gS gFine,
+              multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c gS)) gFine (Sum.inl tag) (s, sB)
+              = ($ᵗ Nonce) >>= fun n =>
+                  pure (some (⟨n, OracleComp.tableExtending c gS
+                      ((tag, (0 : Fin sessionsPerTag)), n)⟩ : TagTranscript Nonce Digest),
+                    advM,
+                    multipleBadAdvance tag sB
+                      (some (⟨n, OracleComp.tableExtending c gS
+                        ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                          TagTranscript Nonce Digest))) :=
+            fun gS gFine => slotPositive_MFine_tag_step (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag) c gS gFine tag s sB hslot
+          have hSstep : ∀ gS,
+              singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)
+                (Sum.inl tag) s
+              = ($ᵗ Nonce) >>= fun n =>
+                  pure (some (⟨n, OracleComp.tableExtending c gS
+                      ((tag, slotK), n)⟩ : TagTranscript Nonce Digest), advM) := fun gS => by
+            have := slotPositive_S_tag_step (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
               (sessionsPerTag := sessionsPerTag) c gS tag s hslot
-          -- The slot-positive case requires two-cell marginalization (slot-0 for M, slot-K for S),
-          -- four sub-cases on cache hits/misses, and a cacheBadReader collision charge for the
-          -- non-trivial sub-cases. The full scaffold is deferred to a focused session.
+            convert this using 1
+          -- Unfold head queries on both sides.
+          simp only [multipleBadTableFine_run_query_bind', singleTable_run'_query_bind', map_bind]
+          -- Phase B-1: rewrite each of LHS, RHS, BAD so the head step exposes the inner `n ← $ᵗ`.
+          have hLHS_eq :
+              (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let p ← multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine (Sum.inl tag) (s, sB)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      z.1) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS)) gFine) (k p.1)).run p.2)
+              = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let n ← $ᵗ Nonce
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        z.1) <$>
+                      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending c gS)) gFine)
+                        (k (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                            TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                            TagTranscript Nonce Digest)))) := by
+            refine bind_congr fun gS => ?_
+            refine bind_congr fun gFine => ?_
+            rw [hMstep gS gFine]
+            exact bind_assoc ..
+          have hRHS_eq :
+              (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let p ← singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c gS) (Sum.inl tag) s
+                  (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c gS)) (k p.1)).run' p.2)
+              = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let n ← $ᵗ Nonce
+                    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS))
+                      (k (some (⟨n, OracleComp.tableExtending c gS
+                          ((tag, slotK), n)⟩ : TagTranscript Nonce Digest)))).run' advM) := by
+            refine bind_congr fun gS => ?_
+            rw [hSstep gS]
+            exact bind_assoc ..
+          have hBAD_eq :
+              (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let p ← multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine (Sum.inl tag) (s, sB)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      (z.1, z.2.2)) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS)) gFine) (k p.1)).run p.2)
+              = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let n ← $ᵗ Nonce
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$>
+                      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending c gS)) gFine)
+                        (k (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                            TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                            TagTranscript Nonce Digest)))) := by
+            refine bind_congr fun gS => ?_
+            refine bind_congr fun gFine => ?_
+            rw [hMstep gS gFine]
+            exact bind_assoc ..
+          rw [hLHS_eq, hRHS_eq, hBAD_eq]
+          -- Phase B+C+D: binder commutation, slack splits, and per-`n` IH application with the
+          -- cell-pair independence argument. Engineering scaffold deferred to next session.
           sorry
       · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
