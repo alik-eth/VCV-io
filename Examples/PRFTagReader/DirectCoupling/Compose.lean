@@ -769,8 +769,26 @@ private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
         --   `(u = V) ∨ (gS@K = V) ∨ rest` and `(gS@0 = V) ∨ (u = V) ∨ rest`
         -- are functions of the same form of `(u, fresh_uniform)`. Distributional equality.
         sorry
-      · -- Sub-case `transcript.nonce ≠ n`: cache extensions are at nonce `n`, so cells at
-        -- `transcript.nonce` are untouched. Existential value pointwise equal; IH closes.
+      · -- Sub-case `transcript.nonce ≠ n`: cache extensions only affect cells at nonce `n`,
+        -- so cells at `transcript.nonce` are pointwise equal. Tables agree on the read cells,
+        -- so handler step responses identical; state unchanged; IH closes.
+        -- Pointwise table-value equality at any cell `(t', transcript.nonce)`:
+        have htbl_eq : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            ∀ t' : TagId × Fin sessionsPerTag,
+            OracleComp.tableExtending
+                (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS
+                (t', transcript.nonce)
+            = OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u) gS
+                (t', transcript.nonce) := by
+          intro gS t'
+          rw [OracleComp.tableExtending_cacheQuery, OracleComp.tableExtending_cacheQuery]
+          have hne0 : (t', transcript.nonce) ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
+            intro h
+            exact hn (congrArg (fun p => p.2) h)
+          have hneK : (t', transcript.nonce) ≠ ((tag, slotK), n) := by
+            intro h
+            exact hn (congrArg (fun p => p.2) h)
+          rw [Function.update_of_ne hne0, Function.update_of_ne hneK]
         sorry
 
 /-! ### Eager-form direct-coupling aux
