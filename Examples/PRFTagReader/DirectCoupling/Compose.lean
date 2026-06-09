@@ -736,12 +736,31 @@ lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     -- the outer `gS ← $ᵗ` is a `bind_const` of `pure b`).
     simp [simulateQ_pure]
   | query_bind t k _ih =>
-    -- Tag query (Sum.inl) vs reader query (Sum.inr). Each case needs sub-analysis:
-    -- * Tag T = tag: by hAdv, reads at sid ≥ slotK + 1, cache extension invisible.
-    -- * Tag T ≠ tag: cell at (T, ·, ·) not affected by extension.
-    -- * Reader at nonce n' ≠ n: cells at other nonces unaffected.
-    -- * Reader at nonce n' = n: existential symmetry via two-cell marginalization.
-    sorry
+    -- Tag query (Sum.inl) vs reader query (Sum.inr). Each case decomposes further.
+    cases t with
+    | inl T =>
+      -- Tag query: handler draws fresh nonce, reads cell `(T, sid_T, n')`, returns transcript.
+      -- The cache extensions at `(tag, 0)` and `(tag, slotK)` only affect cells `(tag, ·, ·)`.
+      -- * Sub-case T = tag: by `hAdv`, sessions ≥ slotK + 1, so reads at sid ≥ slotK + 1 ∉ {0, slotK}.
+      --   Cell read identical on both sides; updated state advances sessions.
+      -- * Sub-case T ≠ tag: cells at `(T, ·, ·)` are untouched by either extension.
+      --   Cell reads identical pointwise.
+      -- In both sub-cases, the handler step gives identical responses and state updates;
+      -- IH on continuation closes.
+      sorry
+    | inr transcript =>
+      -- Reader query at `transcript = ⟨n', V⟩`: the handler returns
+      -- `ReaderReply.ofBool (unlinkReaderAccepts (tableExtending c' gS) singlePattern transcript)`.
+      -- The acceptance is `∃ T sid', tableExtending c' gS ((T, sid'), n') = V`.
+      -- * Sub-case n' ≠ n: extensions at `((tag, ·), n)` don't affect cells at nonce n'.
+      --   Existential value pointwise equal; IH closes.
+      -- * Sub-case n' = n: existential reads cells `((tag, 0), n)` and `((tag, slotK), n)`.
+      --   LHS: `((tag, 0), n) = u (cached)`, `((tag, slotK), n) = gS@K (uniform)`.
+      --   RHS: `((tag, 0), n) = gS@0 (uniform)`, `((tag, slotK), n) = u (cached)`.
+      --   Marginal distribution of the existential at this nonce is the same in LHS and RHS
+      --   (both involve `(u = V) ∨ (uniform = V) ∨ rest`), via
+      --   `evalDist_uniformSample_bind_update_two_map`. IH closes the continuation.
+      sorry
 
 /-! ### Eager-form direct-coupling aux
 
