@@ -559,6 +559,142 @@ lemma caseB_disagreement_mass [Fintype Nonce] [Fintype Digest]
   -- mass for Case-B transcripts is structurally large (≈ 1 for large |Digest|).
   exact probEvent_le_one
 
+/-! ### Slot-positive handler step characterizations
+
+The next two lemmas explicitly unfold the M-Fine and S handler tag-step shapes at the
+slot-positive case. They form the structural foundation of Phase 9.3:
+
+* `slotPositive_MFine_tag_step` — the `Sum.inl tag` branch of `multipleBadTableHandlerFine` on
+  the sub-table `slotZeroSubTable (tableExtending c gS)`, under `hslot ∧ ¬hzero`, samples a nonce
+  and emits the transcript `⟨n, gS((tag, 0), n)⟩` (M reads cell `(tag, 0)` of `gS` because the
+  sub-table embedding fixes slot 0), threading `multipleBadAdvance` through the bad state. Note
+  the M-Fine tag branch does NOT depend on `gFine`.
+* `slotPositive_S_tag_step` — the same shape on the single-session side: samples a nonce and emits
+  `⟨n, gS((tag, slotK), n)⟩` where `slotK = ⟨s.sessionsUsed tag, hslot⟩`. Under `¬hzero`,
+  `slotK ≠ 0`, so M and S read genuinely different cells.
+
+Both step lemmas are direct corollaries of `multipleTableHandler_tag_run_of_lt` and
+`singleTableHandler_tag_run_of_lt`, specialized to the slot-positive case where the
+zero-slot rewrite `Fin.ext hzero` of Phase 9.2 no longer applies. -/
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **M-Fine tag step at slot-positive.** Under `hslot : s.sessionsUsed tag < sessionsPerTag`,
+the `multipleBadTableHandlerFine` `Sum.inl tag` branch on the sub-table
+`slotZeroSubTable (tableExtending c gS)` samples a fresh nonce and emits the M-transcript
+`⟨n, tableExtending c gS ((tag, 0), n)⟩` (M reads SLOT 0 of `gS` regardless of how many sessions
+this tag has used), threading `multipleBadAdvance tag sB` through the bad state. The handler does
+NOT depend on `gFine` on the tag branch. -/
+lemma slotPositive_MFine_tag_step
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (gS gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (tag : TagId) (s : UnlinkState TagId) (sB : UnlinkBadState TagId Nonce Digest)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag)
+      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+        (OracleComp.tableExtending c gS)) gFine (Sum.inl tag) (s, sB)
+    = ($ᵗ Nonce) >>= fun n =>
+        pure (some (⟨n, OracleComp.tableExtending c gS
+            ((tag, (0 : Fin sessionsPerTag)), n)⟩ : TagTranscript Nonce Digest),
+          { s with sessionsUsed :=
+              Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) },
+          multipleBadAdvance tag sB
+            (some (⟨n, OracleComp.tableExtending c gS
+              ((tag, (0 : Fin sessionsPerTag)), n)⟩ : TagTranscript Nonce Digest))) := by
+  change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag)
+      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+        (OracleComp.tableExtending c gS)) (Sum.inl tag)) s
+      >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1))
+      = _
+  rw [multipleTableHandler_tag_run_of_lt _ tag s hslot]
+  exact bind_assoc ..
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] [NeZero sessionsPerTag] in
+/-- **S tag step at slot-positive.** Under `hslot : s.sessionsUsed tag < sessionsPerTag`,
+the `singleTableHandler` `Sum.inl tag` branch on `tableExtending c gS` samples a fresh nonce and
+emits the S-transcript `⟨n, tableExtending c gS ((tag, slotK), n)⟩` where
+`slotK = ⟨s.sessionsUsed tag, hslot⟩`. Under `¬ s.sessionsUsed tag = 0`, this slot is non-zero, so
+M and S read different cells of `gS`. -/
+lemma slotPositive_S_tag_step
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (gS : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (tag : TagId) (s : UnlinkState TagId)
+    (hslot : s.sessionsUsed tag < sessionsPerTag) :
+    singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS) (Sum.inl tag) s
+    = ($ᵗ Nonce) >>= fun n =>
+        pure (some (⟨n, OracleComp.tableExtending c gS
+            ((tag, ⟨s.sessionsUsed tag, hslot⟩), n)⟩ : TagTranscript Nonce Digest),
+          { s with sessionsUsed :=
+              Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) }) :=
+  singleTableHandler_tag_run_of_lt (OracleComp.tableExtending c gS) tag s hslot
+
+/-- **Slot-positive slotK is non-zero.** Bundles the structural fact used by
+`cacheBadReader_of_cell_eq_slotPositive` / `cacheBadReader_of_cell_self_slotPositive`: at the
+slot-positive case `¬ s.sessionsUsed tag = 0`, the realized session index
+`⟨s.sessionsUsed tag, hslot⟩` is non-zero in `Fin sessionsPerTag`. -/
+lemma slotPositive_slotK_ne_zero {TagId' : Type} {sessionsPerTag' : ℕ}
+    [NeZero sessionsPerTag'] {tag : TagId'} {s : UnlinkState TagId'}
+    (hslot : s.sessionsUsed tag < sessionsPerTag')
+    (hzero : ¬ s.sessionsUsed tag = 0) :
+    (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag') ≠ 0 := by
+  intro h
+  apply hzero
+  have : (⟨s.sessionsUsed tag, hslot⟩ : Fin sessionsPerTag').val = (0 : Fin sessionsPerTag').val :=
+    congrArg Fin.val h
+  simpa using this
+
+/-! ### Slot-positive cell-collision charge via `cacheBadReader` mass
+
+At the slot-positive Case-B style sites, the S-side transcript depends on cell
+`gS((tag, slotK), n)` (slotK ≠ 0). The agreement with a constant M-transcript `⟨n, u⟩` exactly
+matches the `cacheBadReader (sessionsPerTag := sessionsPerTag) gS ⟨n, u⟩` predicate — providing a
+structural route to charge the agreement mass `1/|Digest|` against the slack budget.
+
+`slotPositive_cell_agreement_charge` averages this observation: the slot-K-specific agreement
+mass is bounded by the `cacheBadReader` averaged mass, which in turn is bounded by
+`|TagId| * sessionsPerTag / |Digest|` (`probEvent_cacheBadReader_uniformSample_le`). This is the
+core charge mechanism Phase 9.3 needs. -/
+
+omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce] [SampleableType Digest] in
+/-- **Slot-positive cell-collision mass bound via `cacheBadReader`.** Drawing `gS` uniformly,
+the probability that `gS((tag, slotK), n) = u` is bounded by the averaged `cacheBadReader`
+mass, which is in turn bounded by `|TagId| * sessionsPerTag / |Digest|` via
+`probEvent_cacheBadReader_uniformSample_le`. This is the slot-positive analogue of the Case-B
+concrete `1/|Digest|` bound, extended to incorporate the existential witness over `(tag, slotK)`. -/
+lemma slotPositive_cell_collision_le_cacheBadReader [Fintype Nonce] [Fintype Digest]
+    [SampleableType (((TagId × Fin sessionsPerTag) × Nonce) → Digest)]
+    (tag : TagId) (slotK : Fin sessionsPerTag) (n : Nonce) (u : Digest)
+    (hslot : slotK ≠ 0) :
+    Pr[fun gS : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+        gS ((tag, slotK), n) = u |
+        ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] ≤
+      Pr[fun b : Bool => b = true |
+        do let gS ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+           pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gS
+              (⟨n, u⟩ : TagTranscript Nonce Digest))] := by
+  classical
+  -- Use probEvent_mono after rewriting the RHS into the same `Pr[..|$ᵗ]` shape.
+  have hRHS :
+      Pr[fun b : Bool => b = true |
+          do let gS ← ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest));
+             pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gS
+                (⟨n, u⟩ : TagTranscript Nonce Digest))] =
+        Pr[fun gS : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+          cacheBadReader (sessionsPerTag := sessionsPerTag) gS
+              (⟨n, u⟩ : TagTranscript Nonce Digest) = true |
+          ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] := by
+    rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+    refine tsum_congr fun gS => ?_
+    by_cases hcb : cacheBadReader (sessionsPerTag := sessionsPerTag) gS
+        (⟨n, u⟩ : TagTranscript Nonce Digest) = true
+    · simp [hcb]
+    · simp [hcb]
+  rw [hRHS]
+  refine probEvent_mono fun gS _ hhit => ?_
+  exact cacheBadReader_of_cell_eq_slotPositive gS tag slotK n u hslot hhit
+
 /-! ### Eager-form direct-coupling aux
 
 The structural induction over the adversary, coupling M-side
