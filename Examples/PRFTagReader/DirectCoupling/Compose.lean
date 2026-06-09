@@ -731,7 +731,10 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT)
     (hcInv : ∀ tag : TagId, ∀ sid : Fin sessionsPerTag, sid ≠ 0 →
-        ∀ n : Nonce, c ((tag, sid), n) = none) :
+        ∀ n : Nonce, c ((tag, sid), n) = none)
+    (hRespInv : ∀ tag : TagId, ∀ n : Nonce,
+        c ((tag, (0 : Fin sessionsPerTag)), n) ≠ none →
+        sB.responses (tag, n) ≠ none) :
     Pr[= true | do
         let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
         let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
@@ -764,7 +767,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
   -- through both the LHS success and RHS bad terms. Each induction case is staged as a `sorry`
   -- to be closed in Phases 9.1–9.5; see the recon document for the per-case strategy.
   classical
-  induction oa using OracleComp.inductionOn generalizing qR qT s c sB hcInv with
+  induction oa using OracleComp.inductionOn generalizing qR qT s c sB hcInv hRespInv with
   | pure b =>
     -- Phase 9.1: pure b — both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
     -- becomes `do gS ← $ᵗ; gFine ← $ᵗ; pure b` (`bind_const` shape since `pure b` ignores
@@ -1438,10 +1441,44 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 intro h
                 exact hsid' (congrArg (fun p => p.1.2) h)
               simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
+            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce,
+                (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                  ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
+                (multipleBadAdvance tag sB
+                  (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
+              intro tag' n' hne
+              by_cases htagn : (tag', n') = (tag, n)
+              · -- Same cell; the advance updates `responses` at this cell.
+                have : (multipleBadAdvance tag sB
+                    (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    (sB.responses.cacheQuery (tag, n)
+                      (u :: Option.getD (sB.responses (tag, n)) [])) (tag', n') := rfl
+                rw [this, htagn, OracleSpec.QueryCache.cacheQuery_self]
+                exact Option.some_ne_none _
+              · -- Different cell; cache unchanged at this entry, responses unchanged.
+                have hne_cell : ((tag', (0 : Fin sessionsPerTag)), n') ≠
+                    ((tag, (0 : Fin sessionsPerTag)), n) := by
+                  intro h
+                  exact htagn (Prod.ext (congrArg (fun p => p.1.1) h)
+                    (congrArg (fun p => p.2) h))
+                have hc_unchanged : (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    ((tag', (0 : Fin sessionsPerTag)), n') =
+                    c ((tag', (0 : Fin sessionsPerTag)), n') := by
+                  simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne_cell]
+                rw [hc_unchanged] at hne
+                have hsb_unchanged : (multipleBadAdvance tag sB
+                    (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    sB.responses (tag', n') := by
+                  show (sB.responses.cacheQuery (tag, n)
+                    (u :: Option.getD (sB.responses (tag, n)) [])) (tag', n') =
+                    sB.responses (tag', n')
+                  simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
+                rw [hsb_unchanged]
+                exact hRespInv tag' n' hne
             have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
               advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
               (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _) hcInv'
+              (hqRk _) (hqTk _) hcInv' hRespInv'
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihB
@@ -1454,10 +1491,31 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                     (gS ((tag, (0 : Fin sessionsPerTag)), n)) = u₀
                 rw [hc]; rfl
             simp_rw [hcell]
+            have hRespInv'' : ∀ tag' : TagId, ∀ n' : Nonce,
+                c ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
+                (multipleBadAdvance tag sB
+                  (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
+              intro tag' n' hne
+              by_cases htagn : (tag', n') = (tag, n)
+              · have heq : (multipleBadAdvance tag sB
+                    (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    (sB.responses.cacheQuery (tag, n)
+                      (u₀ :: Option.getD (sB.responses (tag, n)) [])) (tag', n') := rfl
+                rw [heq, htagn, OracleSpec.QueryCache.cacheQuery_self]
+                exact Option.some_ne_none _
+              · have hsb_unchanged : (multipleBadAdvance tag sB
+                    (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    sB.responses (tag', n') := by
+                  show (sB.responses.cacheQuery (tag, n)
+                    (u₀ :: Option.getD (sB.responses (tag, n)) [])) (tag', n') =
+                    sB.responses (tag', n')
+                  simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
+                rw [hsb_unchanged]
+                exact hRespInv tag' n' hne
             have hihA := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
               advM c
               (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _) hcInv
+              (hqRk _) (hqTk _) hcInv hRespInv''
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
@@ -2047,7 +2105,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             probEvent_congr' (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_eq)]
         -- Now LHS / RHS / BAD all evaluate `k none` at the unchanged state `(s, sB)`. Apply IH at
         -- `qT'`; the two `qT`-bearing slacks weaken back via `gcongr` + `Nat.le_succ`.
-        refine (ih none qR qT' s c sB (hqRk none) (hqTk none) hcInv).trans ?_
+        refine (ih none qR qT' s c sB (hqRk none) (hqTk none) hcInv hRespInv).trans ?_
         gcongr
         · exact_mod_cast Nat.le_succ _
         · exact_mod_cast Nat.le_succ _
@@ -2408,7 +2466,7 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
   have haux := multipleBadEager_le_singleEager_DC_aux (sessionsPerTag := sessionsPerTag)
     adversary qReader qTag UnlinkState.init
     (∅ : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init
-    hqReader hqTag (fun _ _ _ _ => rfl)
+    hqReader hqTag (fun _ _ _ _ => rfl) (fun _ _ h => absurd rfl h)
   simp only [OracleComp.tableExtending_empty] at haux
   -- The aux bound is term-by-term ≤ the headline RHS; the extra outermost
   -- `qTag * sessionsPerTag / |Digest|` slack (reserved for the eventual ε_cb
