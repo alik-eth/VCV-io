@@ -812,8 +812,6 @@ lemma readerStep_trace_union_residue [Fintype Nonce] [Fintype Digest]
           ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
           ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
           ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-            (Fintype.card Digest : ℝ≥0∞) +
-          ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
             (Fintype.card Digest : ℝ≥0∞)) :
     Pr[= true | do
         let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
@@ -843,8 +841,6 @@ lemma readerStep_trace_union_residue [Fintype Nonce] [Fintype Digest]
       (((qR' + 1) * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       (((qR' + 1) * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
       (((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) +
-      ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) := by
   -- **Cross-file Option-6 cacheBad blocker.** See module docstring above and the
   -- reader-step Phase C plan within `multipleBadEager_le_singleEager_DC_aux` for the
@@ -918,8 +914,6 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
       ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) +
-      ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) := by
   -- **Plan (Sessions 5-6).** Structural induction on `oa : UnlinkAdversary`, three cases:
   -- * `pure b`: both sides return `b`; LHS = RHS (no bad, no slack contribution).
@@ -947,7 +941,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     -- S-side leading RHS term reduce to the same ProbComp; remaining RHS terms (bad + three
     -- slacks) are nonneg, dropped via `le_add_right`.
     simp only [simulateQ_pure, StateT.run_pure, StateT.run'_eq, map_pure, bind_pure_comp]
-    exact le_add_right (le_add_right (le_add_right (le_add_right (le_add_right le_rfl))))
+    exact le_add_right (le_add_right (le_add_right (le_add_right le_rfl)))
   | query_bind t k ih =>
     cases t with
     | inl tag =>
@@ -1210,28 +1204,11 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
             rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
               Nat.cast_add, ENNReal.add_div]
-          have hSplit_s4 :
-              (((qT' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                / (Fintype.card Digest : ℝ≥0∞)
-              = ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                  / (Fintype.card Digest : ℝ≥0∞) +
-                ((qT' * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                  / (Fintype.card Digest : ℝ≥0∞) := by
-            rw [show (qT' + 1) * Fintype.card TagId * sessionsPerTag
-                  = Fintype.card TagId * sessionsPerTag + qT' * Fintype.card TagId * sessionsPerTag
-                  from by ring, Nat.cast_add, ENNReal.add_div]
-          rw [hSplit, hSplit_s4]
-          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃ + (ε_s4 + s₄(qT'))`.
-          -- Reassociate to
-          -- `(success + bad + qR/|N| + (slack₁ + slack₂(qT') + slack₃ + s₄(qT'))) + ε_s4`,
-          -- putting `ε_s4` outermost so the inner bracket matches the OLD 3-summand shape
-          -- (with `s₄(qT')` added) consumed by `probEvent_bind_le_add_bad_disagree`.
-          rw [show ∀ a b c d e f g h : ℝ≥0∞,
-                a + b + c + (d + e) + f + (g + h) = a + b + d + (c + e + f + h) + g from
-                fun a b c d e f g h => by ring]
-          -- Drop the outermost `+ ε_s4` slack: prove the stronger claim without `ε_s4`,
-          -- then weaken via `le_self_add`.
-          refine (?_ : _ ≤ _).trans le_self_add
+          rw [hSplit]
+          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃`.
+          -- Reassociate to `success + bad + qR/|N| + (slack₁ + slack₂(qT') + slack₃)`.
+          rw [show ∀ a b c d e f : ℝ≥0∞, a + b + c + (d + e) + f = a + b + d + (c + e + f) from
+                fun a b c d e f => by ring]
           refine probEvent_bind_le_add_bad_disagree
             (D := fun _ : Nonce => False)
             ?_ ?_
@@ -1403,8 +1380,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
               (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
               (hqRk _) (hqTk _)
-            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
-                ← add_assoc, ← add_assoc, ← add_assoc]
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput, ← add_assoc, ← add_assoc]
             exact hihB
           · -- **Case A: cache hit `u₀`.** Cell read is `u₀` regardless of `gS`. Substitute via
             -- `OracleComp.tableExtending c gS ((tag, 0), n) = u₀`, then apply IH at unchanged
@@ -1425,8 +1401,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               advM c
               (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
               (hqRk _) (hqTk _)
-            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
-                ← add_assoc, ← add_assoc, ← add_assoc]
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput, ← add_assoc, ← add_assoc]
             exact hihA
         · -- **Tag slot-positive step (slot available, k ≥ 1).** M reads cell `((tag, 0), n)`
           -- (sub-table); S reads cell `((tag, k), n)` for `k = s.sessionsUsed tag ≥ 1`.
@@ -1717,24 +1692,11 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
             rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
               Nat.cast_add, ENNReal.add_div]
-          have hSplit_s4 :
-              (((qT' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                / (Fintype.card Digest : ℝ≥0∞)
-              = ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                  / (Fintype.card Digest : ℝ≥0∞) +
-                ((qT' * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
-                  / (Fintype.card Digest : ℝ≥0∞) := by
-            rw [show (qT' + 1) * Fintype.card TagId * sessionsPerTag
-                  = Fintype.card TagId * sessionsPerTag + qT' * Fintype.card TagId * sessionsPerTag
-                  from by ring, Nat.cast_add, ENNReal.add_div]
-          rw [hSplit, hSplit_s4]
-          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃ + (ε_s4 + s₄(qT'))`.
-          -- Reassociate so `ε_s4` lives outermost, then weaken via `le_self_add`. The inner
-          -- bracket mirrors the OLD slot-zero shape extended with `s₄(qT')`.
-          rw [show ∀ a b c d e f g h : ℝ≥0∞,
-                a + b + c + (d + e) + f + (g + h) = a + b + d + (c + e + f + h) + g from
-                fun a b c d e f g h => by ring]
-          refine (?_ : _ ≤ _).trans le_self_add
+          rw [hSplit]
+          -- Goal: `success + bad + slack₁ + (qR/|N| + slack₂(qT')) + slack₃`.
+          -- Reassociate to `success + bad + qR/|N| + (slack₁ + slack₂(qT') + slack₃)`.
+          rw [show ∀ a b c d e f : ℝ≥0∞, a + b + c + (d + e) + f = a + b + d + (c + e + f) from
+                fun a b c d e f => by ring]
           refine probEvent_bind_le_add_bad_disagree
             (D := fun _ : Nonce => False)
             ?_ ?_
@@ -1950,7 +1912,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
               (hqRk _) (hqTk _)
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
-              ← add_assoc, ← add_assoc, ← add_assoc]
+              ← add_assoc, ← add_assoc]
             refine hihC.trans ?_
             rw [← probEvent_eq_eq_probOutput]
             gcongr
@@ -2184,7 +2146,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
                 (hqRk _) (hqTk _)
               rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
-                ← add_assoc, ← add_assoc, ← add_assoc]
+                ← add_assoc, ← add_assoc]
               refine hihB.trans ?_
               rw [← probEvent_eq_eq_probOutput]
               gcongr
@@ -2222,7 +2184,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
                 (hqRk _) (hqTk _)
               rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
-                ← add_assoc, ← add_assoc, ← add_assoc]
+                ← add_assoc, ← add_assoc]
               refine hihA.trans ?_
               rw [← probEvent_eq_eq_probOutput]
               gcongr
@@ -2423,8 +2385,6 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
       ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
       ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
       ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) +
-      ((qTag * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) := by
   classical
   -- **Step 1.** Replace the multiple-ideal LHS by the multiple-bad LHS (same `Pr[= true]`).
