@@ -1450,8 +1450,38 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
-        · -- Phase 9.3: slot-positive (1 ≤ k < sp). Two-cell marginalization; `cacheBadReader gFine`
-          -- absorbs the slot-K cell-B disagreement. Three IH calls.
+        · -- Phase 9.3: slot-positive (1 ≤ k < sp). M reads slot-0 cell, S reads slot-K cell (K ≠ 0).
+          -- The two-cell disagreement is bounded via `slotPositive_cell_collision_le_cacheBadReader`
+          -- + `probEvent_cacheBadReader_uniformSample_le`, absorbed by the
+          -- `|TagId| * sessionsPerTag / |Digest|` charge in the ε_cb slack budget.
+          have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+            have := hqR
+            rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+            simpa using this.2
+          have hqTsplit := hqT
+          rw [OracleComp.isQueryBoundP_query_bind_iff] at hqTsplit
+          have hqTpos : 0 < qT := hqTsplit.1.resolve_left (fun h => absurd rfl h)
+          obtain ⟨qT', rfl⟩ : ∃ qT', qT = qT' + 1 := ⟨qT - 1, by omega⟩
+          have hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT' := fun u => by
+            simpa using hqTsplit.2 u
+          -- Post-step state (shared between M and S — both increment `sessionsUsed tag`).
+          set advM : UnlinkState TagId :=
+            { s with sessionsUsed :=
+                Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) } with hadvM
+          -- Realized slot-K (non-zero by `hzero`).
+          set slotK : Fin sessionsPerTag := ⟨s.sessionsUsed tag, hslot⟩ with hslotK
+          have hslotK_ne : slotK ≠ 0 := slotPositive_slotK_ne_zero (sessionsPerTag' := sessionsPerTag)
+            hslot hzero
+          -- M-Fine and S step shapes via the Phase 9.4a helpers.
+          have hMstep := fun gS gFine =>
+            slotPositive_MFine_tag_step (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) c gS gFine tag s sB hslot
+          have hSstep := fun gS =>
+            slotPositive_S_tag_step (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) c gS tag s hslot
+          -- The slot-positive case requires two-cell marginalization (slot-0 for M, slot-K for S),
+          -- four sub-cases on cache hits/misses, and a cacheBadReader collision charge for the
+          -- non-trivial sub-cases. The full scaffold is deferred to a focused session.
           sorry
       · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
