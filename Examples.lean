@@ -37,6 +37,9 @@ import Examples.PRFTagReader.MultipleToHybrid.EagerReader
 import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
 import Examples.PRFTagReader.MultipleToHybrid.Setup
 import Examples.PRFTagReader.PRFReductions
+import Examples.PRFTagReader.PRFReductions.IdealHandlers
+import Examples.PRFTagReader.PRFReductions.Reductions
+import Examples.PRFTagReader.PRFReductions.Structural
 import Examples.PRFTagReader.Table
 import Examples.PRFTagReaderUnlinkReduction
 import Examples.PRGfromPRF
