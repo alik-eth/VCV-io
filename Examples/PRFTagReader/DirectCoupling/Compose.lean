@@ -695,6 +695,54 @@ lemma slotPositive_cell_collision_le_cacheBadReader [Fintype Nonce] [Fintype Dig
   refine probEvent_mono fun gS _ hhit => ?_
   exact cacheBadReader_of_cell_eq_slotPositive gS tag slotK n u hslot hhit
 
+/-! ### Swap-bridge for `singleTableHandler` cache extensions
+
+The slot-positive case's Case M-miss needs to bridge between two cache extensions of
+`singleTableHandler`:
+* LHS: `c.cacheQuery ((tag, 0), n) u` — slot-0 cell cached at `u`.
+* RHS: `c.cacheQuery ((tag, slotK), n) u` — slot-K cell cached at `u`.
+
+Under `hcInv` (`c` has no slot-positive entries) and the post-step invariant
+`hAdv : slotK.val < s.sessionsUsed tag`, these two cache extensions produce
+**distributionally equal** computation outputs. -/
+
+/-- **Swap-bridge for `singleTableHandler`.** Under `hcInv` (no slot-positive cache entries) and
+`hAdv` (`sessionsUsed tag` has advanced past `slotK`), the cache extensions at `(tag, 0)` and
+`(tag, slotK)` produce the same distribution of `oa` outputs when run through `singleTableHandler`
+over a uniform `gS`. This is the workhorse for the slot-positive Case M-miss closure. -/
+lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
+    (s : UnlinkState TagId)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (_hslotK : slotK ≠ 0)
+    (n : Nonce) (u : Digest)
+    (_hcInv : ∀ tag' : TagId, ∀ sid' : Fin sessionsPerTag, sid' ≠ 0 →
+        ∀ n' : Nonce, c ((tag', sid'), n') = none)
+    (_hAdv : slotK.val < s.sessionsUsed tag)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool) :
+    𝒟[do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+         (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+            (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending
+              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS)) oa).run' s]
+    = 𝒟[do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+           (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending
+                (c.cacheQuery ((tag, slotK), n) u) gS)) oa).run' s] := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing s with
+  | pure b =>
+    -- Both sides reduce to `pure b` (handler's `simulateQ_pure` collapses the S handler,
+    -- the outer `gS ← $ᵗ` is a `bind_const` of `pure b`).
+    simp [simulateQ_pure]
+  | query_bind t k _ih =>
+    -- Tag query (Sum.inl) vs reader query (Sum.inr). Each case needs sub-analysis:
+    -- * Tag T = tag: by hAdv, reads at sid ≥ slotK + 1, cache extension invisible.
+    -- * Tag T ≠ tag: cell at (T, ·, ·) not affected by extension.
+    -- * Reader at nonce n' ≠ n: cells at other nonces unaffected.
+    -- * Reader at nonce n' = n: existential symmetry via two-cell marginalization.
+    sorry
+
 /-! ### Eager-form direct-coupling aux
 
 The structural induction over the adversary, coupling M-side
