@@ -844,8 +844,16 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
   classical
   induction oa using OracleComp.inductionOn generalizing qR qT s c sB with
   | pure b =>
-    -- Phase 9.1: pure b — gFine bind reduces by `bind_const` on both sides; drop slacks.
-    sorry
+    -- Phase 9.1: pure b — both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
+    -- becomes `do gS ← $ᵗ; gFine ← $ᵗ; pure b` (`bind_const` shape since `pure b` ignores
+    -- `gFine`). Collapse the inner `gFine ← $ᵗ; pure b` via `probOutput_bind_const` and the
+    -- uniform `Pr[⊥ | $ᵗ ·] = 0` identity (`probFailure_uniformSample`) so the inner factor
+    -- becomes `1 * Pr[= true | (fun _ => b) <$> $ᵗ ·]`. Bad + 4 slacks are nonnegative, dropped
+    -- via `le_add_right`.
+    simp only [simulateQ_pure, StateT.run_pure, StateT.run'_eq, map_pure, bind_pure_comp,
+      probOutput_bind_const, probFailure_uniformSample, tsub_zero, one_mul]
+    refine le_add_right (le_add_right (le_add_right (le_add_right (le_add_right ?_))))
+    rfl
   | query_bind t k ih =>
     cases t with
     | inl tag =>
