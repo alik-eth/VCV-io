@@ -2458,6 +2458,8 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
       ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) +
       ((qTag * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+        (Fintype.card Digest : ℝ≥0∞) +
+      ((qTag * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) := by
   classical
   -- **Step 1.** Replace the multiple-ideal LHS by the multiple-bad LHS (same `Pr[= true]`).
@@ -2606,7 +2608,11 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
     (∅ : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init
     hqReader hqTag
   simp only [OracleComp.tableExtending_empty] at haux
-  exact haux
+  -- The aux bound is term-by-term ≤ the headline RHS; the extra outermost
+  -- `qTag * sessionsPerTag / |Digest|` slack (reserved for the eventual ε_cb
+  -- charge transported via `evalDist_simulateQ_multipleBadTableHandlerFine_forget_cacheBad_eq`
+  -- and `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`) is dropped via `le_self_add`.
+  exact haux.trans le_self_add
 
 end UnlinkReduction
 
