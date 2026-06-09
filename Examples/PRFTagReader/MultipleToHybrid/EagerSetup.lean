@@ -243,17 +243,12 @@ lemma multipleBadTableHandler_run_preserves_bad {α : Type} (g : TagId × Nonce 
     (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
     (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
     ∀ z ∈ support ((simulateQ (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run p), z.2.2.bad = true := by
-  induction oa using OracleComp.inductionOn generalizing p with
-  | pure b =>
-    intro z hz
-    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
-    subst hz; exact hbad
-  | query_bind t f ih =>
-    intro z hz
-    rw [multipleBadTable_run_query_bind', mem_support_bind_iff] at hz
-    obtain ⟨q, hq, hz⟩ := hz
-    exact ih q.1 q.2 (multipleBadTableHandler_step_preserves_bad g t p hbad q hq) z hz
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag) g) oa).run p), z.2.2.bad = true :=
+  OracleComp.simulateQ_run_preservesInv
+    (multipleBadTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g)
+    (fun s : UnlinkState TagId × UnlinkBadState TagId Nonce Digest => s.2.bad = true)
+    (fun t s h z hz => multipleBadTableHandler_step_preserves_bad g t s h z hz) oa p hbad
 
 /-! ### Fine-grained eager handler (Option-6 scaffolding)
 
@@ -349,17 +344,12 @@ lemma multipleBadTableHandlerFine_run_preserves_bad {α : Type} (g : TagId × No
     (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) (hbad : p.2.bad = true) :
     ∀ z ∈ support ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
         (Digest := Digest) (sessionsPerTag := sessionsPerTag) g gFine) oa).run p),
-        z.2.2.bad = true := by
-  induction oa using OracleComp.inductionOn generalizing p with
-  | pure b =>
-    intro z hz
-    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
-    subst hz; exact hbad
-  | query_bind t f ih =>
-    intro z hz
-    rw [multipleBadTableFine_run_query_bind', mem_support_bind_iff] at hz
-    obtain ⟨q, hq, hz⟩ := hz
-    exact ih q.1 q.2 (multipleBadTableHandlerFine_step_preserves_bad g gFine t p hbad q hq) z hz
+        z.2.2.bad = true :=
+  OracleComp.simulateQ_run_preservesInv
+    (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag) g gFine)
+    (fun s : UnlinkState TagId × UnlinkBadState TagId Nonce Digest => s.2.bad = true)
+    (fun t s h z hz => multipleBadTableHandlerFine_step_preserves_bad g gFine t s h z hz) oa p hbad
 
 /-! ### Per-step uniform-table cacheBadReader bound (Step 8 stage (a)) -/
 

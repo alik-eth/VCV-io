@@ -171,22 +171,18 @@ lemma unlinkBadQueryImpl_step_preserves_bad
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- The `bad` flag of a full `simulateQ unlinkBadQueryImpl` run is monotone: started from a state
-with `bad = true` the run keeps `bad = true`. -/
+with `bad = true` the run keeps `bad = true`. Derived from the per-step monotonicity via the
+generic `OracleComp.simulateQ_run_preservesInv`. -/
 lemma simulateQ_unlinkBad_preserves_bad
     (adv : UnlinkAdversary TagId Nonce Digest)
     (sB : UnlinkBadState TagId Nonce Digest) (hbad : sB.bad = true) :
     ∀ z ∈ support ((simulateQ (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run sB), z.2.bad = true := by
-  induction adv using OracleComp.inductionOn generalizing sB with
-  | pure b =>
-    intro z hz
-    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
-    subst hz; exact hbad
-  | query_bind t f ih =>
-    intro z hz
-    rw [unlinkBad_run_query_bind] at hz
-    obtain ⟨p, hp, hz⟩ := (mem_support_bind_iff _ _ _).mp hz
-    exact ih p.1 p.2 (unlinkBadQueryImpl_step_preserves_bad t sB hbad p hp) z hz
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adv).run sB), z.2.bad = true :=
+  OracleComp.simulateQ_run_preservesInv
+    (unlinkBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag))
+    (fun s => s.bad = true) (fun t s h z hz => unlinkBadQueryImpl_step_preserves_bad t s h z hz)
+    adv sB hbad
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Once the `bad` flag is set, the `Pr[bad]` of the residual `unlinkBadQueryImpl` run is `1`. -/

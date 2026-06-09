@@ -532,18 +532,12 @@ lemma multipleBadQueryImpl_run_preserves_bad {α : Type}
     (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) α)
     (s : MultipleBadState TagId Nonce Digest sessionsPerTag) (hbad : s.2.bad = true) :
     ∀ z ∈ support ((simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run s), z.2.2.bad = true := by
-  induction oa using OracleComp.inductionOn generalizing s with
-  | pure b =>
-    intro z hz
-    rw [simulateQ_pure, StateT.run_pure, mem_support_pure_iff] at hz
-    subst hz; exact hbad
-  | query_bind t f ih =>
-    intro z hz
-    simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
-      OracleQuery.cont_query, id_map, StateT.run_bind, mem_support_bind_iff] at hz
-    obtain ⟨p, hp, hz⟩ := hz
-    exact ih p.1 p.2 (multipleBadQueryImpl_step_preserves_bad t s hbad p hp) z hz
+        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) oa).run s), z.2.2.bad = true :=
+  OracleComp.simulateQ_run_preservesInv
+    (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+      (sessionsPerTag := sessionsPerTag))
+    (fun s : MultipleBadState TagId Nonce Digest sessionsPerTag => s.2.bad = true)
+    (fun t s h z hz => multipleBadQueryImpl_step_preserves_bad t s h z hz) oa s hbad
 
 /-! ### Multiple-to-hybrid: spare uniform draws are distribution-neutral
 
