@@ -789,6 +789,12 @@ private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
             intro h
             exact hn (congrArg (fun p => p.2) h)
           rw [Function.update_of_ne hne0, Function.update_of_ne hneK]
+        -- The reader handler is `pure (ReaderReply.ofBool (unlinkReaderAccepts ... transcript), s)`.
+        -- Since `unlinkReaderAccepts` reads cells `((T', sid'), transcript.nonce)` for all (T', sid'),
+        -- by `htbl_eq` these are pointwise equal between LHS and RHS tables. So the handler
+        -- responses (and states) are equal as functions of gS.
+        -- Combined with `singleTable_run'_query_bind'`, the bind decomposes; IH on the continuation
+        -- with same state s and same `_hAdv` closes.
         sorry
 
 /-! ### Eager-form direct-coupling aux
