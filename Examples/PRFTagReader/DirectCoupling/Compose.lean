@@ -1533,9 +1533,118 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         · -- Phase 9.3: slot-positive (1 ≤ k < sp). Two-cell marginalization; `cacheBadReader gFine`
           -- absorbs the slot-K cell-B disagreement. Three IH calls.
           sorry
-      · -- Phase 9.4: slot-exhausted. Both sides return `pure none`; single IH call threads gFine
-        -- transparently.
-        sorry
+      · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
+        -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
+        -- consumed by the tag branch). The head step unfolds to `pure none` on both sides; the
+        -- inner `gFine ← $ᵗ` binder is consumed via `bind_const` shape. After splitting
+        -- `qT = qT' + 1`, the IH at `qT'` applies directly with unchanged state `(s, sB)`; the
+        -- two `qT`-bearing slacks (qR*qT/|Nonce|, qT*|TagId|*sp/|D|) weaken back via `gcongr`.
+        have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
+          have := hqR
+          rw [OracleComp.isQueryBoundP_query_bind_iff] at this
+          simpa using this.2
+        have hqTsplit := hqT
+        rw [OracleComp.isQueryBoundP_query_bind_iff] at hqTsplit
+        have hqTpos : 0 < qT := hqTsplit.1.resolve_left (fun h => absurd rfl h)
+        obtain ⟨qT', rfl⟩ : ∃ qT', qT = qT' + 1 := ⟨qT - 1, by omega⟩
+        have hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT' := fun u => by
+          simpa using hqTsplit.2 u
+        -- M-Fine step under `hslot`: returns `pure (none, s, sB)` (no `gFine` dependence;
+        -- `multipleBadAdvance tag sB none = sB`).
+        have hMstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest,
+            multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag)
+              (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending c gS)) gFine (Sum.inl tag) (s, sB)
+            = pure (none, s, sB) := by
+          intro gS gFine
+          change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag)
+              (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending c gS)) (Sum.inl tag)) s
+              >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1))
+              = _
+          rw [multipleTableHandler_tag_run_of_not_lt _ tag s hslot]
+          rfl
+        -- S step under `hslot`: returns `pure (none, s)`.
+        have hSstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)
+              (Sum.inl tag) s
+            = pure (none, s) := fun gS =>
+          singleTableHandler_tag_run_of_not_lt (OracleComp.tableExtending c gS) tag s hslot
+        -- Rewrite each of the three positions (LHS-success, RHS-success, BAD-event) so the head
+        -- step collapses to running `k none` at the unchanged state. Both M-Fine and S handlers
+        -- under `hslot` return `pure (none, …)`, so `pure_bind` reduces the head bind.
+        have hLHS_eq :
+            (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                    z.1) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine)
+                    (liftM (OracleSpec.query (Sum.inl tag)) >>= k)).run (s, sB))
+            = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      z.1) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS)) gFine) (k none)).run (s, sB)) := by
+          refine bind_congr fun gS => ?_
+          refine bind_congr fun gFine => ?_
+          rw [multipleBadTableFine_run_query_bind', hMstep gS gFine]
+          rw [map_bind]
+          exact pure_bind _ _
+        have hRHS_eq :
+            (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c gS))
+                  (liftM (OracleSpec.query (Sum.inl tag)) >>= k)).run' s)
+            = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c gS)) (k none)).run' s) := by
+          refine bind_congr fun gS => ?_
+          rw [singleTable_run'_query_bind', hSstep gS]
+          exact pure_bind _ _
+        have hBAD_eq :
+            (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                    (z.1, z.2.2)) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine)
+                    (liftM (OracleSpec.query (Sum.inl tag)) >>= k)).run (s, sB))
+            = (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      (z.1, z.2.2)) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS)) gFine) (k none)).run (s, sB)) := by
+          refine bind_congr fun gS => ?_
+          refine bind_congr fun gFine => ?_
+          rw [multipleBadTableFine_run_query_bind', hMstep gS gFine]
+          rw [map_bind]
+          exact pure_bind _ _
+        rw [probOutput_congr rfl (congrArg evalDist hLHS_eq),
+            probOutput_congr rfl (congrArg evalDist hRHS_eq),
+            probEvent_congr' (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_eq)]
+        -- Now LHS / RHS / BAD all evaluate `k none` at the unchanged state `(s, sB)`. Apply IH at
+        -- `qT'`; the two `qT`-bearing slacks weaken back via `gcongr` + `Nat.le_succ`.
+        refine (ih none qR qT' s c sB (hqRk none) (hqTk none)).trans ?_
+        gcongr
+        · exact_mod_cast Nat.le_succ _
+        · exact_mod_cast Nat.le_succ _
     | inr transcript =>
       -- Phase 9.5: reader query. Helper `readerStep_trace_union_residue` is itself swapped to
       -- the Fine handler so that the slot-positive `cacheBadReader gFine` mass closes the
