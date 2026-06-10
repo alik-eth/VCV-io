@@ -3231,35 +3231,140 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
       rw [probOutput_congr rfl (congrArg evalDist hLHS_eq),
           probOutput_congr rfl (congrArg evalDist hRHS_eq),
           probEvent_congr' (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_eq)]
-      -- **Remaining: the asymmetric-discard core.** After the head-step collapse above, the goal is
-      --   `Pr[gS,gFine; (z.1) <$> run(k(ofBool (mAcc gS))) at (s, advBad)]`
-      --     ≤ `Pr[gS; run(k(ofBool (sAcc gS))) at s]` (S-success)
-      --       + `Pr[gS,gFine; (z.1,z.2.2) <$> run(k(ofBool (mAcc gS))) at (s, advBad)].bad` (BAD)
-      --       + slack₁ + slack₂(qRInit) + slack₃((qR'+1)·|TagId|·sp/|Digest|) + slack₄,
-      -- where `advBad = multipleBadReaderAdvance gFine transcript sB`,
-      --   `mAcc gS = unlinkReaderAccepts (slotZeroSubTable (tableExtending c gS)) multiplePattern`,
-      --   `sAcc gS = unlinkReaderAccepts (tableExtending c gS) singlePattern`.
-      -- Remaining plan (design memo `reader-95-design`, §9.5b/c):
-      -- 1. Slot-0 column lazification on BOTH sides via
-      --    `evalDist_idealCacheMapM_bind_uniformTable_comp` with
-      --    `cells := (univ.toList).map (fun T => ((T,0), transcript.nonce))`, instantiating
-      --    `D := (TagId × Fin sessionsPerTag) × Nonce`. This caches every slot-0 cell of the queried
-      --    column into `c₀′ := rs.2`, so `mAcc` becomes a constant bit `m` of `c₀′` (every read cell
-      --    is `(c₀′ cell).getD _` with `isSome`, by `idealCacheMapM_cache_self`); slot-positive cells
-      --    stay UNCACHED (`hcInv` for `c₀′` via `idealCacheMapM_cache_not_mem`, all cells slot-0).
-      --    Couple LHS, RHS, BAD by the SHARED `idealCacheMapM cells c` draw (per-rs comparison).
-      -- 2. Per-rs: `hRespInv`-v2 for `c₀′` at `R′ := insert transcript.nonce R` (new entries all at
-      --    column `transcript.nonce ∈ R′`); `hqRle`: `qR' + R′.card ≤ qR' + (R.card+1) ≤ qRInit`
-      --    (`Finset.card_insert_le`).
-      -- 3. Case `m = true`: `mReader_accepts_imp_sReader_accepts` gives `sAcc = true` too; both run
-      --    `k (ofBool true)` at the same state; IH at `(c₀′, qR', R′)`, weaken slacks (`qR' ≤ qR'+1`).
-      -- 4. Case `m = false`: M runs `k(ofBool false)`. Chain in ℝ≥0∞:
-      --      LHS ≤(IH at c₀′) IH-RHS(k(false)) ≤ Pr[¬E ∧ S-run k(false)] + Pr[E] ≤ RHS-actual + Pr[E],
-      --    `E gS := ∃ T sid≠0, tableExtending c₀′ gS ((T,sid),nonce) = auth`; under `hcInv` for `c₀′`
-      --    the slot-positive cells are uncached so `E gS = cacheBadReader gS transcript` and
-      --    `probEvent_cacheBadReader_uniformSample_le` (EagerSetup:414) bounds `Pr[E] ≤
-      --    |TagId|·sp/|Digest|`, charged to the slack₃ unit (`(qR'+1)·… = |TagId|·sp/|Digest| +
-      --    qR'·…`). BAD bookkeeping mirrors LHS (`multipleBadReaderAdvance` preserves `bad`).
+      classical
+      haveI : Nonempty Digest :=
+        ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+      -- **C1: slot-0 column lazification.** Cache every slot-0 cell of the queried column.
+      set cells : List ((TagId × Fin sessionsPerTag) × Nonce) :=
+        (Finset.univ.toList).map
+          (fun T : TagId => ((T, (0 : Fin sessionsPerTag)), transcript.nonce)) with hcells
+      -- The three terms (LHS-success, RHS-success, BAD) all have the shape
+      -- `$ᵗ gS >>= fun gS => Mψ (tableExtending c gS)` for the continuations below; the
+      -- lazification lemma rewrites `tableExtending c gS` to `idealCacheMapM cells c >>= …`.
+      -- LHS continuation: absorbs the inner `$ᵗ gFine` binder.
+      have hLHS_lazify :
+          𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine)
+                    (k (ReaderReply.ofBool (mAcc gS)))).run
+                    (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                      gFine transcript sB))]
+          = 𝒟[(do let rs ← idealCacheMapM (Digest := Digest) cells c
+                  let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      z.1) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending rs.2 gS)) gFine)
+                      (k (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId)
+                        (fun tag nonce => slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending rs.2 gS) (tag, nonce))
+                        (multiplePattern (TagId := TagId) sessionsPerTag) transcript)))).run
+                      (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                        gFine transcript sB))] := by
+        rw [hmAcc]
+        exact (evalDist_idealCacheMapM_bind_uniformTable_comp cells c
+          (fun T => do
+            let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag) T) gFine)
+                (k (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId)
+                  (fun tag nonce => slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    T (tag, nonce))
+                  (multiplePattern (TagId := TagId) sessionsPerTag) transcript)))).run
+                (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                  gFine transcript sB))).symm
+      -- RHS continuation (no `gFine`).
+      have hRHS_lazify :
+          𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS))
+                  (k (ReaderReply.ofBool (sAcc gS)))).run' s)]
+          = 𝒟[(do let rs ← idealCacheMapM (Digest := Digest) cells c
+                  let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending rs.2 gS))
+                    (k (ReaderReply.ofBool (unlinkReaderAccepts
+                      (Slot := TagId × Fin sessionsPerTag)
+                      (fun slot nonce => OracleComp.tableExtending rs.2 gS (slot, nonce))
+                      (singlePattern (TagId := TagId) sessionsPerTag) transcript)))).run' s)] := by
+        rw [hsAcc]
+        exact (evalDist_idealCacheMapM_bind_uniformTable_comp cells c
+          (fun T => (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) T)
+            (k (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nonce => T (slot, nonce))
+              (singlePattern (TagId := TagId) sessionsPerTag) transcript)))).run' s)).symm
+      -- BAD continuation: same as LHS but with the `(z.1, z.2.2)` projection.
+      have hBAD_lazify :
+          𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                    (z.1, z.2.2)) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c gS)) gFine)
+                    (k (ReaderReply.ofBool (mAcc gS)))).run
+                    (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                      gFine transcript sB))]
+          = 𝒟[(do let rs ← idealCacheMapM (Digest := Digest) cells c
+                  let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                  (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                      (z.1, z.2.2)) <$>
+                    (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                      (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                      (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending rs.2 gS)) gFine)
+                      (k (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId)
+                        (fun tag nonce => slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending rs.2 gS) (tag, nonce))
+                        (multiplePattern (TagId := TagId) sessionsPerTag) transcript)))).run
+                      (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                        gFine transcript sB))] := by
+        rw [hmAcc]
+        exact (evalDist_idealCacheMapM_bind_uniformTable_comp cells c
+          (fun T => do
+            let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag) T) gFine)
+                (k (ReaderReply.ofBool (unlinkReaderAccepts (Slot := TagId)
+                  (fun tag nonce => slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    T (tag, nonce))
+                  (multiplePattern (TagId := TagId) sessionsPerTag) transcript)))).run
+                (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                  gFine transcript sB))).symm
+      -- Rewrite all three terms to their lazified forms.
+      rw [probOutput_congr rfl hLHS_lazify, probOutput_congr rfl hRHS_lazify,
+          probEvent_congr' (fun _ _ => Iff.rfl) hBAD_lazify]
+      -- **Per-rs coupling.** All three terms now share the `idealCacheMapM cells c` head; couple
+      -- them via the empty-`D` disagreement bound (mirroring the tag cases' `$ᵗ Nonce` coupling).
+      -- The slacks are charged entirely in the per-rs obligation (closed in C2/C3); here `ε₁ = 0`,
+      -- `ε₂ = slack₁ + slack₂ + slack₃ + slack₄`.
+      simp only [← probEvent_eq_eq_probOutput]
+      -- Regroup the RHS so the four slacks become a single trailing `ε₂` and insert `ε₁ = 0`.
+      rw [show ∀ a b c d e f : ℝ≥0∞, a + b + c + d + e + f = a + b + 0 + (c + d + e + f) from
+            fun a b c d e f => by ring]
+      refine probEvent_bind_le_add_bad_disagree
+        (mx := idealCacheMapM (Digest := Digest) cells c)
+        (D := fun _ => False) (by simp) ?_
+      intro rs hrs _
+      -- **Per-rs obligation** (closed in C2/C3): with `c₀′ := rs.2`, the M reader bit is a constant
+      -- `m`, and the IH at `(c₀′, qR', R′ := insert transcript.nonce R)` plus the E-mass charge
+      -- close the per-rs comparison.
       sorry
 
 end UnlinkReduction
