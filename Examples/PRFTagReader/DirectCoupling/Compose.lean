@@ -806,6 +806,241 @@ lemma evalDist_uniformSample_bind_cellSwap [Fintype Nonce] [Fintype Digest]
       evalDist_uniformSample_comp_cellSwap (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
         (sessionsPerTag := sessionsPerTag) a b]
 
+/-! ### Region-swap exchange of two uniform tables
+
+Where `cellSwap` permutes two individual cells of a single table, `regionSwap P` exchanges the
+values of *two* tables `g, h : D → R` on the region `{x | P x}` while keeping them in place on the
+complement. The M-side of the direct coupling reads the shared table only through slot-`0` cells
+and reads the fine-grained table only through slot-positive cells; exchanging the slot-positive
+regions of the two tables is a measure-preserving involution of the joint uniform draw that leaves
+the M-world's distribution unchanged while relocating the `cacheBad`-read cells onto the shared
+table. -/
+
+/-- Exchange the values of two tables `g, h : D → R` on the region `{x | P x}`, leaving them in
+place on the complement. The first component reads `h` on `P` and `g` off `P`; the second reads
+`g` on `P` and `h` off `P`. With `P` everywhere false this is the identity pair `(g, h)`; with `P`
+everywhere true it is the swap `(h, g)`. -/
+def regionSwap {D R : Type} (P : D → Prop) [DecidablePred P]
+    (g h : D → R) : (D → R) × (D → R) :=
+  (fun x => if P x then h x else g x, fun x => if P x then g x else h x)
+
+/-- `regionSwap P` is an involution on the pair: applying the underlying map twice returns the
+original pair `(g, h)`. -/
+lemma regionSwap_involution {D R : Type} (P : D → Prop) [DecidablePred P] (g h : D → R) :
+    regionSwap P (regionSwap P g h).1 (regionSwap P g h).2 = (g, h) := by
+  unfold regionSwap
+  ext x <;> simp <;> by_cases hx : P x <;> simp [hx]
+
+/-- On the region `P`, the first component of `regionSwap P g h` reads `h`. -/
+@[simp] lemma regionSwap_fst_of_pos {D R : Type} (P : D → Prop) [DecidablePred P]
+    (g h : D → R) {x : D} (hx : P x) : (regionSwap P g h).1 x = h x := by
+  simp [regionSwap, hx]
+
+/-- Off the region `P`, the first component of `regionSwap P g h` reads `g`. -/
+@[simp] lemma regionSwap_fst_of_neg {D R : Type} (P : D → Prop) [DecidablePred P]
+    (g h : D → R) {x : D} (hx : ¬ P x) : (regionSwap P g h).1 x = g x := by
+  simp [regionSwap, hx]
+
+/-- On the region `P`, the second component of `regionSwap P g h` reads `g`. -/
+@[simp] lemma regionSwap_snd_of_pos {D R : Type} (P : D → Prop) [DecidablePred P]
+    (g h : D → R) {x : D} (hx : P x) : (regionSwap P g h).2 x = g x := by
+  simp [regionSwap, hx]
+
+/-- Off the region `P`, the second component of `regionSwap P g h` reads `h`. -/
+@[simp] lemma regionSwap_snd_of_neg {D R : Type} (P : D → Prop) [DecidablePred P]
+    (g h : D → R) {x : D} (hx : ¬ P x) : (regionSwap P g h).2 x = h x := by
+  simp [regionSwap, hx]
+
+/-- The uncurried region-swap map `(g, h) ↦ regionSwap P g h` is bijective, being its own
+inverse by `regionSwap_involution`. The measure-preserving bijection underlying
+`evalDist_uniformSample_pair_regionSwap`. -/
+lemma regionSwap_uncurry_bijective {D R : Type} (P : D → Prop) [DecidablePred P] :
+    Function.Bijective (fun gh : (D → R) × (D → R) => regionSwap P gh.1 gh.2) := by
+  refine ⟨fun x y h => ?_, fun y => ⟨_, regionSwap_involution P y.1 y.2⟩⟩
+  have hx := regionSwap_involution P x.1 x.2
+  rw [(show regionSwap P x.1 x.2 = regionSwap P y.1 y.2 from h),
+      regionSwap_involution P y.1 y.2] at hx
+  exact (Prod.ext (congrArg Prod.fst hx) (congrArg Prod.snd hx)).symm
+
+/-- The uncurried region-swap map packaged as an `Equiv`, with itself as inverse. -/
+noncomputable def regionSwapEquiv {D R : Type} (P : D → Prop) [DecidablePred P] :
+    ((D → R) × (D → R)) ≃ ((D → R) × (D → R)) where
+  toFun p := regionSwap P p.1 p.2
+  invFun p := regionSwap P p.1 p.2
+  left_inv p := by have := regionSwap_involution P p.1 p.2; simpa using this
+  right_inv p := by have := regionSwap_involution P p.1 p.2; simpa using this
+
+@[simp] lemma regionSwapEquiv_apply {D R : Type} (P : D → Prop) [DecidablePred P]
+    (p : (D → R) × (D → R)) : regionSwapEquiv P p = regionSwap P p.1 p.2 := rfl
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Joint measure-preservation of region-swap.** Drawing two independent uniform tables `gS` and
+`gFine` and exchanging their values on the region `P` (via `regionSwap P`) yields the same joint
+distribution as drawing them directly, as observed by any continuation `F`. The joint uniform draw
+on the table pair is invariant under the involution `(gS, gFine) ↦ regionSwap P gS gFine`, which is
+a bijection on the product `(D → Digest) × (D → Digest)`. -/
+lemma evalDist_uniformSample_pair_regionSwap [Fintype Nonce] [Finite Digest] {α : Type}
+    (P : ((TagId × Fin sessionsPerTag) × Nonce) → Prop) [DecidablePred P]
+    (F : (((TagId × Fin sessionsPerTag) × Nonce) → Digest) →
+         (((TagId × Fin sessionsPerTag) × Nonce) → Digest) → ProbComp α) :
+    𝒟[(do let gS ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+          let gFine ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+          F (regionSwap P gS gFine).1 (regionSwap P gS gFine).2)]
+    = 𝒟[(do let gS ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+            let gFine ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+            F gS gFine)] := by
+  classical
+  letI := Fintype.ofFinite Digest
+  refine evalDist_ext fun z => ?_
+  have hexpand : ∀ G : (((TagId × Fin sessionsPerTag) × Nonce) → Digest) →
+        (((TagId × Fin sessionsPerTag) × Nonce) → Digest) → ProbComp α,
+      Pr[= z | (do let gS ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+                   let gFine ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest); G gS gFine)]
+      = ∑' p : (((TagId × Fin sessionsPerTag) × Nonce) → Digest) ×
+              (((TagId × Fin sessionsPerTag) × Nonce) → Digest),
+          (Fintype.card (((TagId × Fin sessionsPerTag) × Nonce) → Digest) : ℝ≥0∞)⁻¹ *
+          ((Fintype.card (((TagId × Fin sessionsPerTag) × Nonce) → Digest) : ℝ≥0∞)⁻¹ *
+            Pr[= z | G p.1 p.2]) := by
+    intro G
+    rw [probOutput_bind_eq_tsum, ENNReal.tsum_prod']
+    refine tsum_congr fun gS => ?_
+    rw [probOutput_uniformSample _ gS, probOutput_bind_eq_tsum, ENNReal.tsum_mul_left]
+    refine congrArg _ (tsum_congr fun gFine => ?_)
+    rw [probOutput_uniformSample _ gFine]
+  rw [hexpand (fun gS gFine => F (regionSwap P gS gFine).1 (regionSwap P gS gFine).2), hexpand F]
+  rw [← Equiv.tsum_eq (regionSwapEquiv (R := Digest) P)]
+  refine tsum_congr fun p => ?_
+  rw [regionSwapEquiv_apply, regionSwap_involution]
+
+/-! ### Slot-positive region and M-world congruences
+
+`slotPositiveCell` is the slot-positive region of the fine table domain: the cells `((T, sid), n)`
+with `sid ≠ 0`. The M-world reads the shared table `gS` only through slot-`0` cells (via
+`slotZeroSubTable (tableExtending c gS)`) and reads `gFine` only through slot-positive cells (via
+`cacheBadReader` inside `multipleBadTableHandlerFine`). The three congruence lemmas below record
+that each of these reads depends only on the relevant region, which is what makes the region-swap
+exchange leave the M-world distribution unchanged. -/
+
+/-- The slot-positive region of the fine-table domain: cells `((T, sid), n)` with `sid ≠ 0`. -/
+def slotPositiveCell : ((TagId × Fin sessionsPerTag) × Nonce) → Prop := fun x => x.1.2 ≠ 0
+
+instance : DecidablePred (slotPositiveCell (TagId := TagId) (Nonce := Nonce)
+    (sessionsPerTag := sessionsPerTag)) := fun x => by unfold slotPositiveCell; infer_instance
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+    [SampleableType Nonce] in
+/-- `slotPositiveCell` holds at `((T, sid), n)` exactly when `sid ≠ 0`. -/
+@[simp] lemma slotPositiveCell_apply (T : TagId) (sid : Fin sessionsPerTag) (n : Nonce) :
+    slotPositiveCell (TagId := TagId) (Nonce := Nonce) (sessionsPerTag := sessionsPerTag)
+      ((T, sid), n) ↔ sid ≠ 0 := Iff.rfl
+
+omit [Fintype TagId] [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+    [DecidableEq Digest] [SampleableType Digest] in
+/-- **Slot-`0` agreement determines the M sub-table.** If `gS` and `gS'` agree on all slot-`0`
+cells then their slot-`0` sub-tables (after overlaying the cache `c`) coincide, because
+`slotZeroSubTable` reads each table only at slot `0`. -/
+lemma slotZeroSubTable_tableExtending_eq_of_agree_zero
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (gS gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (h : ∀ (T : TagId) (n : Nonce),
+        gS ((T, (0 : Fin sessionsPerTag)), n) = gS' ((T, 0), n)) :
+    slotZeroSubTable (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS)
+    = slotZeroSubTable (sessionsPerTag := sessionsPerTag) (OracleComp.tableExtending c gS') := by
+  funext p
+  obtain ⟨T, n⟩ := p
+  simp only [slotZeroSubTable, Function.comp, slotZeroEmbed, OracleComp.tableExtending, h T n]
+
+omit [DecidableEq TagId] [Nonempty TagId] [DecidableEq Nonce] [SampleableType Nonce]
+    [SampleableType Digest] in
+/-- **Slot-positive agreement determines `cacheBadReader`.** If `gFine` and `gFine'` agree on all
+slot-positive cells then `cacheBadReader` reads the same value at every transcript, since its
+existential witness ranges only over slot-positive cells. -/
+lemma cacheBadReader_eq_of_agree_pos
+    (gFine gFine' : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (h : ∀ (T : TagId) (sid : Fin sessionsPerTag), sid ≠ 0 → ∀ n : Nonce,
+        gFine ((T, sid), n) = gFine' ((T, sid), n))
+    (t : TagTranscript Nonce Digest) :
+    cacheBadReader (sessionsPerTag := sessionsPerTag) gFine t
+    = cacheBadReader (sessionsPerTag := sessionsPerTag) gFine' t := by
+  unfold cacheBadReader
+  rw [decide_eq_decide]
+  exact ⟨fun ⟨tag, sid, hsid, heq⟩ => ⟨tag, sid, hsid, (h tag sid hsid t.nonce) ▸ heq⟩,
+    fun ⟨tag, sid, hsid, heq⟩ => ⟨tag, sid, hsid, (h tag sid hsid t.nonce).symm ▸ heq⟩⟩
+
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Slot-positive congruence of the fine handler.** If `gFine` and `gFine'` agree on all
+slot-positive cells then `multipleBadTableHandlerFine g gFine` and `… g gFine'` are equal as
+`QueryImpl`s: the tag branch ignores `gFine`, and the reader branch reaches it only through
+`cacheBadReader`, which agrees by `cacheBadReader_eq_of_agree_pos`. As a function equality this
+transports through `simulateQ`-runs by `congrArg`/`rw`, so no separate induction lemma is needed. -/
+lemma multipleBadTableHandlerFine_congr_pos
+    (g : TagId × Nonce → Digest)
+    (gFine gFine' : ((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+    (h : ∀ (T : TagId) (sid : Fin sessionsPerTag), sid ≠ 0 → ∀ n : Nonce,
+        gFine ((T, sid), n) = gFine' ((T, sid), n)) :
+    multipleBadTableHandlerFine (sessionsPerTag := sessionsPerTag) g gFine
+    = multipleBadTableHandlerFine (sessionsPerTag := sessionsPerTag) g gFine' := by
+  funext q p
+  cases q with
+  | inl tag => rfl
+  | inr transcript =>
+    unfold multipleBadTableHandlerFine
+    simp only [multipleBadReaderAdvance, cacheBadReader_eq_of_agree_pos gFine gFine' h transcript]
+
+/-! ### M-world exchange invariance
+
+Combining the joint measure-preservation `evalDist_uniformSample_pair_regionSwap` with the
+slot-`0` congruence yields the M-world exchange identity: replacing `gFine` by the slot-positive
+half of `gS` (the second component of `regionSwap slotPositiveCell gS gFine`) leaves the
+distribution of the fine M-run unchanged. -/
+
+omit [Nonempty TagId] in
+/-- **M-world region-swap invariance.** Drawing `gS, gFine` and running the fine M-handler over the
+slot-`0` sub-table of `gS` against `gFine` has the same distribution as running it against the
+slot-positive half of `gS` (the `regionSwap`-relocated table `(regionSwap slotPositiveCell gS
+gFine).2`), which agrees with `gS` on every slot-positive cell.
+
+Intended Phase 9.5 use: after this exchange, the reader-step `cacheBad` flag reads the same
+slot-positive cells of `gS` that the single-session reader existential reads, so the M-side
+`cacheBad`-mass can be matched against the S-side reader gap on the shared table. -/
+lemma evalDist_MFineRun_regionSwap_invariant [Fintype Nonce] [Fintype Digest] {β : Type}
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) β)
+    (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
+    (p : UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :
+    𝒟[(do let gS ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+          let gFine ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+          (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c gS)) gFine) oa).run p)]
+    = 𝒟[(do let gS ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+            let gFine ← $ᵗ (((TagId × Fin sessionsPerTag) × Nonce) → Digest)
+            (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+              (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+              (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                (OracleComp.tableExtending c gS))
+              (regionSwap slotPositiveCell gS gFine).2) oa).run p)] := by
+  rw [← evalDist_uniformSample_pair_regionSwap (Digest := Digest) slotPositiveCell
+      (fun gS gFine =>
+        (simulateQ (multipleBadTableHandlerFine (sessionsPerTag := sessionsPerTag)
+          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending c gS)) gFine) oa).run p)]
+  have hbody : ∀ gS gFine : (((TagId × Fin sessionsPerTag) × Nonce) → Digest),
+      (simulateQ (multipleBadTableHandlerFine (sessionsPerTag := sessionsPerTag)
+        (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+          (OracleComp.tableExtending c (regionSwap slotPositiveCell gS gFine).1))
+        (regionSwap slotPositiveCell gS gFine).2) oa).run p
+      = (simulateQ (multipleBadTableHandlerFine (sessionsPerTag := sessionsPerTag)
+          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+            (OracleComp.tableExtending c gS))
+          (regionSwap slotPositiveCell gS gFine).2) oa).run p := by
+    intro gS gFine
+    rw [slotZeroSubTable_tableExtending_eq_of_agree_zero c
+          (regionSwap slotPositiveCell gS gFine).1 gS
+          (fun T n => regionSwap_fst_of_neg slotPositiveCell gS gFine
+            (by rw [slotPositiveCell_apply]; simp))]
+  simp only [hbody]
+
 /-! ### Multiset-invariance of `singleTableHandler` under cell-value swap
 
 The pointwise core of the permutation argument: when two tables `g₁, g₂` differ only by a
