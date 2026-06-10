@@ -878,6 +878,95 @@ lemma evalDist_simulateQ_authRFQueryImpl_run_proj_eq_tableExtending
 /-! ### Static union bound in the eager world and the collision bound -/
 
 omit [Nonempty TagId] in
+/-- **Eager-world forge-growth bound.** In the eager-table world (a full table `g` drawn up front,
+overlaid on the fixed cache `c`), running the adversary `oa` from state `st` (with `st.responses =
+c`) grows the `readerForged` log beyond its initial contents with probability at most
+`q * |TagId| * maxDigestProb`, where `q` bounds the adversary's reader queries.
+
+The induction walks the adversary. A tag query samples a nonce and never touches `readerForged`, so
+the budget and the bound pass to the continuation unchanged. A reader query at the (fixed)
+transcript reads the column `{(tag, t.nonce)}` of the table: each *uncached* cell is a fresh uniform
+(`tableExtending_update_of_none` exposes it via single-cell marginalization), so the step grows
+`readerForged` only by matching some `g (tag, t.nonce) = t.auth`, a static union over tags bounded
+by `|TagId| * maxDigestProb`; the continuation contributes the induction-hypothesis bound at the
+cache
+extended by the just-read column. Growth-form (rather than forgery-free-form) so the IH applies
+directly to the post-step state without resetting its log. -/
+private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
+    (oa : AuthAdversary TagId Nonce Digest)
+    (maxDigestProb : ℝ≥0∞)
+    (hmax : ∀ d : Digest, Pr[= d | ($ᵗ Digest : ProbComp Digest)] ≤ maxDigestProb)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP oa (fun i => i.isRight) q)
+    (c : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (st : AuthIdealState TagId Nonce Digest)
+    (hcst : st.responses = c) :
+    Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+        ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+        do let g ← $ᵗ (TagId × Nonce → Digest);
+           (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+             (OracleComp.tableExtending c g)) oa).run st] ≤
+      (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing st q c with
+  | pure x =>
+    refine le_trans (le_of_eq ?_) (zero_le _)
+    rw [probEvent_eq_zero_iff]
+    intro z hz
+    simp only [simulateQ_pure, StateT.run_pure, support_bind, support_uniformSample,
+      Set.mem_univ, Set.iUnion_true, Set.mem_iUnion, support_pure, Set.mem_singleton_iff] at hz
+    obtain ⟨_, rfl⟩ := hz
+    rintro ⟨y, hy, hy'⟩
+    exact hy' hy
+  | query_bind t f ih =>
+    cases t with
+    | inl tag =>
+      -- Budget passes unchanged (a tag query is not a reader query).
+      have hqcont : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight) q := by
+        have := (isQueryBoundP_query_bind_iff (p := fun i => i.isRight) (Sum.inl tag) f q).mp hq
+        simpa using this.2
+      -- Expose the tag step: draw `g`, sample a nonce, run `f` at the honest-extended state.
+      have hrw : (do let g ← $ᵗ (TagId × Nonce → Digest);
+            (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (OracleComp.tableExtending c g))
+              (liftM (OracleSpec.query (Sum.inl tag)) >>= f)).run st)
+          = (do let g ← $ᵗ (TagId × Nonce → Digest);
+              let nonce ← ($ᵗ Nonce : ProbComp Nonce);
+              (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (OracleComp.tableExtending c g))
+                (f ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)).run
+                ({ responses := st.responses
+                   honestOutputs :=
+                     insert (tag, ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)
+                       st.honestOutputs
+                   readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)) := by
+        refine bind_congr fun g => ?_
+        rw [authTable_run_query_bind, authTableHandler_tag_run _ tag st, bind_assoc]
+        refine bind_congr fun nonce => ?_
+        rw [pure_bind]
+      rw [hrw]
+      -- The forge event is the IH event at the post-tag state (same `readerForged`, same cache).
+      rw [probEvent_bind_eq_tsum]
+      have hbound : ∀ g : TagId × Nonce → Digest,
+          Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+              ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+            (do let nonce ← ($ᵗ Nonce : ProbComp Nonce);
+              (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (OracleComp.tableExtending c g))
+                (f ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)).run
+                ({ responses := st.responses
+                   honestOutputs :=
+                     insert (tag, ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)
+                       st.honestOutputs
+                   readerForged := st.readerForged } :
+                  AuthIdealState TagId Nonce Digest))] ≤
+            (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+        sorry
+      sorry
+    | inr transcript =>
+      sorry
+
+omit [Nonempty TagId] in
 /-- **Unrestricted forge bound for the random-function reader (eager-table route).** Running the
 adversary against the lazy random-function handler from a forgery-free state records a forged
 acceptance with probability at most `q * |TagId| * maxDigestProb`, with no restriction on the
