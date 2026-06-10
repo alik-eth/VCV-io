@@ -737,6 +737,22 @@ lemma cellSwap_bijective {D : Type} [DecidableEq D] (a b : D) :
   · intro y
     exact ⟨cellSwap a b y, cellSwap_involution a b y⟩
 
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+    [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest]
+    [NeZero sessionsPerTag] in
+/-- `cellSwap a b` sends `b` to `a`. -/
+@[simp] lemma cellSwap_right {D : Type} [DecidableEq D] (a b : D) : cellSwap a b b = a := by
+  unfold cellSwap
+  by_cases hab : b = a <;> simp [hab]
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+    [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest]
+    [NeZero sessionsPerTag] in
+/-- `cellSwap a b` fixes any element distinct from both `a` and `b`. -/
+lemma cellSwap_of_ne {D : Type} [DecidableEq D] (a b : D) {x : D} (hxa : x ≠ a) (hxb : x ≠ b) :
+    cellSwap a b x = x := by
+  simp [cellSwap, hxa, hxb]
+
 omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
 /-- **Measure-preservation of cell-swap permutation.** Drawing a uniform table `gS` and
 post-composing with `cellSwap a b` (which is a bijection on the domain) yields the same
@@ -803,6 +819,7 @@ the `singleTableHandler` simulateQ outputs are IDENTICAL (not just distributiona
   at two positions doesn't change the set of values present, so the existential value (mass
   bound by `V`) is the same on both sides. -/
 
+omit [Nonempty TagId] [SampleableType Digest] in
 private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Fintype Digest]
     (tag : TagId) (slotK : Fin sessionsPerTag) (hslotK : slotK ≠ 0)
     (n : Nonce)
@@ -995,6 +1012,11 @@ the cache extensions at `(tag, 0)` and `(tag, slotK)` produce the same distribut
 outputs when run through `singleTableHandler` over a uniform `gS`. This is the workhorse for the
 slot-positive Case M-miss closure.
 
+**Hypothesis `hc0`.** The slot-0 cell `((tag, 0), n)` must be uncached in `c`. Otherwise a residual
+slot-0 entry survives on the right-hand side (the slot-K `cacheQuery` leaves it untouched) while it
+is overwritten by `u` on the left, and a reader query at that residual digest separates the two
+distributions. The intended call site (Case M-miss) always has this cell fresh.
+
 **Proof structure.** Single measure-preserving permutation argument: let
 `φ = cellSwap ((tag, 0), n) ((tag, slotK), n)`. Apply `evalDist_uniformSample_bind_cellSwap` to
 rewrite the LHS via `gS ↦ gS ∘ φ`. Then `singleTableHandler_simulateQ_swap_invariant` gives
@@ -1047,9 +1069,7 @@ lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     show OracleComp.tableExtending c (gS ∘ φ) x = OracleComp.tableExtending c gS x
     unfold OracleComp.tableExtending
     have hφx : φ x = x := by
-      rw [hφ]
-      unfold cellSwap
-      simp [hx0, hxK]
+      rw [hφ]; exact cellSwap_of_ne _ _ hx0 hxK
     show (c x).getD ((gS ∘ φ) x) = (c x).getD (gS x)
     rw [Function.comp_apply, hφx]
   · -- hswap_0: T_L(gS ∘ φ) at ((tag, 0), n) = u = T_R(gS) at ((tag, slotK), n).
@@ -1069,9 +1089,7 @@ lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     rw [hcInv tag slotK hslotK n, hc0]
     show gS (φ ((tag, slotK), n)) = gS ((tag, (0 : Fin sessionsPerTag)), n)
     have : φ ((tag, slotK), n) = ((tag, (0 : Fin sessionsPerTag)), n) := by
-      rw [hφ]
-      unfold cellSwap
-      simp [hslotK_ne_0]
+      rw [hφ, cellSwap_right]
     rw [this]
 
 /-! ### Eager-form direct-coupling aux
@@ -1101,8 +1119,11 @@ freshness predicate. The direct M-S coupling is invariant-free at the eager leve
   produce statistically identical fresh uniforms despite reading different cells.
 * Reader-step divergence is bounded by the cell-cardinality gap
   `|TagId| * (sessionsPerTag - 1) / |Digest|` per reader query (slack₃ from `slack-not-inherent`
-  memory). -/
-lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
+  memory).
+
+**Privacy.** Kept `private` while the reader case (Phase 9.5) is open, so downstream callers
+cannot depend on the unverified bound. Will be exported once the reader case closes. -/
+private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR qT : ℕ)
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
@@ -2709,9 +2730,9 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               -- `probEvent_mono` with the implication that preserves_bad makes unconditional.
               simp only [probEvent_bind_eq_tsum, probEvent_map]
               refine ENNReal.tsum_le_tsum fun gS => ?_
-              refine mul_le_mul_left' ?_ _
+              refine mul_le_mul_right ?_ _
               refine ENNReal.tsum_le_tsum fun gFine => ?_
-              refine mul_le_mul_left' ?_ _
+              refine mul_le_mul_right ?_ _
               refine probEvent_mono ?_
               intro z hz_mem _
               -- z is in support of the simQ run starting at state with bad = true.
@@ -2863,8 +2884,11 @@ namespace UnlinkReduction
 Internally bypasses the M→Hybrid→S chain: the direct M-S coupling via `slotZeroSubTable` works
 unconditionally on the adversary (no nonce-distinctness assumption) because the per-step
 identification of M's cell `(tag, n)` with S's cell `((tag, 0), n)` is a fixed embedding, not a
-state-dependent one. -/
-theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
+state-dependent one.
+
+**Privacy.** Kept `private` while the reader case of the underlying aux is open, so downstream
+callers cannot depend on the unverified bound. Will be exported once the aux closes. -/
+private theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
     (adversary : UnlinkAdversary TagId Nonce Digest)
     (qReader qTag : ℕ)
     (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
