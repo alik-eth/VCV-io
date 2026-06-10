@@ -65,6 +65,25 @@ open OracleComp OracleSpec
 
 namespace OracleComp
 
+/-- **Bind union helper.** If every reachable continuation `my x` satisfies the event with
+probability `≤ r`, then so does the whole bind. The base shape used to discharge the second-read
+charge in the two-step adaptive union: each fresh first read of `f r₁` is bounded by `maxProb`
+uniformly in `r₁`. -/
+theorem probEvent_bind_le_of_forall_le {m : Type _ → Type _} [Monad m] [HasEvalSPMF m]
+    {α β : Type _} {mx : m α} {my : α → m β} {q : β → Prop} {r : ENNReal}
+    (h : ∀ x ∈ support mx, Pr[ q | my x] ≤ r) :
+    Pr[ q | mx >>= my] ≤ r := by
+  rw [probEvent_bind_eq_tsum]
+  calc ∑' x : α, Pr[= x | mx] * Pr[ q | my x]
+      ≤ ∑' x : α, Pr[= x | mx] * r := by
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support mx
+        · exact mul_le_mul' le_rfl (h x hx)
+        · simp [probOutput_eq_zero_of_not_mem_support hx]
+    _ = (∑' x : α, Pr[= x | mx]) * r := by rw [ENNReal.tsum_mul_right]
+    _ ≤ 1 * r := mul_le_mul' tsum_probOutput_le_one le_rfl
+    _ = r := one_mul r
+
 variable {D R : Type} [DecidableEq D] [SampleableType R]
 
 /-! ## q = 1 : freshness at first read -/
