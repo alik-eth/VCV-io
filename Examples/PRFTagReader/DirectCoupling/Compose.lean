@@ -2181,11 +2181,13 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
         · -- Phase 9.3: slot-positive (1 ≤ k < sp). M reads slot-0 cell, S reads slot-K cell (K ≠ 0).
-          -- **Cell-pair independence strategy.** The two cells of a uniform `gS` are independent
-          -- uniforms when `slotK ≠ 0`, so two-cell marginalization + index rename closes the gap
-          -- via `evalDist_uniformSample_bind_update_two_map` — no per-step cacheBadReader charge
-          -- needed at this site. The `qT · |TagId| · sp / |Digest|` budget in the aux signature is
-          -- reserved for the reader case (Phase 9.5); it weakens back here via `gcongr`.
+          -- **Cell-pair independence strategy.** Each side marginalizes its own cell via a
+          -- single-cell helper (`evalDist_uniformSample_bind_update_map`), giving the IH a fresh
+          -- slot-0 draw on the M side; the resulting slot-0 → slot-K cache extension is then
+          -- bridged on the S side by the permutation lemma `singleTableHandler_cache_swap_eq`.
+          -- No per-step cacheBadReader charge is needed at this site. The
+          -- `qT · |TagId| · sp / |Digest|` budget in the aux signature is reserved for the reader
+          -- case (Phase 9.5); it weakens back here via `gcongr`.
           have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
             have := hqR
             rw [OracleComp.isQueryBoundP_query_bind_iff] at this
