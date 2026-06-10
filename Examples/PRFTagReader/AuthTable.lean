@@ -908,6 +908,7 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
              (OracleComp.tableExtending c g)) oa).run st] ≤
       (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
   classical
+  haveI : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
   induction oa using OracleComp.inductionOn generalizing st q c with
   | pure x =>
     refine le_trans (le_of_eq ?_) (zero_le _)
@@ -926,12 +927,12 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
         have := (isQueryBoundP_query_bind_iff (p := fun i => i.isRight) (Sum.inl tag) f q).mp hq
         simpa using this.2
       -- Expose the tag step: draw `g`, sample a nonce, run `f` at the honest-extended state.
-      have hrw : (do let g ← $ᵗ (TagId × Nonce → Digest);
+      have hrw : 𝒟[($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
             (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
               (OracleComp.tableExtending c g))
-              (liftM (OracleSpec.query (Sum.inl tag)) >>= f)).run st)
-          = (do let g ← $ᵗ (TagId × Nonce → Digest);
-              let nonce ← ($ᵗ Nonce : ProbComp Nonce);
+              (liftM (OracleSpec.query (Sum.inl tag)) >>= f)).run st]
+          = 𝒟[($ᵗ Nonce : ProbComp Nonce) >>= fun nonce =>
+              ($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
               (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
                 (OracleComp.tableExtending c g))
                 (f ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)).run
@@ -939,30 +940,179 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
                    honestOutputs :=
                      insert (tag, ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)
                        st.honestOutputs
-                   readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)) := by
-        refine bind_congr fun g => ?_
-        rw [authTable_run_query_bind, authTableHandler_tag_run _ tag st, bind_assoc]
-        refine bind_congr fun nonce => ?_
-        rw [pure_bind]
-      rw [hrw]
-      -- The forge event is the IH event at the post-tag state (same `readerForged`, same cache).
-      rw [probEvent_bind_eq_tsum]
-      have hbound : ∀ g : TagId × Nonce → Digest,
+                   readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)] := by
+        have hcongr : (($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+              (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (OracleComp.tableExtending c g))
+                (liftM (OracleSpec.query (Sum.inl tag)) >>= f)).run st)
+            = (($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+                ($ᵗ Nonce : ProbComp Nonce) >>= fun nonce =>
+                (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  (OracleComp.tableExtending c g))
+                  (f ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)).run
+                  ({ responses := st.responses
+                     honestOutputs :=
+                       insert (tag, ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)
+                         st.honestOutputs
+                     readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)) := by
+          refine bind_congr fun g => ?_
+          rw [authTable_run_query_bind, authTableHandler_tag_run _ tag st, bind_assoc]
+          refine bind_congr fun nonce => ?_
+          rw [pure_bind]
+        rw [hcongr, evalDist_probComp_bind_comm ($ᵗ (TagId × Nonce → Digest)) ($ᵗ Nonce)]
+      rw [probEvent_congr' (fun x _ => Iff.rfl) hrw, probEvent_bind_eq_tsum]
+      -- Per-nonce: marginalize the read cell `(tag, nonce)` and apply the IH at cache `c`.
+      have hbound : ∀ n : Nonce,
           Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
               ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
-            (do let nonce ← ($ᵗ Nonce : ProbComp Nonce);
+            ($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
               (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
                 (OracleComp.tableExtending c g))
-                (f ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)).run
+                (f ⟨n, OracleComp.tableExtending c g (tag, n)⟩)).run
                 ({ responses := st.responses
                    honestOutputs :=
-                     insert (tag, ⟨nonce, OracleComp.tableExtending c g (tag, nonce)⟩)
-                       st.honestOutputs
-                   readerForged := st.readerForged } :
-                  AuthIdealState TagId Nonce Digest))] ≤
+                     insert (tag, ⟨n, OracleComp.tableExtending c g (tag, n)⟩) st.honestOutputs
+                   readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)] ≤
             (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
-        sorry
-      sorry
+        intro n
+        rcases hc : c (tag, n) with _ | d
+        · -- Cache miss: the read cell `(tag, n)` is fresh; marginalize it and apply the IH at the
+          -- column-extended cache (the forge event ignores `responses`).
+          set ψ : (TagId × Nonce → Digest) → ProbComp (Unit × AuthIdealState TagId Nonce Digest) :=
+            fun g => (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (OracleComp.tableExtending c g))
+              (f ⟨n, OracleComp.tableExtending c g (tag, n)⟩)).run
+              ({ responses := st.responses
+                 honestOutputs := insert (tag, ⟨n, OracleComp.tableExtending c g (tag, n)⟩)
+                   st.honestOutputs
+                 readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest) with hψ
+          -- Marginalize the read cell: `g ← $ᵗ; ψ g` has the same forge distribution as
+          -- `u ← $ᵗ; g' ← $ᵗ; ψ (update g' (tag,n) u)`.
+          have hmarg : 𝒟[($ᵗ (TagId × Nonce → Digest)) >>= ψ]
+              = 𝒟[($ᵗ Digest : ProbComp Digest) >>= fun u =>
+                  ($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                    ψ (Function.update g' (tag, n) u)] := by
+            have hbase := evalDist_uniformSample_bind_update_map (D := TagId × Nonce) (R := Digest)
+              (tag, n) (fun g => ψ g)
+            have hL : (($ᵗ Digest : ProbComp Digest) >>= fun u =>
+                ($ᵗ (TagId × Nonce → Digest)) >>= fun g' => ψ (Function.update g' (tag, n) u))
+                = (($ᵗ Digest : ProbComp Digest) >>= fun u =>
+                    ($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                      pure (ψ (Function.update g' (tag, n) u))) >>= id := by simp
+            have hR : (($ᵗ (TagId × Nonce → Digest)) >>= ψ)
+                = (($ᵗ (TagId × Nonce → Digest)) >>= fun g => pure (ψ g)) >>= id := by simp
+            rw [hL, hR,
+              evalDist_bind (mx := ($ᵗ Digest : ProbComp Digest) >>= fun u =>
+                ($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                  pure (ψ (Function.update g' (tag, n) u))),
+              evalDist_bind (mx := ($ᵗ (TagId × Nonce → Digest)) >>= fun g => pure (ψ g))]
+            exact congrArg (fun h => h >>= fun c' => 𝒟[id c']) hbase.symm
+          rw [show (do let g ← $ᵗ (TagId × Nonce → Digest); ψ g)
+              = ($ᵗ (TagId × Nonce → Digest)) >>= ψ from rfl]
+          rw [probEvent_congr' (fun x _ => Iff.rfl) hmarg, probEvent_bind_eq_tsum]
+          -- Per-`u`: rewrite the table cell, swap responses to the extended cache, apply the IH.
+          -- The forge event of a table run is insensitive to the starting `responses` cache.
+          have hirrel : ∀ (g'' : TagId × Nonce → Digest)
+              (oa' : OracleComp (AuthOracleSpec TagId Nonce Digest) Unit)
+              (sa sb : AuthIdealState TagId Nonce Digest),
+              sa.honestOutputs = sb.honestOutputs → sa.readerForged = sb.readerForged →
+              Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                  ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                  g'') oa').run sa]
+                = Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                    ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                  (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                    g'') oa').run sb] := by
+            intro g'' oa' sa sb hh hr
+            have hmap := simulateQ_authTableHandler_run_proj_responses_irrel g'' oa' sa sb hh hr
+            have hkey : ∀ s' : AuthIdealState TagId Nonce Digest,
+                Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                    ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                  (simulateQ (authTableHandler g'') oa').run s']
+                = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+                      Finset (TagId × TagTranscript Nonce Digest) =>
+                    ∃ x ∈ p.2, x ∉ st.readerForged |
+                    (fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                      (z.2.honestOutputs, z.2.readerForged)) <$>
+                      (simulateQ (authTableHandler g'') oa').run s'] := by
+              intro s'
+              rw [probEvent_map]; rfl
+            rw [hkey sa, hkey sb, probEvent_congr' (fun x _ => Iff.rfl) (congrArg evalDist hmap)]
+          have hper : ∀ u : Digest,
+              Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                  ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                ($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                  ψ (Function.update g' (tag, n) u)] ≤
+                (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+            intro u
+            -- Simplify `ψ (update g' (tag,n) u)`: the read cell is `u`; the table is the
+            -- column-extended overlay; the forge event ignores `responses`.
+            have hcellU : ∀ g' : TagId × Nonce → Digest,
+                OracleComp.tableExtending c (Function.update g' (tag, n) u) (tag, n) = u := by
+              intro g'
+              simp [OracleComp.tableExtending, hc, Function.update_self]
+            have htbl : ∀ g' : TagId × Nonce → Digest,
+                OracleComp.tableExtending c (Function.update g' (tag, n) u)
+                  = OracleComp.tableExtending (c.cacheQuery (tag, n) u) g' := by
+              intro g'
+              rw [OracleComp.tableExtending_cacheQuery,
+                OracleComp.tableExtending_update_of_none c g' hc u]
+            have hψu : (($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                  ψ (Function.update g' (tag, n) u))
+                = (($ᵗ (TagId × Nonce → Digest)) >>= fun g' =>
+                  (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (OracleComp.tableExtending (c.cacheQuery (tag, n) u) g'))
+                    (f ⟨n, u⟩)).run
+                    ({ responses := st.responses
+                       honestOutputs := insert (tag, ⟨n, u⟩) st.honestOutputs
+                       readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)) := by
+              refine bind_congr fun g' => ?_
+              rw [hψ]
+              simp only [hcellU g', htbl g']
+            rw [probEvent_congr' (fun x _ => Iff.rfl) (congrArg evalDist hψu)]
+            -- Swap `responses` to the extended cache (responses-irrelevant), then apply the IH.
+            rw [probEvent_bind_eq_tsum]
+            have hpoint : ∀ g' : TagId × Nonce → Digest,
+                Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                    ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                  (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                    (OracleComp.tableExtending (c.cacheQuery (tag, n) u) g')) (f ⟨n, u⟩)).run
+                    ({ responses := st.responses
+                       honestOutputs := insert (tag, ⟨n, u⟩) st.honestOutputs
+                       readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)]
+                  = Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                    ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                  (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                    (OracleComp.tableExtending (c.cacheQuery (tag, n) u) g')) (f ⟨n, u⟩)).run
+                    ({ responses := c.cacheQuery (tag, n) u
+                       honestOutputs := insert (tag, ⟨n, u⟩) st.honestOutputs
+                       readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest)] :=
+              fun g' => hirrel _ _ _ _ rfl rfl
+            simp_rw [hpoint]
+            -- Reassemble as the IH event at cache `c.cacheQuery (tag, n) u`.
+            have hihbound := ih ⟨n, u⟩ q (hqcont _) (c.cacheQuery (tag, n) u)
+              ({ responses := c.cacheQuery (tag, n) u
+                 honestOutputs := insert (tag, ⟨n, u⟩) st.honestOutputs
+                 readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest) rfl
+            rw [probEvent_bind_eq_tsum] at hihbound
+            exact hihbound
+          refine le_trans (ENNReal.tsum_le_tsum fun u => mul_le_mul' (le_refl _) (hper u)) ?_
+          rw [ENNReal.tsum_mul_right]
+          exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
+        · -- Cache hit: the read cell is fixed to `d`, so `f`'s argument and the honest
+          -- insertion are constant in `g`; apply the IH directly at cache `c`.
+          have hcell : ∀ g : TagId × Nonce → Digest,
+              OracleComp.tableExtending c g (tag, n) = d := fun g => by
+            simp [OracleComp.tableExtending, hc]
+          simp only [hcell]
+          exact ih ⟨n, d⟩ q (hqcont _) c
+            ({ responses := st.responses
+               honestOutputs := insert (tag, ⟨n, d⟩) st.honestOutputs
+               readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest) hcst
+      refine le_trans (ENNReal.tsum_le_tsum fun n => mul_le_mul' (le_refl _) (hbound n)) ?_
+      rw [ENNReal.tsum_mul_right]
+      exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
     | inr transcript =>
       sorry
 
