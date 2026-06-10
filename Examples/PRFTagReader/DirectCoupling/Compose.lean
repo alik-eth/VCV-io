@@ -2565,8 +2565,82 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               refine bind_congr fun u => ?_
               refine bind_congr fun gS' => ?_
               rw [hext_K_eq gS' u, hcell_K_u gS' u]
-            -- Step 4: apply IH at ⟨n, u_0⟩ over c+u_0@slot-0; bridge via swap-bridge.
-            -- Step 5: rename u_0 ↔ u_K via probEvent_bind_le_add_bad_disagree.
+            -- Step 4: rewrite the marginalizations and apply probEvent_bind_le_add_bad_disagree.
+            rw [hLHS_marg, hRHS_marg, hBAD_marg]
+            rw [show ∀ a b c : ℝ≥0∞, a + b + c = a + b + 0 + c from
+                  fun a b c => by ring]
+            refine probEvent_bind_le_add_bad_disagree
+              (mx := ($ᵗ Digest : ProbComp Digest))
+              (D := fun _ : Digest => False)
+              (by simp) ?_
+            intro u _ _
+            -- Step 5: per-`u`. Build new invariants for IH call at cache `c.cacheQuery slot-0 u`.
+            have hcInv' : ∀ tag' : TagId, ∀ sid' : Fin sessionsPerTag, sid' ≠ 0 →
+                ∀ n' : Nonce,
+                  (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    ((tag', sid'), n') = none := by
+              intro tag' sid' hsid' n'
+              have hne : ((tag', sid'), n') ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
+                intro h
+                exact hsid' (congrArg (fun p => p.1.2) h)
+              simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
+            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce,
+                (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                  ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
+                (multipleBadAdvance tag sB
+                  (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
+              intro tag' n' hne
+              by_cases htagn : (tag', n') = (tag, n)
+              · have : (multipleBadAdvance tag sB
+                    (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    (sB.responses.cacheQuery (tag, n)
+                      (u :: Option.getD (sB.responses (tag, n)) [])) (tag', n') := rfl
+                rw [this, htagn, OracleSpec.QueryCache.cacheQuery_self]
+                exact Option.some_ne_none _
+              · have hne_cell : ((tag', (0 : Fin sessionsPerTag)), n') ≠
+                    ((tag, (0 : Fin sessionsPerTag)), n) := by
+                  intro h
+                  exact htagn (Prod.ext (congrArg (fun p => p.1.1) h)
+                    (congrArg (fun p => p.2) h))
+                have hc_unchanged : (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    ((tag', (0 : Fin sessionsPerTag)), n') =
+                    c ((tag', (0 : Fin sessionsPerTag)), n') := by
+                  simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne_cell]
+                rw [hc_unchanged] at hne
+                have hsb_unchanged : (multipleBadAdvance tag sB
+                    (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
+                    sB.responses (tag', n') := by
+                  show (sB.responses.cacheQuery (tag, n)
+                    (u :: Option.getD (sB.responses (tag, n)) [])) (tag', n') =
+                    sB.responses (tag', n')
+                  simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
+                rw [hsb_unchanged]
+                exact hRespInv tag' n' hne
+            -- IH at transcript ⟨n, u⟩, cache c+u@slot-0, qT'.
+            have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
+              advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+              (hqRk _) (hqTk _) hcInv' hRespInv'
+            -- Bridge S-side from c+u@slot-0 to c+u@slot-K via the swap-bridge.
+            -- The swap-bridge requires `slotK.val < advM.sessionsUsed tag`, which holds
+            -- because advM = (s with sessionsUsed tag ↦ s.sessionsUsed tag + 1)
+            -- = slotK.val + 1 > slotK.val.
+            have hAdv_advM : slotK.val < advM.sessionsUsed tag := by
+              show slotK.val <
+                (Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1)) tag
+              rw [Function.update_self]
+              show s.sessionsUsed tag < s.sessionsUsed tag + 1
+              omega
+            have hbridge :=
+              singleTableHandler_cache_swap_eq (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                advM c tag slotK hslotK_ne n u hcInv hc0 hAdv_advM
+                (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
+            -- The bridge says distributions over uniform gS are equal between the two caches.
+            -- Use this to rewrite the S-side of hihB.
+            rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
+                ← add_assoc, ← add_assoc, ← add_assoc]
+            -- The S-side of hihB (LHS of hbridge) needs rewriting via hbridge.
             sorry
           · -- Case M-hit: c slot-0 = some u₀.
             -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
