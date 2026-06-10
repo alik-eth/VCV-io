@@ -2427,13 +2427,28 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                         (advM, multipleBadAdvance tag sB
                           (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))
                   (fun z => z.2.bad = true) := by
-              -- Both events are over the same underlying simulateQ run; preserve_bad gives
-              -- the unconditional z.2.2.bad = true.
-              sorry
-            -- Step 4: BAD ≤ S + BAD + slacks. Mechanical reshape via add_le_add chains.
+              -- Both events come from the same underlying do-block via different `<$>`
+              -- projections; factor out the projections via `probEvent_map`, then use
+              -- `probEvent_mono` with the implication that preserves_bad makes unconditional.
+              simp only [probEvent_bind_eq_tsum, probEvent_map]
+              refine ENNReal.tsum_le_tsum fun gS => ?_
+              refine mul_le_mul_left' ?_ _
+              refine ENNReal.tsum_le_tsum fun gFine => ?_
+              refine mul_le_mul_left' ?_ _
+              refine probEvent_mono ?_
+              intro z hz_mem _
+              -- z is in support of the simQ run starting at state with bad = true.
+              -- By preserves_bad, z.2.2.bad = true.
+              exact multipleBadTableHandlerFine_run_preserves_bad
+                (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c gS)) gFine _
+                (advM, multipleBadAdvance tag sB
+                  (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))) hbad_init z hz_mem
+            -- Step 4: BAD ≤ (S + BAD) + slacks. Chain: `le_add_self` then `le_self_add`.
             refine hLHS_le_BAD.trans ?_
-            -- TODO: chain of `le_self_add` + `add_le_add_right` to inject BAD into RHS.
-            sorry
+            exact le_add_self.trans le_self_add
       · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
         -- consumed by the tag branch). The head step unfolds to `pure none` on both sides; the
