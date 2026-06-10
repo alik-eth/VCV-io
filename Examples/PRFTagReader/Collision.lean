@@ -1542,22 +1542,45 @@ theorem authRFExp_le_collisionBound_conjecture
     (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
       (Digest := Digest) adversary]).toReal ≤
       ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb := by
-  -- Status: open in this generality. The reusable random-oracle infrastructure for this bound
-  -- is already proven below the `authRFExp_eq_authRFDirectExp` equivalence:
-  --   * `authRFQueryImpl_responses_some_preservesInv` — cache monotonicity (a cached point keeps
-  --     its digest), and
-  --   * `probEvent_authRFQueryImpl_responses_eq_le` — the single-point random-oracle bound
-  --     `Pr[final responses t₀ = some v₀] ≤ maxDigestProb` for a fixed point/target.
-  -- The fully proven `authRFExp_le_collisionBound_of_distinctReaderNonces` discharges this bound
-  -- whenever the adversary's reader queries use pairwise-distinct nonces.
+  -- Status: open in this generality, but the bound is TRUE. The distinct-nonce sibling
+  -- `authRFExp_le_collisionBound_of_distinctReaderNonces` discharges it whenever the adversary's
+  -- reader queries use pairwise-distinct nonces; this is the unrestricted strengthening.
   --
-  -- The remaining obstruction to the unrestricted statement is genuine: the random-function
-  -- reader writes the shared lazy cache, so two reader queries on the *same* nonce share
-  -- reader-created cache entries. A fresh draw made at one reader query can then be matched by a
-  -- later reader query's adversary-chosen `auth`, and the per-reader-step bound
-  -- `Pr[step records a forgery] ≤ |TagId| * maxDigestProb` fails for states carrying such
-  -- entries. Closing the unrestricted bound needs a random-oracle argument that equality-test
-  -- feedback (the reader's accept bit) does not help the adversary predict an uncached digest.
+  -- WHY THE BOUND HOLDS (first-forge telescoping). Each of the `q` reader queries triggers at
+  -- most `|TagId|` cell accesses on the lazy `(TagId × Nonce) →ₒ Digest` table. A forgery is a
+  -- coincidence `d = auth` between a cell digest `d` and an adversary-chosen `auth`, with the cell
+  -- not honest. Summing the per-(reader-query, tag) coincidence probabilities over all
+  -- `q * |TagId|` accesses gives `q * |TagId| * maxDigestProb`. Concretely, with `|TagId| = 1` and
+  -- two reader queries on the same nonce `nm` with auths `a₁ ≠ a₂` and an uncached, never-honest
+  -- column: step 1 samples `d ~ Unif` and forges iff `d = a₁`; step 2 reuses the cached `d` and
+  -- forges iff `d = a₂`; so `Pr[forge ever] = Pr[d ∈ {a₁,a₂}] = 2/|Digest|`, matching the bound.
+  --
+  -- WHY THE LAZY PER-STEP SKELETON CANNOT REACH IT. The sibling proof's combinator
+  -- `probEvent_bind_le_add` needs an UNCONDITIONAL per-reader-step bound
+  -- `Pr[step records a forgery] ≤ |TagId| * maxDigestProb`. That bound is FALSE once the state
+  -- carries a reader-created (non-honest) cell at the queried column: such a cell has a fixed
+  -- digest `d`, so the step forges with probability `0` or `1` (`d = auth?`), not `≤ maxProb`.
+  -- The correct per-step quantity is the JOINT `Pr[forge at step j ∧ ¬forge before j]`, which is
+  -- `≤ |TagId| * maxDigestProb` (in the toy case `Pr[d = a₂ ∧ d ≠ a₁] = Pr[d = a₂] = 1/|Digest|`,
+  -- since `a₁ ≠ a₂`). Charging the coincidence to the EARLIER fresh draw cannot be done in the lazy
+  -- single-world induction: the matching `auth` is chosen AFTER that draw and may depend on the
+  -- reader's accept-bit feedback, so `d ⊥ auth` is not available state-locally.
+  --
+  -- SOUND ROUTE (eager table). Factor `authRFQueryImpl = logger ∘ randomOracle` over the cell
+  -- oracle `((TagId × Nonce) →ₒ Digest)`, where `logger` deterministically maintains
+  -- `honestOutputs` / `readerForged` from the table and the query transcript (the `responses`
+  -- field already evolves exactly as a lazy random oracle; the tag handler also samples a nonce,
+  -- which is extra randomness threaded alongside the cell table). Then
+  -- `evalDist_simulateQ_randomOracle_run'_empty_eq_uniformTable`
+  -- (VCVio/OracleComp/QueryTracking/RandomOracle/EagerTable.lean) replaces the lazy table by an
+  -- up-front uniform full table `g : TagId × Nonce → Digest`. In the eager view every cell digest
+  -- is fixed BEFORE any adversary feedback, so each access's `auth` is independent of `g` at that
+  -- cell, the forge event becomes a STATIC union over the `≤ q * |TagId|` accesses, and the union
+  -- bound closes at `q * |TagId| * maxDigestProb`. The remaining work is the factorization lemma
+  -- (lift the single-cell `(D →ₒ R)` eager-table equivalence through the stateful auth logger and
+  -- the nonce-sampling tag handler) plus the static union bound; mirror the lazify → per-cell
+  -- marginalize → union-bound pattern used in the unlinkability eager-table track
+  -- (Examples/PRFTagReader/Table.lean and MultipleToHybrid/EagerSetup.lean).
   sorry
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
