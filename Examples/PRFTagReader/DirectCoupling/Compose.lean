@@ -768,6 +768,28 @@ lemma evalDist_uniformSample_comp_cellSwap [Fintype Nonce] [Fintype Digest]
     (β := (TagId × Fin sessionsPerTag) × Nonce → Digest)
     (fun gS => gS ∘ cellSwap a b) hbij
 
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Bind-level measure-preservation via `cellSwap`.** For any continuation
+`F : (table) → ProbComp α`, drawing a uniform `gS` and applying `F` to `gS` has the same
+distribution as drawing a uniform `gS` and applying `F` to `gS ∘ cellSwap a b`. Direct
+consequence of `evalDist_uniformSample_comp_cellSwap` combined with `map_bind`. -/
+lemma evalDist_uniformSample_bind_cellSwap [Fintype Nonce] [Fintype Digest]
+    {α : Type} (a b : (TagId × Fin sessionsPerTag) × Nonce)
+    (F : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp α) :
+    𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); F gS)] =
+      𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest);
+            F (gS ∘ cellSwap a b))] := by
+  classical
+  have hMapBind :
+      ((fun gS : (TagId × Fin sessionsPerTag) × Nonce → Digest => gS ∘ cellSwap a b) <$>
+            ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))) >>= F =
+      (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest);
+          F (gS ∘ cellSwap a b)) := by
+    simp [map_eq_bind_pure_comp, bind_assoc, Function.comp]
+  rw [← hMapBind, evalDist_bind, evalDist_bind,
+      evalDist_uniformSample_comp_cellSwap (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) a b]
+
 /-! ### Multiset-invariance of `singleTableHandler` under cell-value swap
 
 The pointwise core of the permutation argument: when two tables `g₁, g₂` differ only by a
@@ -967,23 +989,21 @@ Under `hcInv` (`c` has no slot-positive entries) and the post-step invariant
 `hAdv : slotK.val < s.sessionsUsed tag`, these two cache extensions produce
 **distributionally equal** computation outputs. -/
 
-/-- **Swap-bridge for `singleTableHandler`.** Under `hcInv` (no slot-positive cache entries) and
-`hAdv` (`sessionsUsed tag` has advanced past `slotK`), the cache extensions at `(tag, 0)` and
-`(tag, slotK)` produce the same distribution of `oa` outputs when run through `singleTableHandler`
-over a uniform `gS`. This is the workhorse for the slot-positive Case M-miss closure.
+/-- **Swap-bridge for `singleTableHandler`.** Under `hcInv` (no slot-positive cache entries),
+`hc0` (slot-0 cell of `c` at `n` uncached), and `hAdv` (`sessionsUsed tag` advanced past `slotK`),
+the cache extensions at `(tag, 0)` and `(tag, slotK)` produce the same distribution of `oa`
+outputs when run through `singleTableHandler` over a uniform `gS`. This is the workhorse for the
+slot-positive Case M-miss closure.
 
-**Privacy.** Kept `private` while the body contains `sorry`s so downstream callers cannot
-depend on the unverified claim. Will be exported once the four query_bind sub-cases close.
-
-**Proof strategy (see `[[swap-bridge-permutation-argument]]` memory).** The inductive
-case-split approach below has a gap: after the reader step, the response depends on `gS`,
-breaking the IH (which is for fixed response). The correct proof is a single
-measure-preserving permutation argument: let `φ` swap the cells `((tag, 0), n)` and
-`((tag, slotK), n)`. Then `gS ∘ φ` has the same distribution as `gS` (φ measure-preserving),
-and `T_L(gS ∘ φ)` and `T_R(gS)` give POINTWISE equal `singleTableHandler` outputs because
-S's reader existential reads a MULTISET of cell values, invariant under swap. The inductive
-scaffold below is retained as exploratory work; the permutation refactor is the next step. -/
-private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
+**Proof structure.** Single measure-preserving permutation argument: let
+`φ = cellSwap ((tag, 0), n) ((tag, slotK), n)`. Apply `evalDist_uniformSample_bind_cellSwap` to
+rewrite the LHS via `gS ↦ gS ∘ φ`. Then `singleTableHandler_simulateQ_swap_invariant` gives
+POINTWISE equality between the rewritten LHS body and the RHS body, because:
+* Cells off the swap pair: `gS ∘ φ` and `gS` agree (φ identity outside the pair).
+* `((tag, 0), n)`: both tables cache `u`.
+* `((tag, slotK), n)`: T_L(gS ∘ φ) exposes `gS((tag, 0), n)` (φ swaps these); T_R(gS) exposes
+  `gS((tag, 0), n)` (uncached by `hc0`). -/
+lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (tag : TagId) (slotK : Fin sessionsPerTag) (hslotK : slotK ≠ 0)
@@ -1010,21 +1030,49 @@ private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
   -- swap-invariance lemma.
   set φ : (TagId × Fin sessionsPerTag) × Nonce → (TagId × Fin sessionsPerTag) × Nonce :=
     cellSwap ((tag, (0 : Fin sessionsPerTag)), n) ((tag, slotK), n) with hφ
-  -- **The proof composes** (sketched here; final wiring deferred):
-  -- (1) `𝒟[$ᵗ gS] = 𝒟[(·∘φ) <$> $ᵗ gS]` by `evalDist_uniformSample_comp_cellSwap`.
-  -- (2) Map-bind to push `· ∘ φ` inside the bind body.
-  -- (3) For each `gS`, `singleTableHandler_simulateQ_swap_invariant` gives pointwise equality
-  --     between `simulateQ (S (T_L (gS ∘ φ))) oa` and `simulateQ (S (T_R gS)) oa` since the
-  --     two tables differ only by a swap of values at the cells `((tag, 0), n)` and
-  --     `((tag, slotK), n)` — which is what φ swaps.
-  -- The pointwise equality follows from:
-  -- * heq: agreement off the swap pair (since φ is identity off the swap pair).
-  -- * hswap_0: both tables cache `u` at the slot-positioned-in-respective-cache cell.
-  -- * hswap_K: both tables expose the underlying `gS((tag, 0), n)` value at the other cell,
-  --   using `hc0 : c ((tag, 0), n) = none` and `hcInv` to know cells are uncached in c.
-  -- Final Lean glue (measure-preservation composition with map-bind) is in progress; for now
-  -- the swap-bridge body is staged as `sorry` and the supporting lemmas are sorry-free.
-  sorry
+  -- Step 1: apply `evalDist_uniformSample_bind_cellSwap` to rewrite LHS with `gS ↦ gS ∘ φ`.
+  rw [evalDist_uniformSample_bind_cellSwap (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) ((tag, (0 : Fin sessionsPerTag)), n) ((tag, slotK), n)]
+  -- Step 2: pointwise — show the bodies are equal as functions of gS.
+  refine congrArg evalDist (bind_congr fun gS => ?_)
+  -- For each fixed `gS`, apply the swap-invariance lemma with the two tables.
+  apply singleTableHandler_simulateQ_swap_invariant tag slotK hslotK n oa s hAdv
+  · -- heq: agreement off the swap pair.
+    intro x hx0 hxK
+    -- T_L(gS ∘ φ) at x = tableExtending (cacheQuery c slot-0 u) (gS ∘ φ) at x.
+    -- T_R(gS) at x = tableExtending (cacheQuery c slot-K u) gS at x.
+    rw [OracleComp.tableExtending_cacheQuery, OracleComp.tableExtending_cacheQuery,
+        Function.update_of_ne hx0, Function.update_of_ne hxK]
+    -- Both reduce to tableExtending c (·) at x; `gS` and `gS ∘ φ` agree at x since x not in swap pair.
+    show OracleComp.tableExtending c (gS ∘ φ) x = OracleComp.tableExtending c gS x
+    unfold OracleComp.tableExtending
+    have hφx : φ x = x := by
+      rw [hφ]
+      unfold cellSwap
+      simp [hx0, hxK]
+    show (c x).getD ((gS ∘ φ) x) = (c x).getD (gS x)
+    rw [Function.comp_apply, hφx]
+  · -- hswap_0: T_L(gS ∘ φ) at ((tag, 0), n) = u = T_R(gS) at ((tag, slotK), n).
+    rw [OracleComp.tableExtending_cacheQuery, OracleComp.tableExtending_cacheQuery,
+        Function.update_self, Function.update_self]
+  · -- hswap_K: T_L(gS ∘ φ) at ((tag, slotK), n) = gS((tag, 0), n) = T_R(gS) at ((tag, 0), n).
+    rw [OracleComp.tableExtending_cacheQuery, OracleComp.tableExtending_cacheQuery]
+    have hslotK_ne_0 : ((tag, slotK), n) ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
+      intro h
+      exact hslotK (congrArg (fun p => p.1.2) h)
+    have h0_ne_slotK : ((tag, (0 : Fin sessionsPerTag)), n) ≠ ((tag, slotK), n) :=
+      Ne.symm hslotK_ne_0
+    rw [Function.update_of_ne hslotK_ne_0, Function.update_of_ne h0_ne_slotK]
+    -- Goal: tableExtending c (gS ∘ φ) ((tag, slotK), n) = tableExtending c gS ((tag, 0), n).
+    unfold OracleComp.tableExtending
+    -- c at ((tag, slotK), n) = none by hcInv; c at ((tag, 0), n) = none by hc0.
+    rw [hcInv tag slotK hslotK n, hc0]
+    show gS (φ ((tag, slotK), n)) = gS ((tag, (0 : Fin sessionsPerTag)), n)
+    have : φ ((tag, slotK), n) = ((tag, (0 : Fin sessionsPerTag)), n) := by
+      rw [hφ]
+      unfold cellSwap
+      simp [hslotK_ne_0]
+    rw [this]
 
 /-! ### Eager-form direct-coupling aux
 
