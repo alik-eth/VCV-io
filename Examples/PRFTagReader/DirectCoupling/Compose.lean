@@ -2379,7 +2379,62 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           --   then `singleTableHandler_cache_swap_eq` (swap-bridge) closes the cache-extension
           --   asymmetry; rename u_0 ↔ u_K via the two-cell marginalization.
           rcases hc0 : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
-          · -- Case M-miss: c slot-0 = none. Marginalize + IH + swap-bridge.
+          · -- Case M-miss: c slot-0 = none. Marginalize slot-0 → IH → swap-bridge → re-marginalize.
+            haveI : Nonempty Digest :=
+              ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
+            -- Step 1: marginalize gS over slot-0 cell (same pattern as slot-zero Case B).
+            have hmarg : ∀ {β : Type}
+                (Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp β),
+                𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)] =
+                𝒟[(do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))] := by
+              intro β Mψ
+              have hbase :
+                  𝒟[(do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))]
+                  = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] :=
+                evalDist_uniformSample_bind_update ((tag, (0 : Fin sessionsPerTag)), n)
+              have hL : (do let u ← $ᵗ Digest
+                            let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                            Mψ (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                  = (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u))
+                      >>= Mψ := by
+                simp [bind_assoc]
+              have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
+                  = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
+              rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
+            have hext_eq : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending c
+                    (Function.update gS' ((tag, (0 : Fin sessionsPerTag)), n) u) =
+                  OracleComp.tableExtending (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
+                    gS' := fun gS' u => by
+              have h1 := OracleComp.tableExtending_update_of_none c gS' hc0 u
+              have h2 := OracleComp.tableExtending_cacheQuery c gS'
+                ((tag, (0 : Fin sessionsPerTag)), n) u
+              exact h1.symm.trans h2.symm
+            have hcell_u : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending
+                    (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'
+                    ((tag, (0 : Fin sessionsPerTag)), n) = u := fun gS' u => by
+              rw [OracleComp.tableExtending_cacheQuery]
+              simp [Function.update_self]
+            -- Step 2: marginalize LHS-success and BAD events (M-side reads slot-0).
+            -- Step 3: marginalize RHS S-event (S reads slot-K; uncached by hcInv).
+            -- Step 4: apply IH at ⟨n, u_0⟩ over c+u_0@slot-0.
+            -- Step 5: bridge S-side via swap-bridge `singleTableHandler_cache_swap_eq`.
+            -- Step 6: rename u_0 ↔ u_K via `evalDist_uniformSample_bind_update_two_map`.
+            -- The full implementation (~300 LoC) mirrors slot-zero Case B's marginalization
+            -- structure (lines 1660-1850), with two crucial additions:
+            -- (a) S-side reads slot-K cell, requiring separate marginalization with hcInv
+            --     showing the cell is uncached.
+            -- (b) The cache-extension asymmetry (IH at slot-0 vs goal at slot-K) is bridged
+            --     via the (sorry-free) `singleTableHandler_cache_swap_eq` lemma.
             sorry
           · -- Case M-hit: c slot-0 = some u₀.
             -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
