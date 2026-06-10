@@ -695,6 +695,79 @@ lemma slotPositive_cell_collision_le_cacheBadReader [Fintype Nonce] [Fintype Dig
   refine probEvent_mono fun gS _ hhit => ?_
   exact cacheBadReader_of_cell_eq_slotPositive gS tag slotK n u hslot hhit
 
+/-! ### Cell-swap permutation for the swap-bridge
+
+The permutation argument for the swap-bridge needs a concrete bijection that swaps two cells of
+the table domain. `cellSwap a b` is the involution on `D` that swaps `a` and `b` (identity if
+`a = b`). Its key properties: bijective (involution), and composing a uniform table with it
+preserves the distribution (`evalDist_map_bijective_uniform_cross`). -/
+
+/-- Swap two elements of a type with decidable equality. Identity if `a = b`. -/
+def cellSwap {D : Type} [DecidableEq D] (a b : D) : D → D := fun x =>
+  if x = a then b else if x = b then a else x
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+    [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest]
+    [NeZero sessionsPerTag] in
+/-- `cellSwap a b` is an involution: applying it twice returns the original. -/
+lemma cellSwap_involution {D : Type} [DecidableEq D] (a b : D) (x : D) :
+    cellSwap a b (cellSwap a b x) = x := by
+  unfold cellSwap
+  by_cases hxa : x = a
+  · -- x = a: cellSwap a b a = b, then cellSwap a b b = a. (Or if a = b, it stays.)
+    rw [hxa]
+    by_cases hab : b = a
+    · rw [hab]; simp
+    · simp [hab]
+  · by_cases hxb : x = b
+    · rw [hxb]; simp
+    · simp [hxa, hxb]
+
+omit [DecidableEq TagId] [Fintype TagId] [Nonempty TagId] [DecidableEq Nonce]
+    [SampleableType Nonce] [DecidableEq Digest] [SampleableType Digest]
+    [NeZero sessionsPerTag] in
+/-- `cellSwap a b` is bijective. -/
+lemma cellSwap_bijective {D : Type} [DecidableEq D] (a b : D) :
+    Function.Bijective (cellSwap a b) := by
+  refine ⟨?_, ?_⟩
+  · intro x y h
+    have := congrArg (cellSwap a b) h
+    rw [cellSwap_involution, cellSwap_involution] at this
+    exact this
+  · intro y
+    exact ⟨cellSwap a b y, cellSwap_involution a b y⟩
+
+omit [Nonempty TagId] [SampleableType Nonce] [DecidableEq Digest] [NeZero sessionsPerTag] in
+/-- **Measure-preservation of cell-swap permutation.** Drawing a uniform table `gS` and
+post-composing with `cellSwap a b` (which is a bijection on the domain) yields the same
+distribution as drawing `gS` directly. The key measure-preserving step underlying the
+swap-bridge: averaging any continuation `F` over a uniform `gS` is invariant under
+`gS ↦ gS ∘ cellSwap a b`. -/
+lemma evalDist_uniformSample_comp_cellSwap [Fintype Nonce] [Fintype Digest]
+    (a b : (TagId × Fin sessionsPerTag) × Nonce) :
+    𝒟[(fun gS : (TagId × Fin sessionsPerTag) × Nonce → Digest =>
+        gS ∘ cellSwap a b) <$> ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] =
+      𝒟[$ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)] := by
+  classical
+  -- `g ↦ g ∘ cellSwap a b` is a bijection on `(D → R)`: its inverse is `g ↦ g ∘ cellSwap a b`
+  -- (since cellSwap is an involution).
+  have hbij : Function.Bijective
+      (fun gS : (TagId × Fin sessionsPerTag) × Nonce → Digest => gS ∘ cellSwap a b) := by
+    refine ⟨?_, ?_⟩
+    · intro g₁ g₂ h
+      have : (fun x => g₁ (cellSwap a b x)) = (fun x => g₂ (cellSwap a b x)) := h
+      funext x
+      have := congrFun this (cellSwap a b x)
+      simpa [cellSwap_involution] using this
+    · intro h
+      refine ⟨h ∘ cellSwap a b, ?_⟩
+      funext x
+      simp [Function.comp, cellSwap_involution]
+  exact evalDist_map_bijective_uniform_cross
+    (α := (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (β := (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (fun gS => gS ∘ cellSwap a b) hbij
+
 /-! ### Swap-bridge for `singleTableHandler` cache extensions
 
 The slot-positive case's Case M-miss needs to bridge between two cache extensions of
