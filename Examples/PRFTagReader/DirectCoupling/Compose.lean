@@ -810,12 +810,72 @@ private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Finty
     cases t with
     | inl T =>
       -- Tag query: handler reads at cell `((T, sessionsUsed T), fresh_nonce)`.
-      -- * `T = tag` + hAdv: sid_T ≥ slotK + 1 ∉ {0, slotK}, cell not in swap pair, `heq` gives
-      --   agreement. Post-step `advT.sessionsUsed tag = sessionsUsed tag + 1 > slotK + 1 > slotK`,
-      --   so hAdv preserved for IH.
-      -- * `T ≠ tag`: cell `((T, ·), ·)` with T ≠ tag is not in swap pair. Cell agreement.
-      --   Post-step `advT.sessionsUsed tag = sessionsUsed tag > slotK`. hAdv preserved.
-      sorry
+      -- Case-split on whether T's session budget is available.
+      by_cases hslot : s.sessionsUsed T < sessionsPerTag
+      · -- Free slot: step samples nonce, reads cell, advances state.
+        rw [singleTableHandler_tag_run_of_lt _ T s hslot,
+            singleTableHandler_tag_run_of_lt _ T s hslot]
+        -- Cell read is `((T, ⟨sessionsUsed T, hslot⟩), nonce)`. Show this is NOT in the swap pair.
+        have hcell_ne : ∀ nonce : Nonce,
+            ((T, (⟨s.sessionsUsed T, hslot⟩ : Fin sessionsPerTag)), nonce)
+              ≠ ((tag, (0 : Fin sessionsPerTag)), n) ∧
+            ((T, (⟨s.sessionsUsed T, hslot⟩ : Fin sessionsPerTag)), nonce)
+              ≠ ((tag, slotK), n) := by
+          intro nonce
+          refine ⟨?_, ?_⟩
+          · -- Differs from (tag, 0, n): either T ≠ tag, or sid > 0.
+            intro h
+            by_cases hT : T = tag
+            · -- T = tag: by hAdv, sessionsUsed tag > slotK > 0, so sid > 0 ≠ 0.
+              subst hT
+              have hsidpos : 0 < s.sessionsUsed T := by
+                have : (slotK : ℕ) < s.sessionsUsed T := hAdv
+                exact Nat.lt_of_le_of_lt (Nat.zero_le _) this
+              have hsid : s.sessionsUsed T = 0 := by
+                have := congrArg (fun p => (p.1.2 : Fin sessionsPerTag).val) h
+                simpa using this
+              omega
+            · -- T ≠ tag: first components differ.
+              exact hT (congrArg (fun p => p.1.1) h)
+          · -- Differs from (tag, slotK, n): either T ≠ tag, or sid ≠ slotK.
+            intro h
+            by_cases hT : T = tag
+            · subst hT
+              have : (⟨s.sessionsUsed T, hslot⟩ : Fin sessionsPerTag) = slotK := by
+                exact (congrArg (fun p => (p.1.2 : Fin sessionsPerTag)) h)
+              have hsid : s.sessionsUsed T = slotK.val := by
+                exact congrArg Fin.val this
+              omega
+            · exact hT (congrArg (fun p => p.1.1) h)
+        have hcell_eq : ∀ nonce : Nonce,
+            g₁ ((T, (⟨s.sessionsUsed T, hslot⟩ : Fin sessionsPerTag)), nonce)
+            = g₂ ((T, (⟨s.sessionsUsed T, hslot⟩ : Fin sessionsPerTag)), nonce) := by
+          intro nonce
+          exact heq _ (hcell_ne nonce).1 (hcell_ne nonce).2
+        -- The bind structure is `(do { let p ← do { ... }; cont p })`. Flatten via bind_assoc
+        -- with explicit OracleComp namespace, then bind_congr on the outer `$ᵗ Nonce`.
+        show ($ᵗ Nonce >>= fun nonce => pure _) >>= _ =
+             ($ᵗ Nonce >>= fun nonce => pure _) >>= _
+        rw [bind_assoc, bind_assoc]
+        refine bind_congr fun nonce => ?_
+        rw [pure_bind, pure_bind, hcell_eq nonce]
+        refine ih _ _ ?_
+        -- Post-step state preserves hAdv: sessionsUsed tag either unchanged (T ≠ tag) or
+        -- increased by 1 (T = tag); in either case ≥ s.sessionsUsed tag > slotK.
+        by_cases hT : T = tag
+        · subst hT
+          show (slotK : ℕ) < (Function.update s.sessionsUsed T (s.sessionsUsed T + 1)) T
+          simp
+          omega
+        · show (slotK : ℕ) < (Function.update s.sessionsUsed T (s.sessionsUsed T + 1)) tag
+          rw [Function.update_of_ne (Ne.symm hT)]
+          exact hAdv
+      · -- Slot exhausted: both sides return `pure (none, s)`. IH on `k none` at state `s` closes.
+        rw [singleTableHandler_tag_run_of_not_lt _ T s hslot,
+            singleTableHandler_tag_run_of_not_lt _ T s hslot]
+        change (simulateQ (singleTableHandler g₁) (k _)).run' s
+             = (simulateQ (singleTableHandler g₂) (k _)).run' s
+        exact ih _ s hAdv
     | inr transcript =>
       -- Reader query: handler returns `pure (ReaderReply.ofBool (unlinkReaderAccepts ...), s)`.
       rw [singleTableHandler_reader_run, singleTableHandler_reader_run]
