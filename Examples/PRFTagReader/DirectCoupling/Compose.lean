@@ -1241,6 +1241,7 @@ Under `hcInv` (`c` has no slot-positive entries) and the post-step invariant
 `hAdv : slotK.val < s.sessionsUsed tag`, these two cache extensions produce
 **distributionally equal** computation outputs. -/
 
+omit [Nonempty TagId] in
 /-- **Swap-bridge for `singleTableHandler`.** Under `hcInv` (no slot-positive cache entries),
 `hc0` (slot-0 cell of `c` at `n` uncached), and `hAdv` (`sessionsUsed tag` advanced past `slotK`),
 the cache extensions at `(tag, 0)` and `(tag, slotK)` produce the same distribution of `oa`
