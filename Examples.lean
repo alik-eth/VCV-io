@@ -33,6 +33,7 @@ import Examples.PRFTagReader.DirectCoupling.ReaderCase
 import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.DirectCoupling.TagSlotPositive
+import Examples.PRFTagReader.DirectCoupling.TagSlotZero
 import Examples.PRFTagReader.Hybrid
 import Examples.PRFTagReader.HybridToSingle
 import Examples.PRFTagReader.MultipleBadCollision
