@@ -886,7 +886,56 @@ private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Finty
         -- pair. Multiset-invariance: `∃ (T', sid'), g((T', sid'), n) = V` is the same for g₁ and
         -- g₂ because the SET of values present at nonce `n` is identical (swap of positions
         -- doesn't change the multiset).
-        sorry
+        subst hn
+        -- Key claim: `unlinkReaderAccepts` is equal between g₁ and g₂ at this nonce, via the
+        -- existential iff: each side can witness the existential by relocating to the other
+        -- cached cell when needed.
+        have hresp_eq : unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nc => g₁ (slot, nc)) (singlePattern sessionsPerTag) transcript
+            = unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nc => g₂ (slot, nc)) (singlePattern sessionsPerTag) transcript := by
+          -- Alias the outer `tag` to avoid name shadowing with the existential's bound variable.
+          set tagOut : TagId := tag with htag_def
+          unfold unlinkReaderAccepts tagAccepts
+          rw [decide_eq_decide]
+          simp only [decide_eq_true_iff, singlePattern]
+          constructor
+          · rintro ⟨T', sid', hsid'⟩
+            by_cases hCase0 : (T', sid') = (tagOut, (0 : Fin sessionsPerTag))
+            · obtain ⟨rfl, rfl⟩ : T' = tagOut ∧ sid' = 0 := Prod.mk.inj hCase0
+              exact ⟨tagOut, slotK, hswap_0 ▸ hsid'⟩
+            · by_cases hCaseK : (T', sid') = (tagOut, slotK)
+              · obtain ⟨rfl, rfl⟩ : T' = tagOut ∧ sid' = slotK := Prod.mk.inj hCaseK
+                exact ⟨tagOut, 0, hswap_K ▸ hsid'⟩
+              · refine ⟨T', sid', ?_⟩
+                have h_g_eq : g₁ ((T', sid'), transcript.nonce) =
+                    g₂ ((T', sid'), transcript.nonce) := by
+                  refine heq ((T', sid'), transcript.nonce) ?_ ?_
+                  · intro h
+                    exact hCase0 (congrArg (fun p => p.1) h)
+                  · intro h
+                    exact hCaseK (congrArg (fun p => p.1) h)
+                exact h_g_eq ▸ hsid'
+          · rintro ⟨T', sid', hsid'⟩
+            by_cases hCase0 : (T', sid') = (tagOut, (0 : Fin sessionsPerTag))
+            · obtain ⟨rfl, rfl⟩ : T' = tagOut ∧ sid' = 0 := Prod.mk.inj hCase0
+              exact ⟨tagOut, slotK, hswap_K ▸ hsid'⟩
+            · by_cases hCaseK : (T', sid') = (tagOut, slotK)
+              · obtain ⟨rfl, rfl⟩ : T' = tagOut ∧ sid' = slotK := Prod.mk.inj hCaseK
+                exact ⟨tagOut, 0, hswap_0 ▸ hsid'⟩
+              · refine ⟨T', sid', ?_⟩
+                have h_g_eq : g₁ ((T', sid'), transcript.nonce) =
+                    g₂ ((T', sid'), transcript.nonce) := by
+                  refine heq ((T', sid'), transcript.nonce) ?_ ?_
+                  · intro h
+                    exact hCase0 (congrArg (fun p => p.1) h)
+                  · intro h
+                    exact hCaseK (congrArg (fun p => p.1) h)
+                exact h_g_eq.symm ▸ hsid'
+        rw [hresp_eq]
+        change (simulateQ (singleTableHandler g₁) (k _)).run' s
+             = (simulateQ (singleTableHandler g₂) (k _)).run' s
+        exact ih _ s hAdv
       · -- Sub-case `transcript.nonce ≠ n`: cells at `transcript.nonce` are not in swap pair,
         -- so `g₁` and `g₂` agree pointwise there. `unlinkReaderAccepts` value equal.
         -- Pointwise cell-value equality at every cell at `transcript.nonce`:
