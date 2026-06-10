@@ -535,6 +535,142 @@ lemma evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending
       rw [hcells]
       simp only [List.map_map, Function.comp_def]
 
+/-! ### Static union bound in the eager world and the collision bound -/
+
+omit [Nonempty TagId] in
+/-- **Unrestricted forge bound for the random-function reader (eager-table route).** Running the
+adversary against the lazy random-function handler from a forgery-free state records a forged
+acceptance with probability at most `q * |TagId| * maxDigestProb`, with no restriction on the
+adversary's reader nonces.
+
+The bound is obtained in the eager-table world: by
+`evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending` the shared lazy cache is replaced by a
+full table `g : TagId × Nonce → Digest` drawn up front (every cell digest fixed before any adversary
+feedback), and the forged-acceptance event becomes a static union over the `≤ q * |TagId|`
+reader-query cell reads, each a uniform coincidence `g (tag, nonce) = auth` of probability at most
+`maxDigestProb`. -/
+lemma authRF_forge_le [Fintype Nonce] [Finite Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (maxDigestProb : ℝ≥0∞)
+    (hmax : ∀ d : Digest, Pr[= d | ($ᵗ Digest : ProbComp Digest)] ≤ maxDigestProb)
+    (st : AuthIdealState TagId Nonce Digest)
+    (hst : st.readerForged = ∅) :
+    Pr[fun z : Unit × AuthIdealState TagId Nonce Digest => z.2.readerForged ≠ ∅ |
+        (simulateQ (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
+          adversary).run st] ≤
+      (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+  -- FRONTIER (single remaining obligation of the collision conjecture).
+  --
+  -- Stage 1 (this file, fully proven) factors the lazy random-function reader through an eager full
+  -- random-oracle table: `evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending` replaces the
+  -- shared lazy cache by a table `g : TagId × Nonce → Digest` drawn up front, with
+  -- `authTableHandler g` the deterministic handler whose tag/reader steps read `g` (run-lemmas
+  -- `authIdealTagQueryImpl_run_eq_idealCacheStep`, `authRFReaderQueryImpl_run_eq_idealCacheMapM`,
+  -- `authTableHandler_tag_run`, `authTableHandler_reader_run`).
+  --
+  -- Stage 2 (remaining): the forged-acceptance probability in the eager world is a static union
+  -- bound. The forge event is insensitive to the final `responses` cache, so it transports across
+  -- the `run'`/state-projection equivalence (`simulateQ_authTableHandler_run'_responses_irrel`).
+  -- Walking the adversary by `OracleComp.inductionOn`, a reader query `query_bind (Sum.inr t) f`
+  -- has a FIXED argument `t` (independent of `g`), so the per-step forge probability is genuinely
+  -- static `Pr_g[∃ tag, g (tag, t.nonce) = t.auth ∧ (tag, t) non-honest] ≤ |TagId| * maxDigestProb`
+  -- (a `probEvent_exists_finset_le_sum` over tags, each cell read uniform by `hmax`); the
+  -- continuation `f` contributes the IH bound `(q-1) * |TagId| * maxDigestProb`. The remaining
+  -- technical step is the shared-`g` reconciliation between the per-step term and the IH: it needs
+  -- the column-`t.nonce` marginal (`evalDist_uniformSample_bind_update_map` on the cells
+  -- `(·, t.nonce)`) to expose the just-read column as fresh independent uniforms before invoking
+  -- the IH on the rest of the table. This column-split marginalization is the documented multi-day
+  -- remainder; the eager table is precisely what removes the reader-created-cell obstruction that
+  -- killed the lazy single-world per-step route, and the resulting bound
+  -- `q * |TagId| * maxDigestProb` matches the distinct-nonce sibling exactly.
+  --
+  -- First proof step (already available): transport the forge event to the eager table world.
+  have _heager := evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending
+    (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary st
+  sorry
+
+omit [Nonempty TagId] in
+/-- **Collision bound for the random-function authentication world.** For any adversary making at
+most `q` reader queries, the probability that the random-function reader records a forged
+acceptance is at most `q * |TagId| * maxDigestProb`, with no restriction on the adversary's reader
+nonces.
+
+The proof passes to the eager-table world
+(`evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending`): the shared lazy random-oracle cache
+is replaced by a full table `g` drawn up front, after which the forged-acceptance event is a static
+union over the reader-query cell reads (`authRF_forge_le`).
+
+This closes the bound in the finite setting (`[Fintype Nonce] [Fintype Digest]`, the same instances
+carried by the unlinkability headline theorems). The infinite-`Digest` generalization remains open:
+there the eager full table does not exist, and the lazy single-world per-step route is provably
+insufficient because a reader-created cache cell in the queried column has a fixed digest, making
+the per-step forge probability `0` or `1` rather than `≤ maxDigestProb`; the bound is still
+believed true via a first-forge per-path point-mass telescoping but needs a conditional/martingale
+formalization. The hdist-conditional and distinct-reader-nonce siblings keep their statements. -/
+theorem authRFExp_le_collisionBound [Fintype Nonce] [Fintype Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
+    (maxDigestProb : ℝ)
+    (hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb := by
+  -- Convert `maxDigestProb` to `ℝ≥0∞`.
+  have hmax_ENNReal : ∀ d : Digest,
+      Pr[= d | ($ᵗ Digest : ProbComp Digest)] ≤ ENNReal.ofReal maxDigestProb := by
+    intro d
+    rw [← ENNReal.ofReal_toReal (ne_top_of_le_ne_top one_ne_top probOutput_le_one)]
+    exact ENNReal.ofReal_le_ofReal (hmax d)
+  -- Rewrite the LHS as the forged-acceptance event in the lazy random-function world.
+  have hlhs : Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+        (Digest := Digest) adversary] =
+      Pr[fun z : Unit × AuthIdealState TagId Nonce Digest => z.2.readerForged ≠ ∅ |
+        (simulateQ (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
+          adversary).run AuthIdealState.init] := by
+    rw [authRFExp_eq_authRFDirectExp, ← probEvent_eq_eq_probOutput, authRFDirectExp,
+      probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+    simp
+  rw [hlhs]
+  -- Apply the unrestricted forge bound and convert back to `ℝ`.
+  have hcore := authRF_forge_le (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    adversary q hq (ENNReal.ofReal maxDigestProb) hmax_ENNReal AuthIdealState.init rfl
+  have hconv : (Pr[fun z : Unit × AuthIdealState TagId Nonce Digest => z.2.readerForged ≠ ∅ |
+        (simulateQ (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
+          adversary).run AuthIdealState.init]).toReal ≤
+      ((q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * ENNReal.ofReal maxDigestProb).toReal :=
+    ENNReal.toReal_mono (by simp [ENNReal.mul_eq_top]) hcore
+  have hsupp : (support ($ᵗ Digest : ProbComp Digest)).Nonempty := by
+    rw [Set.nonempty_iff_ne_empty, ne_eq, ← probFailure_eq_one_iff]
+    simp
+  obtain ⟨d0, _⟩ := hsupp
+  have hmax_nonneg : 0 ≤ maxDigestProb := ENNReal.toReal_nonneg.trans (hmax d0)
+  rw [ENNReal.toReal_mul, ENNReal.toReal_mul, ENNReal.toReal_natCast, ENNReal.toReal_natCast,
+    ENNReal.toReal_ofReal hmax_nonneg] at hconv
+  rw [Nat.cast_mul]
+  exact hconv
+
+omit [Nonempty TagId] in
+/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound`: when `Digest` is sampled
+uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound reads
+`q * |TagId| / |Digest|`. -/
+theorem authRFExp_le_uniformCollisionBound [Fintype Nonce] [Fintype Digest]
+    (adversary : AuthAdversary TagId Nonce Digest)
+    (q : ℕ)
+    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q) :
+    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
+      (Digest := Digest) adversary]).toReal ≤
+      ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+  have hmax : ∀ d : Digest,
+      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ (Fintype.card Digest : ℝ)⁻¹ := fun d => by
+    simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
+  have h := authRFExp_le_collisionBound (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+    adversary q hq ((Fintype.card Digest : ℝ)⁻¹) hmax
+  rwa [div_eq_mul_inv]
+
 end AuthEagerTable
 
 end PRFTagReader

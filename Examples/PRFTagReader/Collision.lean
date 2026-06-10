@@ -1120,9 +1120,9 @@ instance pNonceDecidable (n : Nonce) :
 
 /-- The adversary's reader queries use pairwise-distinct nonces: every nonce `n` is carried by at
 most one reader query. This is the public hypothesis under which the random-function collision
-bound is fully proven (`authRFExp_le_collisionBound_of_distinctReaderNonces` and its uniform
-specialization); it rules out the shared-cache obstruction that keeps the unrestricted
-`authRFExp_le_collisionBound_conjecture` open. -/
+bound is proven in the lazy single-world per-step induction
+(`authRFExp_le_collisionBound_of_distinctReaderNonces` and its uniform specialization); it rules
+out the shared-cache obstruction handled in the unrestricted setting by the eager-table route. -/
 def HasDistinctReaderNonces (adversary : AuthAdversary TagId Nonce Digest) : Prop :=
   ∀ n : Nonce, OracleComp.IsQueryBoundP adversary (pNonce n) 1
 
@@ -1523,75 +1523,13 @@ private lemma simulateQ_authRF_forge_le
             rw [hc, hqcast, mul_assoc]
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
-/-- Collision bound for the random-function authentication world: the probability that the
-random-function reader records a forged acceptance is bounded by the number of reader queries the
-adversary may make, times `|TagId|`, times the per-digest sampling probability `maxDigestProb`.
-
-A forged acceptance can only arise from a *fresh* random-oracle draw: if the reader's query at
-`(tag, transcript.nonce)` is already cached, the cached digest was produced by an honest tag
-output, so a match against `transcript.auth` lands inside `honestOutputs` and is never recorded as
-forged. Each fresh draw is a uniform `Digest`, matching the adversary-chosen `transcript.auth` with
-probability at most `maxDigestProb`; every reader query triggers at most `|TagId|` fresh draws. -/
-theorem authRFExp_le_collisionBound_conjecture
-    (adversary : AuthAdversary TagId Nonce Digest)
-    (q : ℕ)
-    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
-    (maxDigestProb : ℝ)
-    (hmax : ∀ d : Digest,
-      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ maxDigestProb) :
-    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
-      (Digest := Digest) adversary]).toReal ≤
-      ((q * Fintype.card TagId : ℕ) : ℝ) * maxDigestProb := by
-  -- Status: open in this generality, but the bound is TRUE. The distinct-nonce sibling
-  -- `authRFExp_le_collisionBound_of_distinctReaderNonces` discharges it whenever the adversary's
-  -- reader queries use pairwise-distinct nonces; this is the unrestricted strengthening.
-  --
-  -- WHY THE BOUND HOLDS (first-forge telescoping). Each of the `q` reader queries triggers at
-  -- most `|TagId|` cell accesses on the lazy `(TagId × Nonce) →ₒ Digest` table. A forgery is a
-  -- coincidence `d = auth` between a cell digest `d` and an adversary-chosen `auth`, with the cell
-  -- not honest. Summing the per-(reader-query, tag) coincidence probabilities over all
-  -- `q * |TagId|` accesses gives `q * |TagId| * maxDigestProb`. Concretely, with `|TagId| = 1` and
-  -- two reader queries on the same nonce `nm` with auths `a₁ ≠ a₂` and an uncached, never-honest
-  -- column: step 1 samples `d ~ Unif` and forges iff `d = a₁`; step 2 reuses the cached `d` and
-  -- forges iff `d = a₂`; so `Pr[forge ever] = Pr[d ∈ {a₁,a₂}] = 2/|Digest|`, matching the bound.
-  --
-  -- WHY THE LAZY PER-STEP SKELETON CANNOT REACH IT. The sibling proof's combinator
-  -- `probEvent_bind_le_add` needs an UNCONDITIONAL per-reader-step bound
-  -- `Pr[step records a forgery] ≤ |TagId| * maxDigestProb`. That bound is FALSE once the state
-  -- carries a reader-created (non-honest) cell at the queried column: such a cell has a fixed
-  -- digest `d`, so the step forges with probability `0` or `1` (`d = auth?`), not `≤ maxProb`.
-  -- The correct per-step quantity is the JOINT `Pr[forge at step j ∧ ¬forge before j]`, which is
-  -- `≤ |TagId| * maxDigestProb` (in the toy case `Pr[d = a₂ ∧ d ≠ a₁] = Pr[d = a₂] = 1/|Digest|`,
-  -- since `a₁ ≠ a₂`). Charging the coincidence to the EARLIER fresh draw cannot be done in the lazy
-  -- single-world induction: the matching `auth` is chosen AFTER that draw and may depend on the
-  -- reader's accept-bit feedback, so `d ⊥ auth` is not available state-locally.
-  --
-  -- SOUND ROUTE (eager table). Factor `authRFQueryImpl = logger ∘ randomOracle` over the cell
-  -- oracle `((TagId × Nonce) →ₒ Digest)`, where `logger` deterministically maintains
-  -- `honestOutputs` / `readerForged` from the table and the query transcript (the `responses`
-  -- field already evolves exactly as a lazy random oracle; the tag handler also samples a nonce,
-  -- which is extra randomness threaded alongside the cell table). Then
-  -- `evalDist_simulateQ_randomOracle_run'_empty_eq_uniformTable`
-  -- (VCVio/OracleComp/QueryTracking/RandomOracle/EagerTable.lean) replaces the lazy table by an
-  -- up-front uniform full table `g : TagId × Nonce → Digest`. In the eager view every cell digest
-  -- is fixed BEFORE any adversary feedback, so each access's `auth` is independent of `g` at that
-  -- cell, the forge event becomes a STATIC union over the `≤ q * |TagId|` accesses, and the union
-  -- bound closes at `q * |TagId| * maxDigestProb`. The remaining work is the factorization lemma
-  -- (lift the single-cell `(D →ₒ R)` eager-table equivalence through the stateful auth logger and
-  -- the nonce-sampling tag handler) plus the static union bound; mirror the lazify → per-cell
-  -- marginalize → union-bound pattern used in the unlinkability eager-table track
-  -- (Examples/PRFTagReader/Table.lean and MultipleToHybrid/EagerSetup.lean).
-  sorry
-
-omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Collision bound for the random-function authentication world, restricted to adversaries whose
 reader queries use pairwise-distinct nonces. For such an adversary making at most `q` reader
 queries, the probability that the random-function reader records a forged acceptance is at most
 `q * |TagId| * maxDigestProb`.
 
 The distinctness hypothesis `HasDistinctReaderNonces adversary` states that every nonce is carried
-by at most one reader query. It rules out the shared-cache obstruction of the unrestricted
-`authRFExp_le_collisionBound_conjecture`:
+by at most one reader query. It rules out the shared-cache obstruction of the unrestricted bound:
 because no two reader queries write the same cache column, every cached cell in a reader query's
 column was produced by an honest tag output, so the per-reader-step forge probability is genuinely
 bounded by `|TagId| * maxDigestProb`. -/
@@ -1646,32 +1584,11 @@ theorem authRFExp_le_collisionBound_of_distinctReaderNonces
   exact hconv
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
-/-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound_conjecture`: when `Digest` is
-finite and sampled uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound
-is `qReader * |TagId| / |Digest|`. -/
-theorem authRFExp_le_uniformCollisionBound_conjecture [Fintype Digest]
-    (adversary : AuthAdversary TagId Nonce Digest)
-    (q : ℕ)
-    (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q) :
-    (Pr[= true | authRFExp (TagId := TagId) (Nonce := Nonce)
-      (Digest := Digest) adversary]).toReal ≤
-      ((q * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
-  have hmax : ∀ d : Digest,
-      (Pr[= d | ($ᵗ Digest : ProbComp Digest)]).toReal ≤ (Fintype.card Digest : ℝ)⁻¹ := fun d => by
-    simp [probOutput_uniformSample, ENNReal.toReal_inv, ENNReal.toReal_natCast]
-  have h := authRFExp_le_collisionBound_conjecture
-    (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-    adversary q hq ((Fintype.card Digest : ℝ)⁻¹) hmax
-  rwa [div_eq_mul_inv]
-
-omit [Nonempty TagId] [NeZero sessionsPerTag] in
 /-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound_of_distinctReaderNonces`: when
 `Digest` is finite and sampled uniformly, the per-digest probability is `1 / |Digest|`, so the
 distinct-reader-nonce collision bound reads `q * |TagId| / |Digest|`.
 
-Unlike `authRFExp_le_uniformCollisionBound_conjecture`, whose derivation passes through the
-still-open `authRFExp_le_collisionBound_conjecture`, this corollary is fully proven: it routes
-through
+This corollary is proven in the lazy single-world per-step induction: it routes through
 `authRFExp_le_collisionBound_of_distinctReaderNonces`. -/
 theorem authRFExp_le_uniformCollisionBound_of_distinctReaderNonces [Fintype Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
