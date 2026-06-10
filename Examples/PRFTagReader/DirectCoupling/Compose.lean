@@ -2372,10 +2372,21 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             ?_ ?_
           · simp
           intro n _ _hnD
-          -- Phase D: per-`n` bound. Two-cell marginalization of slot-0 (M's cell) and slot-K
-          -- (S's cell); 4 sub-cases on cache hits/misses; IH application via cell-pair
-          -- independence + index rename.
-          sorry
+          -- Phase D: per-`n` bound. Case-split on `c ((tag, 0), n)`:
+          -- * Case M-hit: M reads cached value `u₀`; `hRespInv` triggers `multipleBadAdvance`
+          --   to fire `bad := true`. By bad monotonicity, LHS ≤ Pr[bad] (the bad term in RHS).
+          -- * Case M-miss: marginalize M's slot-0 cell + S's slot-K cell, apply IH at u_0,
+          --   then `singleTableHandler_cache_swap_eq` (swap-bridge) closes the cache-extension
+          --   asymmetry; rename u_0 ↔ u_K via the two-cell marginalization.
+          rcases hc0 : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
+          · -- Case M-miss: c slot-0 = none. Marginalize + IH + swap-bridge.
+            sorry
+          · -- Case M-hit: c slot-0 = some u₀. By hRespInv, sB.responses(tag, n) ≠ none.
+            -- multipleBadAdvance at transcript ⟨n, u₀⟩ fires bad := true.
+            -- The starting state for the inner simulateQ has bad = true; by
+            -- `multipleBadTableHandlerFine_run_preserves_bad`, the result also has bad = true.
+            -- So LHS-success event is dominated by BAD event: drop everything else via `le_add_right`.
+            sorry
       · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
         -- consumed by the tag branch). The head step unfolds to `pure none` on both sides; the
