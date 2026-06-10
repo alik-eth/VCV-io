@@ -875,6 +875,66 @@ lemma evalDist_simulateQ_authRFQueryImpl_run_proj_eq_tableExtending
       rw [hcells]
       simp only [List.map_map, Function.comp_def]
 
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **`readerForged`-growth irrelevance.** The deterministic table handler never reads the running
+state's `readerForged` log: each step appends to it a set determined by the table, the
+`honestOutputs` log, and the query, none of which depend on the current `readerForged`. Hence
+running from a state whose `readerForged` is `S` yields the same `(honestOutputs, readerForged)`
+projection as running from `readerForged = ∅`, post-composed with `S ∪ ·` on the forged set. -/
+lemma simulateQ_authTableHandler_run_proj_readerForged_union (g : TagId × Nonce → Digest) {β : Type}
+    (oa : OracleComp (AuthOracleSpec TagId Nonce Digest) β)
+    (resp : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hon : Finset (TagId × TagTranscript Nonce Digest))
+    (S : Finset (TagId × TagTranscript Nonce Digest)) :
+    (fun z : β × AuthIdealState TagId Nonce Digest => (z.2.honestOutputs, z.2.readerForged)) <$>
+        (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+          oa).run
+          ({ responses := resp, honestOutputs := hon, readerForged := S } :
+            AuthIdealState TagId Nonce Digest) =
+      (fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+          Finset (TagId × TagTranscript Nonce Digest) => (p.1, S ∪ p.2)) <$>
+        ((fun z : β × AuthIdealState TagId Nonce Digest =>
+            (z.2.honestOutputs, z.2.readerForged)) <$>
+          (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+            oa).run
+            ({ responses := resp, honestOutputs := hon, readerForged := ∅ } :
+              AuthIdealState TagId Nonce Digest)) := by
+  induction oa using OracleComp.inductionOn generalizing resp hon S with
+  | pure b =>
+    simp only [simulateQ_pure, StateT.run_pure, map_pure, Finset.union_empty]
+  | query_bind t f ih =>
+    rw [authTable_run_query_bind, authTable_run_query_bind, map_bind, map_bind, map_bind]
+    cases t with
+    | inl tag =>
+      rw [authTableHandler_tag_run g tag, authTableHandler_tag_run g tag]
+      simp only [bind_assoc, pure_bind]
+      refine bind_congr fun nonce => ?_
+      exact ih ⟨nonce, g (tag, nonce)⟩ resp (insert (tag, ⟨nonce, g (tag, nonce)⟩) hon) S
+    | inr transcript =>
+      rw [authTableHandler_reader_run g transcript, authTableHandler_reader_run g transcript]
+      -- The reader step emits a single `pure (reply, state)`; collapse the head `pure >>= k` on
+      -- both sides via a retyped `pure_bind`, leaving the continuation run from the augmented state.
+      set Δ : Finset (TagId × TagTranscript Nonce Digest) :=
+        Finset.image (fun x => (x, transcript))
+          (List.map Prod.fst
+            (List.filter (fun p => decide (p.2 = transcript.auth ∧ (p.1, transcript) ∉ hon))
+              (List.map (fun tag => (tag, g (tag, transcript.nonce)))
+                (Finset.univ : Finset TagId).toList))).toFinset with hΔ
+      change ((pure _ : ProbComp (ReaderReply × AuthIdealState TagId Nonce Digest)) >>= fun p =>
+          (fun z : β × AuthIdealState TagId Nonce Digest =>
+            (z.2.honestOutputs, z.2.readerForged)) <$>
+            (simulateQ (authTableHandler g) (f p.1)).run p.2)
+          = (fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+              Finset (TagId × TagTranscript Nonce Digest) => (p.1, S ∪ p.2)) <$>
+            ((pure _ : ProbComp (ReaderReply × AuthIdealState TagId Nonce Digest)) >>= fun p =>
+              (fun z : β × AuthIdealState TagId Nonce Digest =>
+                (z.2.honestOutputs, z.2.readerForged)) <$>
+                (simulateQ (authTableHandler g) (f p.1)).run p.2)
+      rw [pure_bind, pure_bind]
+      simp only [Finset.empty_union]
+      rw [ih _ resp hon (S ∪ Δ), ih _ resp hon Δ]
+      simp only [Functor.map_map, Finset.union_assoc]
+
 /-! ### Static union bound in the eager world and the collision bound -/
 
 omit [Nonempty TagId] in
