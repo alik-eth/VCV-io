@@ -201,4 +201,73 @@ theorem probEvent_adaptiveUnion_two {maxProb : ENNReal}
       rw [hz1, hcached] at hnone
       exact absurd hnone (by simp)
 
+/-! ## Stage 1 : the per-step toolkit (general `q`)
+
+Both downstream consumers — the unlinkability slot-positive tag step
+(`PRFTagReader.UnlinkReduction.dcAux_tag_slotPositive`) and the collision reader-loop bound
+(`PRFTagReader.…AuthTable`) — perform their *own* structural induction over the adversary
+`query >>= k`, carrying the induction hypothesis as an explicit premise. What they consume at each
+reader/tag step is not a monolithic `q`-ary union bound but a **per-step toolkit**:
+
+* the Stage-0 single-step freshness charge `probEvent_randomOracle_step_eq` (already established),
+* **freshness-preservation** lemmas, which re-establish their per-step cache invariants
+  (`hcInv` / `hRespInv` in the unlinkability aux; `hCacheHonest` in the collision branch) after a
+  lazy-oracle step, so the IH's freshness hypothesis is available at the next step;
+* a **post-step cache characterization** `randomOracle_run_support_cache`, the exact statement
+  that a first read at `d` overwrites the cache with `c.cacheQuery d r` for the drawn `r`, while a
+  cached re-read leaves the cache untouched — this is the obligation Stage 0 flagged and is what
+  discharges the freshness conjunct at the call sites.
+
+For callers that *do* want the rolled-up bound, the explicit `runMany` fold below plus the
+probability-level first-fire telescope `probEvent_adaptiveUnion_le` deliver `≤ q · maxProb`
+directly from the per-step charge, by induction on the query list. The fold is deliberately the
+simplest reusable shape (a `List` of adaptive `(target, event)` selectors threaded through the
+monotone cache); the consumers may but need not route through it. -/
+
+/-! ### Post-step cache characterization (the freshness obligation) -/
+
+/-- **Post-step cache, fresh branch.** Every `(value, cache)` pair in the support of a single lazy
+random-oracle step at an *uncached* cell `d` has its second component equal to `c.cacheQuery d r`,
+where `r` is the drawn value (the first component). This is the exact post-step cache used to
+discharge the freshness conjunct at a first read. -/
+theorem randomOracle_run_support_cache (c : (D →ₒ R).QueryCache) (d : D) (hc : c d = none)
+    {z : R × (D →ₒ R).QueryCache} (hz : z ∈ support ((randomOracle (spec := (D →ₒ R)) d).run c)) :
+    z.2 = c.cacheQuery d z.1 := by
+  rw [QueryImpl.withCaching_run_none _ hc, support_map] at hz
+  obtain ⟨u, _, hu⟩ := hz
+  rw [← hu]
+
+/-- **Post-step cache, cached branch.** A lazy random-oracle step at an *already cached* cell `d`
+leaves the cache untouched: every pair in its support has second component `c`. A re-read draws no
+new randomness. -/
+theorem randomOracle_run_support_cache_some (c : (D →ₒ R).QueryCache) (d : D) {u : R}
+    (hc : c d = some u)
+    {z : R × (D →ₒ R).QueryCache} (hz : z ∈ support ((randomOracle (spec := (D →ₒ R)) d).run c)) :
+    z.2 = c := by
+  rw [QueryImpl.withCaching_run_some _ hc, support_pure, Set.mem_singleton_iff] at hz
+  rw [hz]
+
+/-! ### Freshness preservation -/
+
+omit [SampleableType R] in
+/-- **Caching preserves freshness off the written cell.** Writing a fresh entry at `d` keeps every
+cell `e ≠ d` at its prior cache status. The consumers instantiate this with `e` ranging over the
+cells their invariant tracks (the non-zero slots in the unlinkability aux, the honest column in the
+collision branch), having separately ensured those cells differ from the just-read `d`. -/
+theorem cacheQuery_preserves_freshness (c : (D →ₒ R).QueryCache) (d : D) (r : R)
+    {e : D} (hne : e ≠ d) : (c.cacheQuery d r) e = c e :=
+  QueryCache.cacheQuery_of_ne _ _ hne
+
+/-- **A lazy step preserves freshness off the read cell.** After running one lazy random-oracle
+step at `d` from cache `c`, every cell `e ≠ d` that was fresh (`c e = none`) is still fresh in the
+post-step cache. Covers both branches: a cached re-read leaves the whole cache fixed; a fresh first
+read only writes cell `d`, which is `≠ e`. -/
+theorem randomOracle_run_preserves_freshness (c : (D →ₒ R).QueryCache) (d : D)
+    {e : D} (hne : e ≠ d) (he : c e = none)
+    {z : R × (D →ₒ R).QueryCache} (hz : z ∈ support ((randomOracle (spec := (D →ₒ R)) d).run c)) :
+    z.2 e = none := by
+  rcases hcd : c d with _ | u
+  · rw [randomOracle_run_support_cache c d hcd hz, cacheQuery_preserves_freshness c d z.1 hne, he]
+  · rw [randomOracle_run_support_cache_some c d hcd hz, he]
+
 end OracleComp
