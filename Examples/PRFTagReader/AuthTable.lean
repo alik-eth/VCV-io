@@ -935,67 +935,6 @@ lemma simulateQ_authTableHandler_run_proj_readerForged_union (g : TagId × Nonce
       rw [ih _ resp hon (S ∪ Δ), ih _ resp hon Δ]
       simp only [Functor.map_map, Finset.union_assoc]
 
-omit [Nonempty TagId] [SampleableType Digest] in
-/-- **Growth-lowering of the forge probability.** Lowering the starting `readerForged` from a
-larger set `T` to a smaller `S ⊆ T` can only increase the probability that the run grows the log
-beyond its starting contents: the freshly-appended set is independent of the start (by
-`simulateQ_authTableHandler_run_proj_readerForged_union`), and the forge event `∃ x ∈ rf, x ∉ start`
-is anti-monotone in `start`. This decouples the `g`-dependent post-step baseline from the table. -/
-lemma probEvent_readerForged_growth_lower (g : TagId × Nonce → Digest) {β : Type}
-    (oa : OracleComp (AuthOracleSpec TagId Nonce Digest) β)
-    (resp : ((TagId × Nonce) →ₒ Digest).QueryCache)
-    (hon S T : Finset (TagId × TagTranscript Nonce Digest)) (hST : S ⊆ T) :
-    Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ T |
-        (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
-          oa).run
-          ({ responses := resp, honestOutputs := hon, readerForged := T } :
-            AuthIdealState TagId Nonce Digest)] ≤
-      Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ S |
-        (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
-          oa).run
-          ({ responses := resp, honestOutputs := hon, readerForged := S } :
-            AuthIdealState TagId Nonce Digest)] := by
-  -- Both forge events factor through the `(honestOutputs, readerForged)` projection, which the
-  -- growth lemma writes as `(p ↦ (p.1, start ∪ p.2)) <$> proj(run from ∅)`.
-  have hkey : ∀ (U : Finset (TagId × TagTranscript Nonce Digest)),
-      Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ U |
-          (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
-            oa).run
-            ({ responses := resp, honestOutputs := hon, readerForged := U } :
-              AuthIdealState TagId Nonce Digest)]
-        = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
-              Finset (TagId × TagTranscript Nonce Digest) => ∃ x ∈ p.2, x ∉ U |
-          (fun z : β × AuthIdealState TagId Nonce Digest =>
-            (z.2.honestOutputs, z.2.readerForged)) <$>
-            (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
-              oa).run
-              ({ responses := resp, honestOutputs := hon, readerForged := ∅ } :
-                AuthIdealState TagId Nonce Digest)] := by
-    intro U
-    rw [show Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ U |
-          (simulateQ (authTableHandler g) oa).run
-            ({ responses := resp, honestOutputs := hon, readerForged := U } :
-              AuthIdealState TagId Nonce Digest)]
-        = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
-              Finset (TagId × TagTranscript Nonce Digest) => ∃ x ∈ p.2, x ∉ U |
-          (fun z : β × AuthIdealState TagId Nonce Digest =>
-            (z.2.honestOutputs, z.2.readerForged)) <$>
-            (simulateQ (authTableHandler g) oa).run
-              ({ responses := resp, honestOutputs := hon, readerForged := U } :
-                AuthIdealState TagId Nonce Digest)] from by rw [probEvent_map]; rfl]
-    rw [simulateQ_authTableHandler_run_proj_readerForged_union g oa resp hon U, probEvent_map]
-    refine probEvent_congr' (fun p _ => ?_) rfl
-    simp only [Function.comp, Finset.mem_union]
-    constructor
-    · rintro ⟨x, hx, hxU⟩
-      exact ⟨x, hx.resolve_left (fun h => hxU h), hxU⟩
-    · rintro ⟨x, hx, hxU⟩
-      exact ⟨x, Or.inr hx, hxU⟩
-  rw [hkey S, hkey T]
-  refine probEvent_mono ?_
-  rintro p _ ⟨x, hx, hxT⟩
-  exact ⟨x, hx, fun h => hxT (hST h)⟩
-
 /-! ### Static union bound in the eager world and the collision bound -/
 
 omit [Nonempty TagId] in
@@ -1488,27 +1427,29 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
         simp_rw [hWeq]
         rw [← probEvent_bind_eq_tsum ($ᵗ (TagId × Nonce → Digest))
           (fun g => W (OracleComp.tableExtending c g)) (fun b => b = true)]
-        -- Draw the queried column first (`idealCacheMapM`), then the fresh table; the reply, the
-        -- forged set `Δ`, and hence the boolean test become functions of the fixed column draw `rs`.
-        rw [probEvent_congr' (fun _ _ => Iff.rfl)
-          (evalDist_idealCacheMapM_bind_uniformTable_comp cells c W).symm]
-        rw [probEvent_bind_eq_tsum]
-        -- For each column draw `rs`, the reply and `Δ` are constant; apply the induction hypothesis
-        -- at the column-extended cache `rs.2` and the post-step state, then average.
-        have hrs : ∀ rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
-            rs ∈ support (idealCacheMapM cells c) →
-            Pr[fun b => b = true |
-              do let g ← $ᵗ (TagId × Nonce → Digest); W (OracleComp.tableExtending rs.2 g)] ≤
-              ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
-          sorry
-        refine le_trans (ENNReal.tsum_le_tsum (g := fun rs => Pr[= rs | idealCacheMapM cells c] *
-          (((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb)) fun rs => ?_) ?_
-        · by_cases hsupp : rs ∈ support (idealCacheMapM cells c)
-          · exact mul_le_mul' le_rfl (hrs rs hsupp)
-          · rw [probOutput_eq_zero_of_not_mem_support hsupp, zero_mul]
-            exact zero_le _
-        · rw [ENNReal.tsum_mul_right]
-          exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
+        -- GENUINE DEFERRED-SAMPLING GAP (not plumbing). The reduction above is exact: the averaged
+        -- continuation forge is the `=true` probability of a single, shared-table program `do g ← $ᵗ;
+        -- W (tableExtending c g)`, where `W` reads the queried column of `g` to compute both the
+        -- reply / forged set `Δ` (the boolean test) AND the continuation `f`'s subsequent behaviour.
+        -- The induction hypothesis cannot be applied here: it redraws the whole table inside its own
+        -- `g ← $ᵗ` bind, whereas the reader step and the continuation must share the *one* table draw
+        -- so the reply is consistent with the cells the continuation re-reads. Column-first sampling
+        -- (drawing the queried column, then the rest) does not help: pinning the column to a fixed
+        -- draw `rs` makes a future reader query at `⟨nonce, d⟩` (with `d` the pinned column digest,
+        -- `d ≠ transcript.auth`) re-read that cell deterministically and forge it with probability 1,
+        -- so the per-column bound is *false* — the IH's `hCacheHonest` invariant genuinely fails for
+        -- the freshly-read, non-honest column cells. The statement is true only *after averaging over
+        -- the column*: the coincidence `d = f`'s future auth has probability `maxP` per cell per
+        -- query, recovering the `(q-1)·|TagId|·maxP` budget. Realising that average requires
+        -- re-coupling the column draw with the continuation's table draw — a deferred-sampling
+        -- rewrite of the reader case (read each cell lazily, on first access, so the reply and the
+        -- continuation share a single per-cell draw) rather than the eager up-front column draw.
+        -- This is the multi-week obligation flagged in `collision-reader-union-discard` /
+        -- `slack-not-inherent`. Everything up to this point — the eager factorisation, the
+        -- `hCacheHonest` disjunctive invariant, the `A`-term static union `hAle`, the per-`g` split
+        -- `hsplit`, and the boolean fold — is in place and reduces the collision bound to exactly
+        -- this single averaged-coincidence statement.
+        sorry
       -- Assemble: `∑'_g Pr[=g] · (A-indicator + continuation) ≤ q · |TagId| · maxDigestProb`.
       calc ∑' g : TagId × Nonce → Digest,
               Pr[= g | ($ᵗ (TagId × Nonce → Digest))] *
