@@ -1161,8 +1161,70 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
           = 𝒟[idealCacheMapM cells c >>= fun rs =>
               ($ᵗ (TagId × Nonce → Digest)) >>= fun g => M (OracleComp.tableExtending rs.2 g)] :=
         (evalDist_idealCacheMapM_bind_uniformTable_comp cells c M).symm
-      rw [probEvent_congr' (fun x _ => Iff.rfl) hlazy]
-      sorry
+      rw [probEvent_congr' (fun x _ => Iff.rfl) hlazy, probEvent_bind_eq_tsum]
+      -- The forge event is insensitive to the starting `responses` cache.
+      have hirrel : ∀ (g'' : TagId × Nonce → Digest)
+          (oa' : OracleComp (AuthOracleSpec TagId Nonce Digest) Unit)
+          (sa sb : AuthIdealState TagId Nonce Digest),
+          sa.honestOutputs = sb.honestOutputs → sa.readerForged = sb.readerForged →
+          Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+              ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+            (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              g'') oa').run sa]
+            = Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+              (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+                g'') oa').run sb] := by
+        intro g'' oa' sa sb hh hr
+        have hmap := simulateQ_authTableHandler_run_proj_responses_irrel g'' oa' sa sb hh hr
+        have hkey : ∀ s' : AuthIdealState TagId Nonce Digest,
+            Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+              (simulateQ (authTableHandler g'') oa').run s']
+            = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+                  Finset (TagId × TagTranscript Nonce Digest) =>
+                ∃ x ∈ p.2, x ∉ st.readerForged |
+                (fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                  (z.2.honestOutputs, z.2.readerForged)) <$>
+                  (simulateQ (authTableHandler g'') oa').run s'] := by
+          intro s'; rw [probEvent_map]; rfl
+        rw [hkey sa, hkey sb, probEvent_congr' (fun x _ => Iff.rfl) (congrArg evalDist hmap)]
+      -- Per column-draw `rs`: split into the step's new forgeries and the tail's, then bound.
+      have hper : ∀ rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
+          rs ∈ support (idealCacheMapM cells c) →
+          Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+              ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+            ($ᵗ (TagId × Nonce → Digest)) >>= fun g => M (OracleComp.tableExtending rs.2 g)] ≤
+            (Fintype.card TagId : ℝ≥0∞) * maxDigestProb +
+              ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+        sorry
+      -- Assemble: `∑'_rs Pr[=rs] · (per-rs bound) ≤ q · |TagId| · maxDigestProb`.
+      calc ∑' rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
+              Pr[= rs | idealCacheMapM cells c] *
+              Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+                  ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
+                ($ᵗ (TagId × Nonce → Digest)) >>= fun g => M (OracleComp.tableExtending rs.2 g)]
+            ≤ ∑' rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
+              Pr[= rs | idealCacheMapM cells c] *
+              ((Fintype.card TagId : ℝ≥0∞) * maxDigestProb +
+                ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb) := by
+            refine ENNReal.tsum_le_tsum fun rs => ?_
+            by_cases hrs : rs ∈ support (idealCacheMapM cells c)
+            · exact mul_le_mul' le_rfl (hper rs hrs)
+            · rw [probOutput_eq_zero_of_not_mem_support hrs, zero_mul]; exact zero_le _
+        _ = (∑' rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
+              Pr[= rs | idealCacheMapM cells c]) *
+              ((Fintype.card TagId : ℝ≥0∞) * maxDigestProb +
+                ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb) := by
+            rw [ENNReal.tsum_mul_right]
+        _ ≤ (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+            refine le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) ?_
+            rw [one_mul]
+            have hq1 : (1 : ℝ≥0∞) ≤ (q : ℝ≥0∞) := by exact_mod_cast hqpos
+            rw [show (Fintype.card TagId : ℝ≥0∞) * maxDigestProb
+                  + ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb
+                = (1 + ((q : ℝ≥0∞) - 1)) * ((Fintype.card TagId : ℝ≥0∞) * maxDigestProb) by ring]
+            rw [add_tsub_cancel_of_le hq1, mul_assoc]
 
 omit [Nonempty TagId] in
 /-- **Unrestricted forge bound for the random-function reader (eager-table route).** Running the
