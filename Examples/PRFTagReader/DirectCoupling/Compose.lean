@@ -58,9 +58,20 @@ single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
 
 ## Layout
 
-This file is deliberately concentrated in the eager-form aux
-`multipleBadEager_le_singleEager_DC_aux`; downstream wrappers (the lazy headline,
-slack-term packaging) are thin compositions.
+The eager-form aux `multipleBadEager_le_singleEager_DC_aux` is a thin dispatcher over the
+induction on the adversary: the `pure` and slot-exhausted tag cases close inline, while the three
+large induction cases live in sibling files and are invoked with the induction hypothesis as an
+explicit premise.
+
+* `Examples.PRFTagReader.DirectCoupling.ReaderCase` (`dcAux_reader_step`) — the asymmetric-discard
+  reader (`Sum.inr transcript`) step.
+* `Examples.PRFTagReader.DirectCoupling.TagSlotPositive` (`dcAux_tag_slotPositive`) — the
+  slot-positive tag (`Sum.inl tag`, `1 ≤ sessionsUsed < sessionsPerTag`) step.
+* `Examples.PRFTagReader.DirectCoupling.TagSlotZero` (`dcAux_tag_slotZero`) — the slot-zero tag
+  (`Sum.inl tag`, `sessionsUsed = 0`) step.
+
+The downstream wrappers (the lazy headline `multipleIdeal_le_singleIdeal_add_bad_DC`, slack-term
+packaging) are thin compositions.
 -/
 
 open OracleComp OracleSpec ENNReal
