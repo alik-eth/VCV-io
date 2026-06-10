@@ -801,10 +801,30 @@ private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Finty
   | pure b =>
     -- Both sides reduce to `pure b` via `simulateQ_pure` and `StateT.run'`.
     simp [simulateQ_pure]
-  | query_bind t k _ih =>
+  | query_bind t k ih =>
     -- Decompose via `singleTable_run'_query_bind'`, then case-split on `t`.
-    -- Tag/reader sub-cases each use the swap-hypothesis to show step responses are equal.
-    sorry
+    rw [singleTable_run'_query_bind', singleTable_run'_query_bind']
+    -- Goal: (step_g₁ t s) >>= cont_g₁ = (step_g₂ t s) >>= cont_g₂
+    -- Strategy: show step_g₁ = step_g₂ pointwise (case-split on `t`), then apply IH on
+    -- continuation. The IH carries the swap-invariance to each post-step state.
+    cases t with
+    | inl T =>
+      -- Tag query: handler reads at cell `((T, sessionsUsed T), fresh_nonce)`.
+      -- * `T = tag` + hAdv: sid_T ≥ slotK + 1 ∉ {0, slotK}, cell not in swap pair, `heq` gives
+      --   agreement. Post-step `advT.sessionsUsed tag = sessionsUsed tag + 1 > slotK + 1 > slotK`,
+      --   so hAdv preserved for IH.
+      -- * `T ≠ tag`: cell `((T, ·), ·)` with T ≠ tag is not in swap pair. Cell agreement.
+      --   Post-step `advT.sessionsUsed tag = sessionsUsed tag > slotK`. hAdv preserved.
+      sorry
+    | inr transcript =>
+      -- Reader query: handler returns `pure (ReaderReply.ofBool (unlinkReaderAccepts ...), s)`.
+      -- * `transcript.nonce ≠ n`: existential reads cells at `transcript.nonce ≠ n`, none in
+      --   swap pair. Existential value pointwise equal between g₁ and g₂.
+      -- * `transcript.nonce = n`: existential reads cells at `n`, including the swap pair.
+      --   `∃ (T', sid'), g((T', sid'), n) = V` is invariant under swapping cell VALUES at two
+      --   positions (the existential is over a SET of values, unchanged by swap).
+      -- In both sub-cases, the response is identical; state unchanged; IH closes.
+      sorry
 
 /-! ### Swap-bridge for `singleTableHandler` cache extensions
 
