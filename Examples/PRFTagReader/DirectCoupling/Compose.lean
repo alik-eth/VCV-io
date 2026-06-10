@@ -818,13 +818,34 @@ private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Finty
       sorry
     | inr transcript =>
       -- Reader query: handler returns `pure (ReaderReply.ofBool (unlinkReaderAccepts ...), s)`.
-      -- * `transcript.nonce ≠ n`: existential reads cells at `transcript.nonce ≠ n`, none in
-      --   swap pair. Existential value pointwise equal between g₁ and g₂.
-      -- * `transcript.nonce = n`: existential reads cells at `n`, including the swap pair.
-      --   `∃ (T', sid'), g((T', sid'), n) = V` is invariant under swapping cell VALUES at two
-      --   positions (the existential is over a SET of values, unchanged by swap).
-      -- In both sub-cases, the response is identical; state unchanged; IH closes.
-      sorry
+      rw [singleTableHandler_reader_run, singleTableHandler_reader_run]
+      -- Goal: `pure (ofBool h₁, s) >>= cont_g₁ = pure (ofBool h₂, s) >>= cont_g₂`
+      -- where h_i = unlinkReaderAccepts (fun slot nc => g_i (slot, nc)) singlePattern transcript.
+      by_cases hn : transcript.nonce = n
+      · -- Sub-case `transcript.nonce = n`: existential reads cells at `n`, including the swap
+        -- pair. Multiset-invariance: `∃ (T', sid'), g((T', sid'), n) = V` is the same for g₁ and
+        -- g₂ because the SET of values present at nonce `n` is identical (swap of positions
+        -- doesn't change the multiset).
+        sorry
+      · -- Sub-case `transcript.nonce ≠ n`: cells at `transcript.nonce` are not in swap pair,
+        -- so `g₁` and `g₂` agree pointwise there. `unlinkReaderAccepts` value equal.
+        -- Pointwise cell-value equality at every cell at `transcript.nonce`:
+        have hg_eq : ∀ T' : TagId, ∀ sid' : Fin sessionsPerTag,
+            g₁ ((T', sid'), transcript.nonce) = g₂ ((T', sid'), transcript.nonce) := by
+          intro T' sid'
+          refine heq ((T', sid'), transcript.nonce) ?_ ?_ <;>
+            intro h <;> exact hn (congrArg (fun p => p.2) h)
+        have hresp_eq : unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nc => g₁ (slot, nc)) (singlePattern sessionsPerTag) transcript
+            = unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nc => g₂ (slot, nc)) (singlePattern sessionsPerTag) transcript := by
+          unfold unlinkReaderAccepts tagAccepts
+          simp only [hg_eq]
+        rw [hresp_eq]
+        -- Pure-bind: `pure (response, s) >>= cont = cont (response, s)`. Apply IH.
+        change (simulateQ (singleTableHandler g₁) (k _)).run' s
+             = (simulateQ (singleTableHandler g₂) (k _)).run' s
+        exact ih _ s hAdv
 
 /-! ### Swap-bridge for `singleTableHandler` cache extensions
 
