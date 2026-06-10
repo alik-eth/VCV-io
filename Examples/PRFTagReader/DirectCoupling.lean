@@ -9,7 +9,7 @@ import Examples.PRFTagReader.Table
 /-!
 # PRF Tag/Reader Protocol — Direct M_ideal/S_ideal Coupling Foundations
 
-Session 1 foundations for the direct coupling that identifies the multiple-session ideal world's
+Foundations for the direct coupling that identifies the multiple-session ideal world's
 cell `(tag, n)` with the reference slot `((tag, 0), n)` of the single-session ideal world.
 
 The two ideal worlds run on different random-oracle tables — `g : TagId × Nonce → Digest` for the
@@ -35,7 +35,7 @@ sub-table of the single-session one.
 * `mReaderCellsFinset_image_subset_sReaderCellsFinset` — at any fixed transcript, the
   multiple-side reader cells `{(tag, nonce) | tag ∈ TagId}` embed (via `slotZeroEmbed`) into the
   single-side reader cells `{((tag, sid), nonce) | tag ∈ TagId, sid ∈ Fin sessionsPerTag}` — the
-  cell-level inclusion that underlies the slack-free reader-side bound in subsequent sessions.
+  cell-level inclusion that underlies the slack-free direction of the reader-side bound.
 * `mReader_accepts_imp_sReader_accepts` — deterministic reader-side coupling: whenever the
   multiple-session reader accepts a transcript against the sub-table `slotZeroSubTable gS`, the
   single-session reader accepts the same transcript against the full table `gS`. The witness
@@ -221,7 +221,7 @@ end ReaderCoupling
 
 /-! ### Compatibility with the sibling eager-form -/
 
-/-- `slotZeroSubTable` agrees with `projectTable` pointwise. Useful for rewriting Session 1's
+/-- `slotZeroSubTable` agrees with `projectTable` pointwise. Useful for rewriting this module's
 direct-coupling statements into the established sibling phrasing in `Table.lean`. -/
 @[simp] lemma slotZeroSubTable_eq_projectTable_apply
     (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest) (p : TagId × Nonce) :
@@ -298,7 +298,7 @@ end TagCoupling
 
 The reader-step is deterministic in both worlds: `multipleTableHandler g (Sum.inr transcript) s`
 and `singleTableHandler gS (Sum.inr transcript) s` both return `pure (ReaderReply.ofBool …, s)`
-with the state untouched. The lemmas in this section bundle that determinism with Session 2's
+with the state untouched. The lemmas in this section bundle that determinism with the
 `mReader_accepts_imp_sReader_accepts` cell-level lift to give the bind-friendly forms used by the
 direct-coupling induction.
 
@@ -333,8 +333,9 @@ lemma multipleTableHandler_reader_run_slotZeroSubTable
 state, the M-side reader reply (against the sub-table `slotZeroSubTable gS`) and the S-side reader
 reply (against the full table `gS`) satisfy `M-reply = .ok → S-reply = .ok`.
 
-This is the deterministic-half "M-accept implies S-accept" of Session 2, repackaged at the
-reader-handler level. It is the per-step ingredient the direct-coupling induction uses to charge
+This is the deterministic-half "M-accept implies S-accept" lift
+`mReader_accepts_imp_sReader_accepts`, repackaged at the reader-handler level. It is the
+per-step ingredient the direct-coupling induction uses to charge
 the reader-step's potential bool disagreement to nothing (M-side accept always lifts) — the only
 gap is "M rejects, S accepts", which is absorbed in the direction of the headline inequality
 `Pr[M accept] ≤ Pr[S accept]`. -/
@@ -355,62 +356,15 @@ lemma multipleReader_reply_imp_singleReader_reply
 
 end ReaderStepCoupling
 
-/-! ### Session 5 composition handoff
+/-! ### Composition
 
-The pieces above — Session 1's eager-table sub-sampler, Session 2's deterministic reader lift,
-and Session 3's tag-step first-session equality — compose at the bind level into the off-bad
-inequality
-
-```
-Pr[= true | $ᵗ gS >>= fun gS => simulateQ (multipleTableHandler (slotZeroSubTable gS)) adv).run' s]
-  ≤
-Pr[= true | $ᵗ gS >>= fun gS => simulateQ (singleTableHandler gS) adv).run' s]
-  + Pr[bad fires]
-```
-
-via an induction on `adv : UnlinkAdversary TagId Nonce Digest` over the `OracleComp` constructor,
-threading the carrier `(s : UnlinkState TagId, gS)` and a fresh "bad" predicate.
-
-**Per-step structural usage in the induction:**
-
-* `pure b` case — both sides return `b`; the headline LHS = RHS (no bad contribution).
-* `query_bind (Sum.inl tag) f` case (tag query):
-  * if `s.sessionsUsed tag = 0`, use
-    `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`
-    to pointwise-replace the M-handler call by the S-handler call inside the bind, then recurse on
-    `f` at the resulting (state, gS) pair;
-  * if `s.sessionsUsed tag ≥ 1`, the cell read at `(tag, ⟨s.sessionsUsed tag, _⟩, nonce)` of `gS`
-    is **disjoint** from the slot-0 sub-table cell `(tag, 0, nonce)` that the M-side reads
-    (under the sub-table view). Charge this whole sub-tree to the bad predicate — at most `1` —
-    via `probEvent_bind_le_add_bad_of_disagree`-style framework lemmas; the inductive bound
-    holds with the bad-event term absorbing the entire branch contribution.
-* `query_bind (Sum.inr transcript) f` case (reader query): both readers are deterministic and
-  state-preserving. Apply `multipleReader_reply_imp_singleReader_reply` and case-split on the
-  M-side reply:
-  * M-reply = `.ok`: the lemma gives M-handler = S-handler at this step; both sides continue with
-    `f .ok` at the unchanged state, recurse;
-  * M-reply = `.ko`: the M-side continues with `f .ko`, the S-side continues with `f sReply` for
-    some `sReply` which is either `.ok` (S accepts where M does not — favourable to the headline)
-    or `.ko` (agree); the M-side's `Pr[= true | f .ko ⋯]` is bounded by the S-side's mixture by
-    monotonicity-of-bind plus `mReader_accepts_imp_sReader_accepts` ruling out the "S rejects,
-    M accepts" direction.
-
-**Bad-event flag.** The recommended flag for Session 5 is a fresh local
-`badAfter : UnlinkState TagId → Bool := fun s => decide (∃ tag, s.sessionsUsed tag ≥ 1)`
-predicate, set at the first tag query of a tag whose `sessionsUsed` is already positive. The
-bridge `badAfter → unlinkBadExp` is a separate lemma (the existing
-`UnlinkBadState`/`multipleBadAdvance` chain in `Defs.lean` records exactly that event and the
-multiple-bad-collision module already gives `unlinkBadExp ≤ collision bound`).
-
-Alternatively, Session 5 may directly reuse `UnlinkBadState`/`unlinkBadExp` and run the parallel
-`multipleBadTableHandler` from `BadEvent.lean` alongside the `multipleTableHandler` of the
-sub-table — the only change in the induction is that the carrier is `(s, sB)` rather than `s`,
-and the bad-flag propagation is given by `multipleBadAdvance` and the existing monotone lemmas in
-`BadEvent.lean`.
-
-This module deliberately stops at the per-step structural primitives. The bind-level induction is
-the headline of Session 5; the only new mathematical content needed there is the bookkeeping of
-the bad-event flag through the `query_bind` recursion. -/
+The pieces above — the eager-table sub-sampler `evalDist_slotZeroSubTable_uniformSample`, the
+deterministic reader lift `mReader_accepts_imp_sReader_accepts`, and the tag-step first-session
+equality `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero` — are
+composed in `DirectCoupling/Compose.lean` by the eager-form induction
+`multipleBadEager_le_singleEager_DC_aux` and the lazy-form headline
+`multipleIdeal_le_singleIdeal_add_bad_DC` (the hdist-free multiple-to-single bound). This module
+deliberately stops at the per-step structural primitives. -/
 
 end DirectCoupling
 

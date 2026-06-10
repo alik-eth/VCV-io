@@ -43,24 +43,26 @@ probability plus the bad-event probability plus the per-reader-query slack.
 
 The two table samples are coupled cell-by-cell: an outer uniform draw of the hybrid table `gH`
 determines, at every drawn hybrid cell `((tag,sid),n)`, the multiple value `gM(tag,n)` — the
-multiple table being recovered from the hybrid table along the injective `couplingEmbed`
-(see `evalDist_couplingProject_uniformSample`). The induction threads the reader budget `qR`
+multiple table being recovered by reading, for each multiple cell `(tag, n)`, the hybrid cell at
+the session of `tag` that drew `n` (an injective cell identification, so projecting a uniform
+hybrid table yields a uniform multiple table). The induction threads the reader budget `qR`
 exactly as `hybridCoupled_le_singleIdeal_add_readerSlack_aux`.
 
-### Open obligation (the two `query_bind` cases)
+### The two main `query_bind` cases
 
-The `tag` slot-exhausted branch is closed (both handlers return `pure (none, …)` with state
+The `tag` slot-exhausted branch is immediate (both handlers return `pure (none, …)` with state
 untouched, so the step collapses to the continuation `f none` and the goal is exactly `ih`). The
-two remaining `sorry`s are:
+two substantive cases are:
 
 1. The **tag step, slot-available branch.** With `hslot : sM.1.sessionsUsed tag < sessionsPerTag`,
    both handlers unfold to `nonce ← $ᵗ Nonce` followed by a fresh per-cell read:
    `tableExtending sM.2 gM (tag, nonce)` on the multiple side, `tableExtending sH.2 gH ((tag,sid),
    nonce)` on the hybrid side, where `sid = ⟨sM.1.sessionsUsed tag, hslot⟩` is statically known.
-   The cleanest split is on collision rather than on the global `couplingEmbed`: at each tag step
-   the eager caches `sM.2`/`sH.2` carry only *tag-drawn* cells (the eager reader does not write
-   them; only the `ih`-recording at past tag draws does), so a cell `sM.2 (tag, nonce)` being
-   `some w` means a past session of `tag` already drew `nonce` — exactly the bad event. Hence:
+   The cleanest split is on collision rather than on the global cell identification: at each
+   tag step the eager caches `sM.2`/`sH.2` carry only *tag-drawn* cells (the eager reader does
+   not write them; only the `ih`-recording at past tag draws does), so a cell `sM.2 (tag, nonce)`
+   being `some w` means a past session of `tag` already drew `nonce` — exactly the bad event.
+   Hence:
 
    * **Bad branch** (`∃ sid', sH.1.sessionNonce (tag, sid') = some nonce`): `multipleBadAdvance`
      fires `bad`, the monotone lemma `multipleBadQueryImpl_step_preserves_bad` propagates it to

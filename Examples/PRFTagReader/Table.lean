@@ -9,15 +9,14 @@ import Examples.PRFTagReader.PRFReductions
 /-!
 # PRF Tag/Reader Protocol — Composed-Handler Eager-Table Equivalence
 
-The eager-table reformulation of the composed ideal handlers. Milestones 1-4 of the
-unlinkability reduction:
+The eager-table reformulation of the composed ideal handlers, in four parts:
 
-* **Milestone 1**: the reader-table-iteration lemma `idealCacheMapM`.
-* **Milestone 2**: composed multiple-world eager-table equivalence
-  `evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending`.
-* **Milestone 3**: composed single-world eager-table equivalence
-  `evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending`.
-* **Milestone 4**: eager-form success probabilities `probOutput_*_run'_eq_tableSample`
+* the reader table-iteration lemma `idealCacheMapM`;
+* the composed multiple-world eager-table equivalence
+  `evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending`;
+* the composed single-world eager-table equivalence
+  `evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending`;
+* the eager-form success probabilities `probOutput_*_run'_eq_tableSample`
   and the `projectTable` helper that bridges the two table types.
 
 All declarations live inside `section EagerComposed`, whose variable block drops `K`
@@ -46,8 +45,7 @@ handler: running `multipleIdealQueryImpl` from `(s, c)` has the same output dist
 sampling a full random-oracle table `g`, overlaying the cache `c`, and running the *real*
 multiple-session handler `multipleTableHandler` deterministically against that table.
 
-This is the multiple-world half of the recommended eager-sampling reformulation; it does not touch
-the coupled-table union bound or the two residue `sorry`s. -/
+This is the multiple-world half of the eager-sampling reformulation. -/
 
 section EagerComposed
 
@@ -231,7 +229,7 @@ lemma evalDist_uniformSample_bind_cell_extract {D R : Type}
         = Pr[= p | (do let u ← $ᵗ R; let g ← $ᵗ (D → R); pure (Function.update g t u, u))]
       from probOutput_congr rfl hcore.symm]
 
-/-! #### Milestone 1: the reader table-iteration lemma
+/-! #### Reader table-iteration lemma
 
 `idealCacheMapM` folds the lazy random-oracle lookup `idealCacheStep` over a list of cache cells —
 this is exactly the reader query's behaviour under the composed ideal handler. The lemmas below lift
@@ -404,7 +402,7 @@ lemma idealCacheMapM_cache_isSome_of_mem {D : Type} [DecidableEq D]
     · exact ih step.2 rest hrest hdes
 
 omit [DecidableEq Digest] in
-/-- **Reader table-iteration lemma (Milestone 1).** Folding the lazy random-oracle lookup
+/-- **Reader table-iteration lemma.** Folding the lazy random-oracle lookup
 `idealCacheStep` over a list of cells `l`, then sampling one full random-oracle table for the
 remaining computation, has the same output distribution as directly sampling the table: every
 fresh on-demand draw of a cache miss is absorbed into the up-front table draw.
@@ -519,7 +517,7 @@ lemma evalDist_bind_congr_of_support {α β : Type}
   refine probOutput_bind_congr fun a ha => ?_
   rw [probOutput_def, probOutput_def, h a ha]
 
-/-! #### Milestone 2: composed multiple-world eager-table equivalence
+/-! #### Composed multiple-world eager-table equivalence
 
 The composed ideal handler `multipleIdealQueryImpl` embeds the lazy random oracle. The lemma below
 lifts the eager-table equivalence to the composed handler: running `multipleIdealQueryImpl` from
@@ -531,7 +529,7 @@ case is discharged by the single-cell absorption `evalDist_idealCacheStep_bind_u
 reader-query case by the list absorption `evalDist_idealCacheMapM_bind_uniformTable`. -/
 
 omit [Nonempty TagId] in
-/-- **Step A, multiple world (Milestone 2).** Running the composed multiple-session ideal handler
+/-- **Step A, multiple world.** Running the composed multiple-session ideal handler
 from state `(s, c)` has the same output distribution as sampling a full random-oracle table `g`,
 overlaying the cache `c`, and running the deterministic real multiple-session table handler. -/
 lemma evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending
@@ -694,7 +692,7 @@ lemma evalDist_simulateQ_multipleIdealQueryImpl_run'_eq_tableExtending
       beta_reduce
       rw [hAccept]
 
-/-! #### Milestone 3: composed single-world eager-table equivalence
+/-! #### Composed single-world eager-table equivalence
 
 The single-world analogues of the multiple-world `EagerComposed` helpers: a deterministic real
 single-session table handler `singleTableHandler` keyed on a table over
@@ -788,7 +786,7 @@ lemma singleTableHandler_reader_run
   rw [QueryImpl.add_apply_inr]; rfl
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
-/-- **Step A, single world (Milestone 3).** Running the composed single-session ideal handler
+/-- **Step A, single world.** Running the composed single-session ideal handler
 from state `(s, c)` has the same output distribution as sampling a full random-oracle table `g`,
 overlaying the cache `c`, and running the deterministic real single-session table handler. -/
 lemma evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending
@@ -941,10 +939,10 @@ lemma evalDist_simulateQ_singleIdealQueryImpl_run'_eq_tableExtending
       beta_reduce
       rw [hAccept]
 
-/-! #### Milestone 4 prep: eager-form success probabilities
+/-! #### Eager-form success probabilities
 
-With both ideal worlds shown equal in distribution to deterministic table-handler runs
-(Milestones 2 and 3), the two ideal-world success probabilities are exposed as
+With both ideal worlds shown equal in distribution to deterministic table-handler runs,
+the two ideal-world success probabilities are exposed as
 table-sampled deterministic runs from the empty cache (`tableExtending ∅ g = g`). These are the
 precise eager forms on which the coupled-table union bound operates. -/
 

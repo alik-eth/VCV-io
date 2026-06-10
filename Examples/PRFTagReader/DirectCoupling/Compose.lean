@@ -11,24 +11,28 @@ import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
 # PRF Tag/Reader Protocol — Direct M_ideal/S_ideal Coupling, Headline Composition
 
 This module composes the per-step direct-coupling primitives from
-`Examples.PRFTagReader.DirectCoupling` (Sessions 1–4) into the headline bound
+`Examples.PRFTagReader.DirectCoupling` (the `slotZeroEmbed` / `slotZeroSubTable` cell
+identification, the sub-table uniform sampler, the deterministic reader lift, and the
+first-session tag-step equality) into the headline bound
 
 ```
 Pr[multipleIdealQueryImpl true] ≤
-  Pr[singleIdealQueryImpl true] + Pr[unlinkBadExp] + slack₁ + slack₂ + slack₃
+  Pr[singleIdealQueryImpl true] + Pr[bad]
+    + qReader·|TagId| / |Digest| + qReader·qTag / |Nonce|
+    + qReader·|TagId|·sessionsPerTag / |Digest|
+    + qTag·|TagId|·sessionsPerTag / |Digest| + qTag·sessionsPerTag / |Digest|
 ```
 
-without any `HasDistinctUnlinkReaderNonces` hypothesis on the adversary. The conclusion shape
-matches `multipleIdeal_le_singleIdeal_add_bad` in `MultipleBadCollision.lean`; the only difference
-is the missing `hdist` hypothesis.
+without any `HasDistinctUnlinkReaderNonces` hypothesis on the adversary. Compared with
+`multipleIdeal_le_singleIdeal_add_bad` in `MultipleBadCollision.lean`, the `hdist` hypothesis
+is gone and the bound carries two additional tag-side slack terms (the last two above).
 
 The direct coupling identifies the multiple-session world's RO cell `(tag, n)` with the
 single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
 `slotZeroSubTable`. Under this identification:
 
 * **Tag step, slot 0.** Both worlds read the cell `((tag, 0), n)` of a shared `gS` — identical
-  step (`multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`,
-  Session 3).
+  step (`multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`).
 * **Tag step, slot ≥ 1.** M reads `gS((tag, 0), n)` (sub-table); S reads `gS((tag, k), n)` —
   independent uniforms off a nonce collision. The `multipleBadAdvance` bad flag captures the
   nonce-collision case; off-bad, the per-step output distributions agree marginally because
@@ -50,8 +54,8 @@ single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
 
 ## Layout
 
-This file is the Session 5+ composition handoff from `DirectCoupling.lean`'s Session 4. It is
-deliberately concentrated in the eager-form aux; downstream wrappers (the lazy headline,
+This file is deliberately concentrated in the eager-form aux
+`multipleBadEager_le_singleEager_DC_aux`; downstream wrappers (the lazy headline,
 slack-term packaging) are thin compositions.
 -/
 
@@ -72,7 +76,7 @@ namespace UnlinkReduction
 /-! ### Slot-positive handler step characterizations
 
 The next two lemmas explicitly unfold the M-Fine and S handler tag-step shapes at the
-slot-positive case. They form the structural foundation of Phase 9.3:
+slot-positive case. They form the structural foundation of the slot-positive tag case:
 
 * `slotPositive_MFine_tag_step` — the `Sum.inl tag` branch of `multipleBadTableHandlerFine` on
   the sub-table `slotZeroSubTable (tableExtending c gS)`, under `hslot ∧ ¬hzero`, samples a nonce
@@ -85,7 +89,7 @@ slot-positive case. They form the structural foundation of Phase 9.3:
 
 Both step lemmas are direct corollaries of `multipleTableHandler_tag_run_of_lt` and
 `singleTableHandler_tag_run_of_lt`, specialized to the slot-positive case where the
-zero-slot rewrite `Fin.ext hzero` of Phase 9.2 no longer applies. -/
+zero-slot rewrite `Fin.ext hzero` of the slot-zero tag case no longer applies. -/
 
 omit [Nonempty TagId] [SampleableType Digest] in
 /-- **M-Fine tag step at slot-positive.** Under `hslot : s.sessionsUsed tag < sessionsPerTag`,
@@ -665,14 +669,11 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         (Fintype.card Digest : ℝ≥0∞) +
       ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) := by
-  -- **Phase 9.0 skeleton.** Signature swapped to the Fine handler `multipleBadTableHandlerFine`
-  -- with an inner `gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)` binder threaded
-  -- through both the LHS success and RHS bad terms. Each induction case is staged as a `sorry`
-  -- to be closed in Phases 9.1–9.5; see the recon document for the per-case strategy.
+  -- Induction cases: pure / tag slot-zero / tag slot-positive / tag slot-exhausted / reader.
   classical
   induction oa using OracleComp.inductionOn generalizing qR qT s c sB R hqRle hcInv hRespInv with
   | pure b =>
-    -- Phase 9.1: pure b — both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
+    -- Pure case: both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
     -- becomes `do gS ← $ᵗ; gFine ← $ᵗ; pure b` (`bind_const` shape since `pure b` ignores
     -- `gFine`). Collapse the inner `gFine ← $ᵗ; pure b` via `probOutput_bind_const` and the
     -- uniform `Pr[⊥ | $ᵗ ·] = 0` identity (`probFailure_uniformSample`) so the inner factor
@@ -687,7 +688,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     | inl tag =>
       by_cases hslot : s.sessionsUsed tag < sessionsPerTag
       · by_cases hzero : s.sessionsUsed tag = 0
-        · -- Phase 9.2: slot-zero (k = 0 fresh). The `Sum.inl tag` branch of
+        · -- Slot-zero tag case (k = 0 fresh). The `Sum.inl tag` branch of
           -- `multipleBadTableHandlerFine` is byte-identical to the coarse handler — it does not
           -- consume `gFine`. So the head step is the same as the coarse version; we mirror the
           -- coarse closure (Phase A handler unfolds, Phase B `$ᵗ gS`/`$ᵗ Nonce` commutation,
@@ -710,7 +711,9 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             { s with sessionsUsed :=
                 Function.update s.sessionsUsed tag (s.sessionsUsed tag + 1) } with hadvM
           -- M-Fine step under hzero: same as coarse — the `Sum.inl tag` branch of the Fine handler
-          -- does not depend on `gFine`. By Session 3, M-handler step = S-handler step, then
+          -- does not depend on `gFine`. By
+          -- `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`,
+          -- M-handler step = S-handler step, then
           -- unfold via `singleTableHandler_tag_run_of_lt` and use `sidH = 0` (from hzero).
           have hMstep_with_bad : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
               ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest,
@@ -1422,14 +1425,15 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
-        · -- Phase 9.3: slot-positive (1 ≤ k < sp). M reads slot-0 cell, S reads slot-K cell (K ≠ 0).
+        · -- Slot-positive tag case (1 ≤ k < sp). M reads slot-0 cell, S reads slot-K cell
+          -- (K ≠ 0).
           -- **Cell-pair independence strategy.** Each side marginalizes its own cell via a
           -- single-cell helper (`evalDist_uniformSample_bind_update_map`), giving the IH a fresh
           -- slot-0 draw on the M side; the resulting slot-0 → slot-K cache extension is then
           -- bridged on the S side by the permutation lemma `singleTableHandler_cache_swap_eq`.
-          -- No per-step cacheBadReader charge is needed at this site. The
-          -- `qT · |TagId| · sp / |Digest|` budget in the aux signature is reserved for the reader
-          -- case (Phase 9.5); it weakens back here via `gcongr`.
+          -- No per-step `cacheBadReader` charge is needed at this site: the per-step
+          -- `|TagId| · sp / |Digest|` unit carved out of the `qT`-based slack is dropped via
+          -- `le_self_add` (cell-pair independence gives per-`n` equality).
           have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
             have := hqR
             rw [OracleComp.isQueryBoundP_query_bind_iff] at this
@@ -1448,7 +1452,8 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           set slotK : Fin sessionsPerTag := ⟨s.sessionsUsed tag, hslot⟩ with hslotK
           have hslotK_ne : slotK ≠ 0 := slotPositive_slotK_ne_zero (sessionsPerTag' := sessionsPerTag)
             hslot hzero
-          -- M-Fine and S step shapes via the Phase 9.4a helpers. Note: M reads slot-0 cell of
+          -- M-Fine and S step shapes via `slotPositive_MFine_tag_step` /
+          -- `slotPositive_S_tag_step`. Note: M reads slot-0 cell of
           -- `gS` (via `slotZeroSubTable`) regardless of `hzero`; S reads slot-K cell where
           -- `slotK = ⟨s.sessionsUsed tag, hslot⟩` is non-zero by `hslotK_ne`.
           have hMstep : ∀ gS gFine,
@@ -2262,7 +2267,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
             -- Step 4: BAD ≤ (S + BAD) + slacks. Chain: `le_add_self` then `le_self_add`.
             refine hLHS_le_BAD.trans ?_
             exact le_add_self.trans le_self_add
-      · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
+      · -- Slot-exhausted tag case. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
         -- consumed by the tag branch). The head step unfolds to `pure none` on both sides; the
         -- inner `gFine ← $ᵗ` binder is consumed via `bind_const` shape. After splitting
@@ -2375,7 +2380,7 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
         · exact Nat.le_succ _
         · exact Nat.le_succ _
     | inr transcript =>
-      -- Phase 9.5: reader query — the asymmetric-discard argument. Slot-0 column lazification
+      -- Reader case: the asymmetric-discard argument. Slot-0 column lazification
       -- on both sides makes M's reader bit a constant `m` of the extended cache `c₀′`; on `m = true`
       -- the IH closes directly, on `m = false` the slot-positive acceptance event `E gS` is the
       -- whole gap and is charged to one slack₃ unit via `cacheBadReader`.
@@ -3116,9 +3121,10 @@ single-ideal handler (`probOutput_singleIdeal_run'_eq_tableSample`). -/
 
 namespace UnlinkReduction
 
-/-- **Multi-to-single via direct M-S coupling, no `hdist`.** Drop-in replacement for
-`multipleIdeal_le_singleIdeal_add_bad` (`MultipleBadCollision.lean:71`) that does *not* require
-`HasDistinctUnlinkReaderNonces` on the adversary. Same conclusion shape.
+/-- **Multi-to-single via direct M-S coupling, no `hdist`.** The hdist-free analogue of
+`multipleIdeal_le_singleIdeal_add_bad` (`MultipleBadCollision.lean`): it does *not* require
+`HasDistinctUnlinkReaderNonces` on the adversary, at the cost of two additional tag-side slack
+terms `qTag·|TagId|·sessionsPerTag / |Digest|` and `qTag·sessionsPerTag / |Digest|`.
 
 Internally bypasses the M→Hybrid→S chain: the direct M-S coupling via `slotZeroSubTable` works
 unconditionally on the adversary (no nonce-distinctness assumption) because the per-step
@@ -3290,7 +3296,7 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
               (UnlinkState.init, UnlinkBadState.init)] :=
     probEvent_congr' (fun _ _ => Iff.rfl) (hbridge _)
   rw [hbridge_succ, hbridge_bad]
-  -- **Step 4b.** Phase 9.0 Fine-shape bridges. The aux's signature now carries an outer
+  -- **Step 4b.** Fine-shape bridges. The aux's signature carries an outer
   -- `gFine ← $ᵗ ((TagId × Fin sp) × Nonce → Digest)` binder and the Fine handler
   -- `multipleBadTableHandlerFine ... gFine`. Bridge the coarse-shape LHS-success and
   -- RHS-bad terms (the current goal shapes after `rw [hbridge_succ, hbridge_bad]`) to the
@@ -3460,9 +3466,7 @@ theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
     hqReader hqTag (by simp) (fun _ _ _ _ => rfl) (fun _ _ _ h => absurd rfl h)
   simp only [OracleComp.tableExtending_empty] at haux
   -- The aux bound is term-by-term ≤ the headline RHS; the extra outermost
-  -- `qTag * sessionsPerTag / |Digest|` slack (reserved for the eventual ε_cb
-  -- charge transported via `evalDist_simulateQ_multipleBadTableHandlerFine_forget_cacheBad_eq`
-  -- and `simulateQ_multipleBadTableHandlerFine_cacheBad_prob_le`) is dropped via `le_self_add`.
+  -- `qTag * sessionsPerTag / |Digest|` slack is unused headroom, dropped via `le_self_add`.
   exact haux.trans le_self_add
 
 end UnlinkReduction
