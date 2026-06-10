@@ -1023,7 +1023,8 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
     (st : AuthIdealState TagId Nonce Digest)
     (hcst : st.responses = c)
     (hCacheHonest : ∀ (tag : TagId) (n : Nonce) (d : Digest),
-      c (tag, n) = some d → (tag, (⟨n, d⟩ : TagTranscript Nonce Digest)) ∈ st.honestOutputs) :
+      c (tag, n) = some d → (tag, (⟨n, d⟩ : TagTranscript Nonce Digest)) ∈ st.honestOutputs ∨
+        (tag, (⟨n, d⟩ : TagTranscript Nonce Digest)) ∈ st.readerForged) :
     Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
         ∃ x ∈ z.2.readerForged, x ∉ st.readerForged |
         do let g ← $ᵗ (TagId × Nonce → Digest);
@@ -1229,9 +1230,9 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
               rw [QueryCache.cacheQuery_self] at hcd'
               simp only [Option.some.injEq] at hcd'
               subst hcd'
-              exact Finset.mem_insert_self _ _
+              exact Or.inl (Finset.mem_insert_self _ _)
             · rw [QueryCache.cacheQuery_of_ne (h := hne)] at hcd'
-              exact Finset.mem_insert_of_mem (hCacheHonest tag' n' d' hcd')
+              exact (hCacheHonest tag' n' d' hcd').imp (Finset.mem_insert_of_mem) id
           refine le_trans (ENNReal.tsum_le_tsum fun u => mul_le_mul' (le_refl _) (hper u)) ?_
           rw [ENNReal.tsum_mul_right]
           exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
@@ -1247,7 +1248,7 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
                readerForged := st.readerForged } : AuthIdealState TagId Nonce Digest) hcst ?_
           -- `hCacheHonest` preserved: `c` and (a superset of) `honestOutputs` are unchanged.
           intro tag' n' d' hcd'
-          exact Finset.mem_insert_of_mem (hCacheHonest tag' n' d' hcd')
+          exact (hCacheHonest tag' n' d' hcd').imp (Finset.mem_insert_of_mem) id
       refine le_trans (ENNReal.tsum_le_tsum fun n => mul_le_mul' (le_refl _) (hbound n)) ?_
       rw [ENNReal.tsum_mul_right]
       exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
@@ -1363,18 +1364,19 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
             intro g _ hg
             simp only [OracleComp.tableExtending, hc, Option.getD_none] at hg
             exact hg.1
-          · -- Cached: a match forces `transcript = ⟨n, d⟩`, which is honest by `hCacheHonest`,
-            -- contradicting the `∉ honestOutputs` conjunct; the event is empty.
+          · -- Cached: a match forces `transcript = ⟨n, d⟩`, which is honest or already forged by
+            -- `hCacheHonest`, contradicting the `∉ honestOutputs` or `∉ readerForged` conjunct; the
+            -- event is empty.
             refine le_trans (le_of_eq ?_) (zero_le _)
             rw [probEvent_eq_zero_iff]
             intro g _ hev
-            obtain ⟨hmatch, hnh, -⟩ := hev
+            obtain ⟨hmatch, hnh, hnf⟩ := hev
             simp only [OracleComp.tableExtending, hc, Option.getD_some] at hmatch
             subst hmatch
-            exact hnh (by
-              have := hCacheHonest tag transcript.nonce transcript.auth hc
-              rwa [show (⟨transcript.nonce, transcript.auth⟩ : TagTranscript Nonce Digest)
-                = transcript by cases transcript; rfl] at this)
+            have hinv := hCacheHonest tag transcript.nonce transcript.auth hc
+            rw [show (⟨transcript.nonce, transcript.auth⟩ : TagTranscript Nonce Digest)
+              = transcript by cases transcript; rfl] at hinv
+            exact hinv.elim hnh hnf
         · rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
       -- Per table `g`, the forge event splits into the reader step's *new* forgery `A g` (which is
       -- `g`-measurable and cache-determined) and the continuation's forgery relative to the
@@ -1458,7 +1460,55 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
                       (p.1, transcript) ∉ st.honestOutputs)).map Prod.fst).toFinset).image
                     (·, transcript)) | M (OracleComp.tableExtending c g)] ≤
           ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
-        sorry
+        -- The post-step baseline equals `M`'s own starting `readerForged`, so the summand event is
+        -- the forge-growth of `M` relative to its start. Fold this `g`-dependent predicate into a
+        -- boolean-valued program `W g'`, so the average becomes the `=true` probability of a single
+        -- `do g ← $ᵗ; W (tableExtending c g)` computation with a *fixed* predicate.
+        set W : (TagId × Nonce → Digest) → ProbComp Bool := fun g' =>
+          (fun z : Unit × AuthIdealState TagId Nonce Digest =>
+            decide (∃ x ∈ z.2.readerForged,
+              x ∉ (st.readerForged ∪
+                ((((cells.map (fun cc => (cc.1, g' cc))).filter
+                    fun p => decide (p.2 = transcript.auth ∧
+                    (p.1, transcript) ∉ st.honestOutputs)).map Prod.fst).toFinset).image
+                  (·, transcript)))) <$> M g' with hW
+        have hWeq : ∀ g : TagId × Nonce → Digest,
+            Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+              ∃ x ∈ z.2.readerForged,
+                x ∉ (st.readerForged ∪
+                  ((((cells.map (fun cc => (cc.1, OracleComp.tableExtending c g cc))).filter
+                      fun p => decide (p.2 = transcript.auth ∧
+                      (p.1, transcript) ∉ st.honestOutputs)).map Prod.fst).toFinset).image
+                    (·, transcript)) | M (OracleComp.tableExtending c g)]
+              = Pr[fun b => b = true | W (OracleComp.tableExtending c g)] := by
+          intro g
+          rw [hW, probEvent_map]
+          refine probEvent_congr' (fun z _ => ?_) rfl
+          simp only [Function.comp, decide_eq_true_eq]
+        simp_rw [hWeq]
+        rw [← probEvent_bind_eq_tsum ($ᵗ (TagId × Nonce → Digest))
+          (fun g => W (OracleComp.tableExtending c g)) (fun b => b = true)]
+        -- Draw the queried column first (`idealCacheMapM`), then the fresh table; the reply, the
+        -- forged set `Δ`, and hence the boolean test become functions of the fixed column draw `rs`.
+        rw [probEvent_congr' (fun _ _ => Iff.rfl)
+          (evalDist_idealCacheMapM_bind_uniformTable_comp cells c W).symm]
+        rw [probEvent_bind_eq_tsum]
+        -- For each column draw `rs`, the reply and `Δ` are constant; apply the induction hypothesis
+        -- at the column-extended cache `rs.2` and the post-step state, then average.
+        have hrs : ∀ rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
+            rs ∈ support (idealCacheMapM cells c) →
+            Pr[fun b => b = true |
+              do let g ← $ᵗ (TagId × Nonce → Digest); W (OracleComp.tableExtending rs.2 g)] ≤
+              ((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+          sorry
+        refine le_trans (ENNReal.tsum_le_tsum (g := fun rs => Pr[= rs | idealCacheMapM cells c] *
+          (((q : ℝ≥0∞) - 1) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb)) fun rs => ?_) ?_
+        · by_cases hsupp : rs ∈ support (idealCacheMapM cells c)
+          · exact mul_le_mul' le_rfl (hrs rs hsupp)
+          · rw [probOutput_eq_zero_of_not_mem_support hsupp, zero_mul]
+            exact zero_le _
+        · rw [ENNReal.tsum_mul_right]
+          exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
       -- Assemble: `∑'_g Pr[=g] · (A-indicator + continuation) ≤ q · |TagId| · maxDigestProb`.
       calc ∑' g : TagId × Nonce → Digest,
               Pr[= g | ($ᵗ (TagId × Nonce → Digest))] *
@@ -1559,7 +1609,8 @@ lemma authRF_forge_le [Fintype Nonce] [Finite Digest]
     intro mx; rw [probEvent_map]; rfl
   rw [probEvent_congr' (fun z _ => hpred z) rfl, hbridge]
   rw [probEvent_congr' (fun x _ => Iff.rfl) htrans]
-  have haux := eagerForge_growth_le adversary maxDigestProb hmax q hq st.responses st rfl hcache
+  have haux := eagerForge_growth_le adversary maxDigestProb hmax q hq st.responses st rfl
+    (fun tag n d hcd => Or.inl (hcache tag n d hcd))
   rw [hbridge, map_bind] at haux
   exact haux
 
