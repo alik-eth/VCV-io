@@ -1190,6 +1190,23 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
           intro s'; rw [probEvent_map]; rfl
         rw [hkey sa, hkey sb, probEvent_congr' (fun x _ => Iff.rfl) (congrArg evalDist hmap)]
       -- Per column-draw `rs`: split into the step's new forgeries and the tail's, then bound.
+      -- FRONTIER. For a fixed column draw `rs`, the reader-step new forgeries are bounded by
+      -- `|TagId| * maxDigestProb` (a union over the column cells `rs.1`, each a fresh idealCacheMapM
+      -- draw matching `transcript.auth` with probability `≤ maxDigestProb`, via
+      -- `probEvent_idealCacheMapM_mem_le`), and the continuation contributes `(q-1) * |TagId| *
+      -- maxDigestProb` by the induction hypothesis at the column-extended cache `rs.2`.
+      --
+      -- The remaining obstruction is the SAME one documented for the lazy single-world per-step
+      -- route, re-localized: the lazified column writes the drawn digests `rs.1` into `rs.2`, and
+      -- these cached cells are NOT honest (the reader records no honest outputs). A later reader
+      -- query of the continuation at the same nonce reads a FIXED cached cell, so its per-step
+      -- forge probability is `0` or `1` rather than `≤ maxDigestProb`, and the induction hypothesis
+      -- (whose per-step bound assumes fresh uncached column cells) does not apply at `rs.2` without
+      -- a "cached column cells are honest" invariant — which the freshly-cached non-honest column
+      -- breaks. Closing this needs the first-forge-per-nonce / trace-union refinement (the
+      -- deferred-sampling rewrite recorded in the memory notes); it is the genuine multi-day
+      -- remainder. The eager-table factorization and the whole inductive scaffold above are in
+      -- place, so the obligation is exactly the per-column-draw step/tail split below.
       have hper : ∀ rs : List Digest × ((TagId × Nonce) →ₒ Digest).QueryCache,
           rs ∈ support (idealCacheMapM cells c) →
           Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
@@ -1227,6 +1244,7 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
             rw [add_tsub_cancel_of_le hq1, mul_assoc]
 
 omit [Nonempty TagId] in
+set_option maxHeartbeats 1000000 in
 /-- **Unrestricted forge bound for the random-function reader (eager-table route).** Running the
 adversary against the lazy random-function handler from a forgery-free state records a forged
 acceptance with probability at most `q * |TagId| * maxDigestProb`, with no restriction on the
@@ -1250,35 +1268,37 @@ lemma authRF_forge_le [Fintype Nonce] [Finite Digest]
         (simulateQ (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
           adversary).run st] ≤
       (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
-  -- FRONTIER (single remaining obligation of the collision conjecture).
-  --
-  -- Stage 1 (this file, fully proven) factors the lazy random-function reader through an eager full
-  -- random-oracle table: `evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending` replaces the
-  -- shared lazy cache by a table `g : TagId × Nonce → Digest` drawn up front, with
-  -- `authTableHandler g` the deterministic handler whose tag/reader steps read `g` (run-lemmas
-  -- `authIdealTagQueryImpl_run_eq_idealCacheStep`, `authRFReaderQueryImpl_run_eq_idealCacheMapM`,
-  -- `authTableHandler_tag_run`, `authTableHandler_reader_run`).
-  --
-  -- Stage 2 (remaining): the forged-acceptance probability in the eager world is a static union
-  -- bound. The forge event is insensitive to the final `responses` cache, so it transports across
-  -- the `run'`/state-projection equivalence (`simulateQ_authTableHandler_run'_responses_irrel`).
-  -- Walking the adversary by `OracleComp.inductionOn`, a reader query `query_bind (Sum.inr t) f`
-  -- has a FIXED argument `t` (independent of `g`), so the per-step forge probability is genuinely
-  -- static `Pr_g[∃ tag, g (tag, t.nonce) = t.auth ∧ (tag, t) non-honest] ≤ |TagId| * maxDigestProb`
-  -- (a `probEvent_exists_finset_le_sum` over tags, each cell read uniform by `hmax`); the
-  -- continuation `f` contributes the IH bound `(q-1) * |TagId| * maxDigestProb`. The remaining
-  -- technical step is the shared-`g` reconciliation between the per-step term and the IH: it needs
-  -- the column-`t.nonce` marginal (`evalDist_uniformSample_bind_update_map` on the cells
-  -- `(·, t.nonce)`) to expose the just-read column as fresh independent uniforms before invoking
-  -- the IH on the rest of the table. This column-split marginalization is the documented multi-day
-  -- remainder; the eager table is precisely what removes the reader-created-cell obstruction that
-  -- killed the lazy single-world per-step route, and the resulting bound
-  -- `q * |TagId| * maxDigestProb` matches the distinct-nonce sibling exactly.
-  --
-  -- First proof step (already available): transport the forge event to the eager table world.
-  have _heager := evalDist_simulateQ_authRFQueryImpl_run'_eq_tableExtending
+  -- The forge event `readerForged ≠ ∅` factors through the `(honestOutputs, readerForged)`
+  -- projection (forgery-free start: `≠ ∅` is `∃ x, x ∉ ∅`), so it transports to the eager-table
+  -- world by `evalDist_simulateQ_authRFQueryImpl_run_proj_eq_tableExtending`; the eager forge bound
+  -- is `eagerForge_growth_le` at cache `st.responses`.
+  have hpred : ∀ z : Unit × AuthIdealState TagId Nonce Digest,
+      (z.2.readerForged ≠ ∅) ↔ (∃ x ∈ z.2.readerForged, x ∉ st.readerForged) := by
+    intro z
+    rw [hst]
+    constructor
+    · intro hne
+      obtain ⟨x, hx⟩ := Finset.nonempty_iff_ne_empty.mpr hne
+      exact ⟨x, hx, by simp⟩
+    · rintro ⟨x, hx, -⟩
+      exact Finset.ne_empty_of_mem hx
+  -- Transport the forge event to the eager world.
+  have htrans := evalDist_simulateQ_authRFQueryImpl_run_proj_eq_tableExtending
     (TagId := TagId) (Nonce := Nonce) (Digest := Digest) adversary st
-  sorry
+  have hbridge : ∀ (mx : ProbComp (Unit × AuthIdealState TagId Nonce Digest)),
+      Pr[fun z : Unit × AuthIdealState TagId Nonce Digest =>
+          ∃ x ∈ z.2.readerForged, x ∉ st.readerForged | mx]
+        = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+              Finset (TagId × TagTranscript Nonce Digest) =>
+            ∃ x ∈ p.2, x ∉ st.readerForged |
+          (fun z : Unit × AuthIdealState TagId Nonce Digest =>
+            (z.2.honestOutputs, z.2.readerForged)) <$> mx] := by
+    intro mx; rw [probEvent_map]; rfl
+  rw [probEvent_congr' (fun z _ => hpred z) rfl, hbridge]
+  rw [probEvent_congr' (fun x _ => Iff.rfl) htrans]
+  have haux := eagerForge_growth_le adversary maxDigestProb hmax q hq st.responses st rfl
+  rw [hbridge, map_bind] at haux
+  exact haux
 
 omit [Nonempty TagId] in
 /-- **Collision bound for the random-function authentication world.** For any adversary making at
