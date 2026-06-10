@@ -768,6 +768,44 @@ lemma evalDist_uniformSample_comp_cellSwap [Fintype Nonce] [Fintype Digest]
     (β := (TagId × Fin sessionsPerTag) × Nonce → Digest)
     (fun gS => gS ∘ cellSwap a b) hbij
 
+/-! ### Multiset-invariance of `singleTableHandler` under cell-value swap
+
+The pointwise core of the permutation argument: when two tables `g₁, g₂` differ only by a
+swap of values at two cells `(tag, 0, n)` and `(tag, slotK, n)` (agreeing everywhere else),
+the `singleTableHandler` simulateQ outputs are IDENTICAL (not just distributionally equal).
+
+* Tag queries for `T = tag`: by `hAdv`, read at `sid ≥ slotK + 1 ∉ {0, slotK}`. Tables agree.
+* Tag queries for `T ≠ tag`: cells at `(T, ·, ·)` not in the swap pair. Tables agree.
+* Reader queries at nonce `n' ≠ n`: cells at `n'` not in the swap pair. Tables agree.
+* Reader queries at nonce `n`: existential reads cells at all `(T', sid')`. Swapping values
+  at two positions doesn't change the set of values present, so the existential value (mass
+  bound by `V`) is the same on both sides. -/
+
+private lemma singleTableHandler_simulateQ_swap_invariant [Fintype Nonce] [Fintype Digest]
+    (tag : TagId) (slotK : Fin sessionsPerTag) (hslotK : slotK ≠ 0)
+    (n : Nonce)
+    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
+    (s : UnlinkState TagId) (hAdv : slotK.val < s.sessionsUsed tag)
+    (g₁ g₂ : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+    (heq : ∀ x : (TagId × Fin sessionsPerTag) × Nonce,
+        x ≠ ((tag, (0 : Fin sessionsPerTag)), n) → x ≠ ((tag, slotK), n) →
+        g₁ x = g₂ x)
+    (hswap_0 : g₁ ((tag, (0 : Fin sessionsPerTag)), n) = g₂ ((tag, slotK), n))
+    (hswap_K : g₁ ((tag, slotK), n) = g₂ ((tag, (0 : Fin sessionsPerTag)), n)) :
+    (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g₁) oa).run' s
+    = (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        (sessionsPerTag := sessionsPerTag) g₂) oa).run' s := by
+  classical
+  induction oa using OracleComp.inductionOn generalizing s with
+  | pure b =>
+    -- Both sides reduce to `pure b` via `simulateQ_pure` and `StateT.run'`.
+    simp [simulateQ_pure]
+  | query_bind t k _ih =>
+    -- Decompose via `singleTable_run'_query_bind'`, then case-split on `t`.
+    -- Tag/reader sub-cases each use the swap-hypothesis to show step responses are equal.
+    sorry
+
 /-! ### Swap-bridge for `singleTableHandler` cache extensions
 
 The slot-positive case's Case M-miss needs to bridge between two cache extensions of
