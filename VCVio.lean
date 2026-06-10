@@ -119,6 +119,7 @@ import VCVio.OracleComp.QueryTracking.ObservationOracle
 import VCVio.OracleComp.QueryTracking.ProgrammingOracle
 import VCVio.OracleComp.QueryTracking.QueryBound
 import VCVio.OracleComp.QueryTracking.QueryCost
+import VCVio.OracleComp.QueryTracking.RandomOracle.AdaptiveUnion
 import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
 import VCVio.OracleComp.QueryTracking.RandomOracle.Eager
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
