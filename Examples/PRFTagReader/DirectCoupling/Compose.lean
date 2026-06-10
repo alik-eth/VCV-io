@@ -712,7 +712,16 @@ Under `hcInv` (`c` has no slot-positive entries) and the post-step invariant
 over a uniform `gS`. This is the workhorse for the slot-positive Case M-miss closure.
 
 **Privacy.** Kept `private` while the body contains `sorry`s so downstream callers cannot
-depend on the unverified claim. Will be exported once the four query_bind sub-cases close. -/
+depend on the unverified claim. Will be exported once the four query_bind sub-cases close.
+
+**Proof strategy (see `[[swap-bridge-permutation-argument]]` memory).** The inductive
+case-split approach below has a gap: after the reader step, the response depends on `gS`,
+breaking the IH (which is for fixed response). The correct proof is a single
+measure-preserving permutation argument: let `φ` swap the cells `((tag, 0), n)` and
+`((tag, slotK), n)`. Then `gS ∘ φ` has the same distribution as `gS` (φ measure-preserving),
+and `T_L(gS ∘ φ)` and `T_R(gS)` give POINTWISE equal `singleTableHandler` outputs because
+S's reader existential reads a MULTISET of cell values, invariant under swap. The inductive
+scaffold below is retained as exploratory work; the permutation refactor is the next step. -/
 private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
