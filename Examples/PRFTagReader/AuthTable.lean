@@ -1471,6 +1471,27 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
         -- true only after averaging. The gap is therefore deferred-sampling-class, confirming the
         -- `collision-reader-union-discard` verdict; the column-first (r5), column-pinned (r6), and
         -- event-level union-discard routes are all refuted by the same shared-draw coupling.
+        --
+        -- LAZY PER-STEP INDUCTION (fourth route) is ALSO insufficient — the obstruction is the
+        -- ADAPTIVE RE-TARGET, not the world. The forge event `readerForged ≠ ∅` is, after grouping
+        -- by cell `(tag, n)`, exactly `∃ cell, g(cell) ∈ A(cell)` where `A(cell)` is the (adaptive)
+        -- set of auths of reader queries at nonce `n`. The bound is true and tight: over all
+        -- adaptive adversaries `Pr[forge] = Pr[g(cell) ∈ A(cell)] = |A(cell)|·maxDigestProb` with
+        -- `|A(cell)| ≤ #queries` (the optimal adversary probes distinct auths; a re-target forge at
+        -- a CACHED cell implies an earlier query already forged that same `(cell, value)`, so the
+        -- forge is decided at the FIRST forging query and the union deduplicates). But the per-step
+        -- charge — eager OR lazy, charged at first read — does NOT capture this: the per-term static
+        -- charge `Pr[g(cell) = auth_j(g)]` for an adaptively re-targeted cell is up to
+        -- `2·maxDigestProb` (the adversary re-targets the cell at query `j` knowing query `i<j`'s
+        -- reply), so a per-`(query, cell)` static union OVERSHOOTS `q·|TagId|·maxDigestProb`. The
+        -- lazy `randomOracle` toolkit's `unionEvent` charges only genuine FIRST reads and
+        -- deliberately excludes cached re-reads (charging them is unsound, exactly fact above), so
+        -- it leaves the adaptive re-target forge — which lies in `readerForged ≠ ∅` — uncharged.
+        -- No `g`-independent superset of the probe-value set has size `≤ q·|TagId|`, so no static
+        -- eager reformulation exists either. The bound genuinely needs the first-fire /
+        -- optional-stopping (martingale-class) telescope over the `q` distinct probe values per
+        -- cell — the design doc's rejected option (ii), NOT an induction. See
+        -- `collision-reader-union-discard` (Stage-3 entry) for the numerically-verified analysis.
         sorry
       -- Assemble: `∑'_g Pr[=g] · (A-indicator + continuation) ≤ q · |TagId| · maxDigestProb`.
       calc ∑' g : TagId × Nonce → Digest,
