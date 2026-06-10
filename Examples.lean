@@ -29,6 +29,7 @@ import Examples.PRFTagReader.Collision
 import Examples.PRFTagReader.Defs
 import Examples.PRFTagReader.DirectCoupling
 import Examples.PRFTagReader.DirectCoupling.Compose
+import Examples.PRFTagReader.DirectCoupling.ReaderCase
 import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.Hybrid
