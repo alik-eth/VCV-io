@@ -2504,10 +2504,69 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
               refine bind_congr fun gFine => ?_
               rw [hext_eq gS' u, hcell_u gS' u]
             -- Step 3: marginalize RHS S-event over slot-K cell (uncached by hcInv).
+            have hmarg_K : ∀ {β : Type}
+                (Mψ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp β),
+                𝒟[(do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)] =
+                𝒟[(do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      Mψ (Function.update gS' ((tag, slotK), n) u))] := by
+              intro β Mψ
+              have hbase :
+                  𝒟[(do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, slotK), n) u))]
+                  = 𝒟[($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest))] :=
+                evalDist_uniformSample_bind_update ((tag, slotK), n)
+              have hL : (do let u ← $ᵗ Digest
+                            let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                            Mψ (Function.update gS' ((tag, slotK), n) u))
+                  = (do let u ← $ᵗ Digest
+                        let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                        pure (Function.update gS' ((tag, slotK), n) u))
+                      >>= Mψ := by
+                simp [bind_assoc]
+              have hR : (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest); Mψ gS)
+                  = ($ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)) >>= Mψ := rfl
+              rw [hL, hR, evalDist_bind, evalDist_bind, hbase]
+            have hext_K_eq : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending c
+                    (Function.update gS' ((tag, slotK), n) u) =
+                  OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u) gS' :=
+              fun gS' u => by
+                have h1 := OracleComp.tableExtending_update_of_none c gS'
+                  (hcInv tag slotK hslotK_ne n) u
+                have h2 := OracleComp.tableExtending_cacheQuery c gS' ((tag, slotK), n) u
+                exact h1.symm.trans h2.symm
+            have hcell_K_u : ∀ (gS' : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (u : Digest),
+                OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u) gS'
+                    ((tag, slotK), n) = u := fun gS' u => by
+              rw [OracleComp.tableExtending_cacheQuery]
+              simp [Function.update_self]
+            have hRHS_marg :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending c gS))
+                        (k (some (⟨n, OracleComp.tableExtending c gS
+                            ((tag, slotK), n)⟩ : TagTranscript Nonce Digest)))).run' advM)]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u) gS'))
+                        (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' advM)] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg_K _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              rw [hext_K_eq gS' u, hcell_K_u gS' u]
             -- Step 4: apply IH at ⟨n, u_0⟩ over c+u_0@slot-0; bridge via swap-bridge.
-            -- Step 5: rename u_0 ↔ u_K.
-            -- These steps require: hmarg_K (slot-K marginalization), hRHS_marg_K, then
-            -- composing probEvent_bind_le_add_bad_disagree with the swap-bridge.
+            -- Step 5: rename u_0 ↔ u_K via probEvent_bind_le_add_bad_disagree.
             sorry
           · -- Case M-hit: c slot-0 = some u₀.
             -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
