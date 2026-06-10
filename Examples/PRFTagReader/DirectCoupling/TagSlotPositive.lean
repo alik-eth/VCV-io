@@ -8,6 +8,7 @@ import Examples.PRFTagReader.DirectCoupling
 import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
+import VCVio.OracleComp.QueryTracking.RandomOracle.AdaptiveUnion
 
 /-!
 # PRF Tag/Reader Protocol — Direct Coupling, Slot-Positive Tag Step
@@ -826,7 +827,7 @@ lemma dcAux_tag_slotPositive [Fintype Nonce] [Fintype Digest]
       have hne : ((tag', sid'), n') ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
         intro h
         exact hsid' (congrArg (fun p => p.1.2) h)
-      simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
+      rw [OracleComp.cacheQuery_preserves_freshness c _ u hne, hcInv tag' sid' hsid' n']
     have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce, n' ∉ R →
         (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
           ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
@@ -847,16 +848,13 @@ lemma dcAux_tag_slotPositive [Fintype Nonce] [Fintype Digest]
             (congrArg (fun p => p.2) h))
         have hc_unchanged : (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
             ((tag', (0 : Fin sessionsPerTag)), n') =
-            c ((tag', (0 : Fin sessionsPerTag)), n') := by
-          simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne_cell]
+            c ((tag', (0 : Fin sessionsPerTag)), n') :=
+          OracleComp.cacheQuery_preserves_freshness c _ u hne_cell
         rw [hc_unchanged] at hne
         have hsb_unchanged : (multipleBadAdvance tag sB
             (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
-            sB.responses (tag', n') := by
-          change (sB.responses.cacheQuery (tag, n)
-            (u :: Option.getD (sB.responses (tag, n)) [])) (tag', n') =
-            sB.responses (tag', n')
-          simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
+            sB.responses (tag', n') :=
+          OracleComp.cacheQuery_preserves_freshness sB.responses (tag, n) _ htagn
         rw [hsb_unchanged]
         exact hRespInv tag' n' hn'R hne
     -- IH at transcript ⟨n, u⟩, cache c+u@slot-0, qT'.
