@@ -1360,15 +1360,17 @@ freshness predicate. The direct M-S coupling is invariant-free at the eager leve
 **Privacy.** Kept `private` while the reader case (Phase 9.5) is open, so downstream callers
 cannot depend on the unverified bound. Will be exported once the reader case closes. -/
 private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
-    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT : ℕ)
+    (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
     (sB : UnlinkBadState TagId Nonce Digest)
+    (R : Finset Nonce)
     (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR)
     (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT)
+    (hqRle : qR + R.card ≤ qRInit)
     (hcInv : ∀ tag : TagId, ∀ sid : Fin sessionsPerTag, sid ≠ 0 →
         ∀ n : Nonce, c ((tag, sid), n) = none)
-    (hRespInv : ∀ tag : TagId, ∀ n : Nonce,
+    (hRespInv : ∀ tag : TagId, ∀ n : Nonce, n ∉ R →
         c ((tag, (0 : Fin sessionsPerTag)), n) ≠ none →
         sB.responses (tag, n) ≠ none) :
     Pr[= true | do
@@ -1393,7 +1395,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
             (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
               (OracleComp.tableExtending c gS)) gFine) oa).run (s, sB)] +
       ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      ((qR * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+      ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
       ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
         (Fintype.card Digest : ℝ≥0∞) +
       ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
@@ -1403,7 +1405,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
   -- through both the LHS success and RHS bad terms. Each induction case is staged as a `sorry`
   -- to be closed in Phases 9.1–9.5; see the recon document for the per-case strategy.
   classical
-  induction oa using OracleComp.inductionOn generalizing qR qT s c sB hcInv hRespInv with
+  induction oa using OracleComp.inductionOn generalizing qR qT s c sB R hqRle hcInv hRespInv with
   | pure b =>
     -- Phase 9.1: pure b — both sides collapse the `simulateQ` to `pure b`. After `simp`, the LHS
     -- becomes `do gS ← $ᵗ; gFine ← $ᵗ; pure b` (`bind_const` shape since `pure b` ignores
@@ -1887,10 +1889,10 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
           -- the same step — there is no per-step disagreement to charge).
           classical
           simp only [← probEvent_eq_eq_probOutput]
-          have hSplit : ((qR * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
-              = ((qR : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
-                ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
-            rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
+          have hSplit : ((qRInit * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
+              = ((qRInit : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+                ((qRInit * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+            rw [show qRInit * (qT' + 1) = qRInit + qRInit * qT' from by ring,
               Nat.cast_add, ENNReal.add_div]
           have hSplit_s4 :
               (((qT' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
@@ -2077,12 +2079,12 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                 intro h
                 exact hsid' (congrArg (fun p => p.1.2) h)
               simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
-            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce,
+            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce, n' ∉ R →
                 (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
                   ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
                 (multipleBadAdvance tag sB
                   (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
-              intro tag' n' hne
+              intro tag' n' hn'R hne
               by_cases htagn : (tag', n') = (tag, n)
               · -- Same cell; the advance updates `responses` at this cell.
                 have : (multipleBadAdvance tag sB
@@ -2110,11 +2112,11 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                     sB.responses (tag', n')
                   simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
                 rw [hsb_unchanged]
-                exact hRespInv tag' n' hne
+                exact hRespInv tag' n' hn'R hne
             have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
               advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
-              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _) hcInv' hRespInv'
+              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest))) R
+              (hqRk _) (hqTk _) hqRle hcInv' hRespInv'
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihB
@@ -2127,11 +2129,11 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                     (gS ((tag, (0 : Fin sessionsPerTag)), n)) = u₀
                 rw [hc]; rfl
             simp_rw [hcell]
-            have hRespInv'' : ∀ tag' : TagId, ∀ n' : Nonce,
+            have hRespInv'' : ∀ tag' : TagId, ∀ n' : Nonce, n' ∉ R →
                 c ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
                 (multipleBadAdvance tag sB
                   (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
-              intro tag' n' hne
+              intro tag' n' hn'R hne
               by_cases htagn : (tag', n') = (tag, n)
               · have heq : (multipleBadAdvance tag sB
                     (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
@@ -2147,11 +2149,11 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                     sB.responses (tag', n')
                   simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
                 rw [hsb_unchanged]
-                exact hRespInv tag' n' hne
+                exact hRespInv tag' n' hn'R hne
             have hihA := ih (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)) qR qT'
               advM c
-              (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _) hcInv hRespInv''
+              (multipleBadAdvance tag sB (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))) R
+              (hqRk _) (hqTk _) hqRle hcInv hRespInv''
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
             exact hihA
@@ -2604,10 +2606,10 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
           -- (cell-pair independence provides equality at per-`n`, so no extra charge needed).
           classical
           simp only [← probEvent_eq_eq_probOutput]
-          have hSplit : ((qR * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
-              = ((qR : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
-                ((qR * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
-            rw [show qR * (qT' + 1) = qR + qR * qT' from by ring,
+          have hSplit : ((qRInit * (qT' + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
+              = ((qRInit : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
+                ((qRInit * qT' : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
+            rw [show qRInit * (qT' + 1) = qRInit + qRInit * qT' from by ring,
               Nat.cast_add, ENNReal.add_div]
           have hSplit_s4 :
               (((qT' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞)
@@ -2625,10 +2627,20 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                 fun a b c d e f g h => by ring]
           refine (?_ : _ ≤ _).trans le_self_add
           refine probEvent_bind_le_add_bad_disagree
-            (D := fun _ : Nonce => False)
+            (D := fun n : Nonce => n ∈ R)
             ?_ ?_
-          · simp
-          intro n _ _hnD
+          · -- The reader-touched set `R` has uniform-sample probability `R.card / |Nonce|`, which
+            -- is at most the `qRInit / |Nonce|` headroom carved out of slack₂.
+            rw [probEvent_uniformSample]
+            have hcard : (Finset.univ.filter (· ∈ R)).card ≤ qRInit := by
+              calc (Finset.univ.filter (· ∈ R)).card
+                  = R.card := by
+                    rw [Finset.filter_univ_mem]
+                _ ≤ qRInit := le_trans (Nat.le_add_left _ _) hqRle
+            gcongr
+          intro n _ hnD
+          -- `hnD : ¬ (n ∈ R)`, i.e. `n ∉ R`: off the reader-touched set, the v2 invariant applies.
+          replace hnD : n ∉ R := hnD
           -- Phase D: per-`n` bound. Case-split on `c ((tag, 0), n)`:
           -- * Case M-hit: M reads cached value `u₀`; `hRespInv` triggers `multipleBadAdvance`
           --   to fire `bad := true`. By bad monotonicity, LHS ≤ Pr[bad] (the bad term in RHS).
@@ -2841,12 +2853,12 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                 intro h
                 exact hsid' (congrArg (fun p => p.1.2) h)
               simp [OracleSpec.QueryCache.cacheQuery_of_ne, hne, hcInv tag' sid' hsid' n']
-            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce,
+            have hRespInv' : ∀ tag' : TagId, ∀ n' : Nonce, n' ∉ R →
                 (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
                   ((tag', (0 : Fin sessionsPerTag)), n') ≠ none →
                 (multipleBadAdvance tag sB
                   (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') ≠ none := by
-              intro tag' n' hne
+              intro tag' n' hn'R hne
               by_cases htagn : (tag', n') = (tag, n)
               · have : (multipleBadAdvance tag sB
                     (some (⟨n, u⟩ : TagTranscript Nonce Digest))).responses (tag', n') =
@@ -2872,12 +2884,12 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
                     sB.responses (tag', n')
                   simp [OracleSpec.QueryCache.cacheQuery_of_ne, htagn]
                 rw [hsb_unchanged]
-                exact hRespInv tag' n' hne
+                exact hRespInv tag' n' hn'R hne
             -- IH at transcript ⟨n, u⟩, cache c+u@slot-0, qT'.
             have hihB := ih (some (⟨n, u⟩ : TagTranscript Nonce Digest)) qR qT'
               advM (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u)
-              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
-              (hqRk _) (hqTk _) hcInv' hRespInv'
+              (multipleBadAdvance tag sB (some (⟨n, u⟩ : TagTranscript Nonce Digest))) R
+              (hqRk _) (hqTk _) hqRle hcInv' hRespInv'
             -- Bridge S-side from c+u@slot-0 to c+u@slot-K via the swap-bridge.
             -- The swap-bridge requires `slotK.val < advM.sessionsUsed tag`, which holds
             -- because advM = (s with sessionsUsed tag ↦ s.sessionsUsed tag + 1)
@@ -2926,7 +2938,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
             simp_rw [hcell]
             -- Step 2: hRespInv → responses (tag, n) ≠ none → multipleBadAdvance flips bad := true.
             have hresp_some : sB.responses (tag, n) ≠ none :=
-              hRespInv tag n (by rw [hc0]; exact Option.some_ne_none _)
+              hRespInv tag n hnD (by rw [hc0]; exact Option.some_ne_none _)
             have hbad_init : (multipleBadAdvance tag sB
                 (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).bad = true := by
               show (sB.bad || (sB.responses (tag, n)).isSome) = true
@@ -3091,10 +3103,10 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
             probEvent_congr' (fun _ _ => Iff.rfl) (congrArg evalDist hBAD_eq)]
         -- Now LHS / RHS / BAD all evaluate `k none` at the unchanged state `(s, sB)`. Apply IH at
         -- `qT'`; the two `qT`-bearing slacks weaken back via `gcongr` + `Nat.le_succ`.
-        refine (ih none qR qT' s c sB (hqRk none) (hqTk none) hcInv hRespInv).trans ?_
+        refine (ih none qR qT' s c sB R (hqRk none) (hqTk none) hqRle hcInv hRespInv).trans ?_
         gcongr
-        · exact_mod_cast Nat.le_succ _
-        · exact_mod_cast Nat.le_succ _
+        · exact Nat.le_succ _
+        · exact Nat.le_succ _
     | inr transcript =>
       -- Phase 9.5: reader query under the Fine handler. The slot-positive `cacheBadReader gFine`
       -- mass closes the M-rejects/S-accepts gap once the per-step Fine/coarse bridge lemma is
@@ -3453,9 +3465,9 @@ private theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype
   rw [hsucc_fine, hbad_fine]
   -- **Step 5.** Apply the DC aux at `c = ∅`, `s = UnlinkState.init`, `sB = UnlinkBadState.init`.
   have haux := multipleBadEager_le_singleEager_DC_aux (sessionsPerTag := sessionsPerTag)
-    adversary qReader qTag UnlinkState.init
-    (∅ : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init
-    hqReader hqTag (fun _ _ _ _ => rfl) (fun _ _ h => absurd rfl h)
+    adversary qReader qTag qReader UnlinkState.init
+    (∅ : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache) UnlinkBadState.init ∅
+    hqReader hqTag (by simp) (fun _ _ _ _ => rfl) (fun _ _ _ h => absurd rfl h)
   simp only [OracleComp.tableExtending_empty] at haux
   -- The aux bound is term-by-term ≤ the headline RHS; the extra outermost
   -- `qTag * sessionsPerTag / |Digest|` slack (reserved for the eventual ε_cb
