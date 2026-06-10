@@ -381,6 +381,29 @@ lemma idealCacheMapM_support {D : Type} [DecidableEq D]
     simp [OracleComp.tableExtending, hrestd]
 
 omit [DecidableEq Digest] in
+/-- Folding `idealCacheStep` over `l` caches every cell of `l`: any `d ∈ l` is `isSome` in the
+final cache. Dual of `idealCacheMapM_cache_not_mem`. -/
+lemma idealCacheMapM_cache_isSome_of_mem {D : Type} [DecidableEq D]
+    (l : List D) (c : (D →ₒ Digest).QueryCache)
+    (r : List Digest × (D →ₒ Digest).QueryCache)
+    (hr : r ∈ support (idealCacheMapM (Digest := Digest) l c))
+    (d : D) (hd : d ∈ l) :
+    (r.2 d).isSome := by
+  induction l generalizing c r with
+  | nil => simp at hd
+  | cons e es ih =>
+    simp only [idealCacheMapM, mem_support_bind_iff] at hr
+    obtain ⟨step, hstep, rest, hrest, hr⟩ := hr
+    rw [support_pure, Set.mem_singleton_iff] at hr
+    subst hr
+    rcases List.mem_cons.mp hd with hde | hdes
+    · subst hde
+      rw [idealCacheMapM_cache_off es step.2 rest hrest d
+        (idealCacheStep_cache_self_dom c d step hstep)]
+      exact idealCacheStep_cache_self_dom c d step hstep
+    · exact ih step.2 rest hrest hdes
+
+omit [DecidableEq Digest] in
 /-- **Reader table-iteration lemma (Milestone 1).** Folding the lazy random-oracle lookup
 `idealCacheStep` over a list of cells `l`, then sampling one full random-oracle table for the
 remaining computation, has the same output distribution as directly sampling the table: every
