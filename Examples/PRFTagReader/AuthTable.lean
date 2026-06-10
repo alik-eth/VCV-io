@@ -1114,6 +1114,54 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
       rw [ENNReal.tsum_mul_right]
       exact le_trans (mul_le_mul' tsum_probOutput_le_one le_rfl) (le_of_eq (one_mul _))
     | inr transcript =>
+      -- Budget: a reader query spends one unit; `0 < q`, and `f u` has budget `q - 1`.
+      have hqsplit := (isQueryBoundP_query_bind_iff (p := fun i => i.isRight)
+        (Sum.inr transcript) f q).mp hq
+      have hqpos : 0 < q := by
+        rcases hqsplit.1 with h | h
+        · simp at h
+        · exact h
+      have hqcont : ∀ u, OracleComp.IsQueryBoundP (f u) (fun i => i.isRight) (q - 1) := by
+        intro u
+        have := hqsplit.2 u
+        simpa using this
+      set cells := (Finset.univ : Finset TagId).toList.map
+        (fun tag => (tag, transcript.nonce)) with hcells
+      -- Lazify the queried column: draw the column cells explicitly, then a fresh table.
+      -- The reader reply and the new forged set become functions of the column draws `rs.1`;
+      -- the continuation runs against `tableExtending rs.2 g'` at the column-extended cache.
+      set M : (TagId × Nonce → Digest) → ProbComp (Unit × AuthIdealState TagId Nonce Digest) :=
+        fun g' =>
+          (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g')
+            (f (ReaderReply.ofBool (decide (∃ p ∈ cells.map (fun cc => (cc.1, g' cc)),
+              p.2 = transcript.auth))))).run
+            ({ responses := st.responses
+               honestOutputs := st.honestOutputs
+               readerForged := st.readerForged ∪
+                 ((((cells.map (fun cc => (cc.1, g' cc))).filter fun p =>
+                     decide (p.2 = transcript.auth ∧
+                     (p.1, transcript) ∉ st.honestOutputs)).map Prod.fst).toFinset).image
+                   (·, transcript) } : AuthIdealState TagId Nonce Digest) with hM
+      have hstepRun : (($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+            (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+              (OracleComp.tableExtending c g))
+              (liftM (OracleSpec.query (Sum.inr transcript)) >>= f)).run st)
+          = (($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+              M (OracleComp.tableExtending c g)) := by
+        refine bind_congr fun g => ?_
+        rw [authTable_run_query_bind, authTableHandler_reader_run _ transcript st]
+        change ((pure _ : ProbComp (ReaderReply × AuthIdealState TagId Nonce Digest)) >>= fun p =>
+          (simulateQ (authTableHandler (OracleComp.tableExtending c g)) (f p.1)).run p.2) = _
+        rw [pure_bind, hM]
+        simp only [hcells, List.map_map, Function.comp_def]
+      rw [probEvent_congr' (fun x _ => Iff.rfl) (congrArg evalDist hstepRun)]
+      -- Reverse-absorb the column into an explicit `idealCacheMapM` draw.
+      have hlazy : 𝒟[($ᵗ (TagId × Nonce → Digest)) >>= fun g =>
+            M (OracleComp.tableExtending c g)]
+          = 𝒟[idealCacheMapM cells c >>= fun rs =>
+              ($ᵗ (TagId × Nonce → Digest)) >>= fun g => M (OracleComp.tableExtending rs.2 g)] :=
+        (evalDist_idealCacheMapM_bind_uniformTable_comp cells c M).symm
+      rw [probEvent_congr' (fun x _ => Iff.rfl) hlazy]
       sorry
 
 omit [Nonempty TagId] in
