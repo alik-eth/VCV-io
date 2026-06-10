@@ -1449,6 +1449,28 @@ private lemma eagerForge_growth_le [Fintype Nonce] [Finite Digest]
         -- `hCacheHonest` disjunctive invariant, the `A`-term static union `hAle`, the per-`g` split
         -- `hsplit`, and the boolean fold — is in place and reduces the collision bound to exactly
         -- this single averaged-coincidence statement.
+        --
+        -- EVENT-LEVEL UNION-DISCARD (third route) is ALSO false, for the same coupling reason.
+        -- The proposal: at the enclosing reader goal, bound `Pr[forge rel st | g ← $ᵗ; M …]`
+        -- per `g` by `(if A g then 1 else 0) + E_cont g`, where `E_cont g` runs the continuation
+        -- with a *constant* reply `r₀` (cache-determined honest bit) from the *original* state `st`
+        -- (baseline `st.readerForged`, cache `c`, `hCacheHonest` verbatim), so the IH applies with
+        -- no recoupling. This needs the pointwise inclusion `W g ⊆ A g ∪ E_cont g` for a single
+        -- `g`-independent `r₀`. It FAILS: the reader reply tests `∃ tag, g (tag, n) = auth` over
+        -- *all* cells, including *uncached* ones whose transcript `(tag, transcript)` already lies
+        -- in `honestOutputs ∪ readerForged` (e.g. a repeated reader query at the same transcript:
+        -- the uncached column cell re-matches deterministically, with `(tag, transcript)` now in
+        -- `readerForged`). On such a cell the reply is forced `true`, yet `A g` is *false* (the
+        -- match is excluded by the `∉ honestOutputs ∧ ∉ readerForged` conjuncts) and the match is
+        -- `g`-dependent. So neither `r₀ = false` (the continuation is `f true`, not `f false`) nor
+        -- `r₀ = true` (on the no-match branch the continuation is `f false`) gives a constant reply
+        -- that upper-bounds `W` without an extra `(q-1)·|TagId|·maxP` charge — exactly the
+        -- honest-bit-split obstruction `(2)` above. `readerForged → cache` does NOT hold (reader
+        -- steps never cache), so this branch cannot be excluded by strengthening `hCacheHonest`,
+        -- and the realising adversary (two reader queries at one transcript) keeps the *bound*
+        -- true only after averaging. The gap is therefore deferred-sampling-class, confirming the
+        -- `collision-reader-union-discard` verdict; the column-first (r5), column-pinned (r6), and
+        -- event-level union-discard routes are all refuted by the same shared-draw coupling.
         sorry
       -- Assemble: `∑'_g Pr[=g] · (A-indicator + continuation) ≤ q · |TagId| · maxDigestProb`.
       calc ∑' g : TagId × Nonce → Digest,
