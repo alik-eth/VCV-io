@@ -5,6 +5,7 @@ Authors: Quang Dao
 -/
 
 import Examples.PRFTagReader.MultipleToHybrid.Eager
+import Examples.PRFTagReader.DirectCoupling.Compose
 
 /-!
 # PRF Tag/Reader Protocol — Multiple-Bad Collision Bound
@@ -562,17 +563,20 @@ lemma probOutput_unlinkBadExp_eq
 
 /-- Coupling bound for the two random-function worlds (the ideal-PRF experiments of the multiple-
 and single-session reductions): the gap is bounded by the within-tag nonce-collision probability
-(carried by the instrumented `multipleBadQueryImpl`'s `bad` flag) plus three additive slack terms
-from chaining Hops A and B. The two worlds are not identical-until-bad — their reader oracles
-diverge unconditionally because the single-session reader checks `Fintype.card TagId *
-sessionsPerTag` random-oracle cells against the multiple world's `Fintype.card TagId` — so the
-bound also carries `qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest`. -/
+(carried by the instrumented `multipleBadQueryImpl`'s `bad` flag) plus five additive slack terms.
+The two worlds are not identical-until-bad — their reader and tag oracles diverge unconditionally
+because the single-session world keys `Fintype.card TagId * sessionsPerTag` random-oracle cells
+against the multiple world's `Fintype.card TagId` cells — so the bound carries reader-cell slacks
+`qReader * Fintype.card TagId / Fintype.card Digest` and
+`qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest`, a nonce-aliasing slack
+`qReader * qTag / Fintype.card Nonce`, and the two tag-side cell slacks
+`qTag * Fintype.card TagId * sessionsPerTag / Fintype.card Digest` and
+`qTag * sessionsPerTag / Fintype.card Digest`. The bound holds for every adversary. -/
 theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Nonce] [Fintype Digest]
     (adversary : UnlinkAdversary TagId Nonce Digest)
     (qReader qTag : ℕ)
     (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
-    (hqTag : OracleComp.IsQueryBoundP adversary (·.isLeft) qTag)
-    (hdist : HasDistinctUnlinkReaderNonces adversary) :
+    (hqTag : OracleComp.IsQueryBoundP adversary (·.isLeft) qTag) :
     (Pr[= true | PRFScheme.prfIdealExp (unlinkToMultiplePRFReduction
           (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
           (sessionsPerTag := sessionsPerTag) adversary)]).toReal -
@@ -586,9 +590,12 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Nonce] [Fintype Digest]
       ((qReader * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) +
       ((qReader * qTag : ℕ) : ℝ) / (Fintype.card Nonce : ℝ) +
       ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
-        (Fintype.card Digest : ℝ) := by
-  have hcore := multipleIdeal_le_singleIdeal_add_bad (sessionsPerTag := sessionsPerTag)
-    adversary qReader qTag hqReader hqTag hdist
+        (Fintype.card Digest : ℝ) +
+      ((qTag * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) /
+        (Fintype.card Digest : ℝ) +
+      ((qTag * sessionsPerTag : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+  have hcore := UnlinkReduction.multipleIdeal_le_singleIdeal_add_bad_DC
+    (sessionsPerTag := sessionsPerTag) adversary qReader qTag hqReader hqTag
   rw [prfIdealExp_unlinkToMultiplePRFReduction_eq_run' adversary,
     prfIdealExp_unlinkToSinglePRFReduction_eq_run' adversary]
   set M := Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
@@ -606,6 +613,9 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Nonce] [Fintype Digest]
   set slackN := ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
   set slackS := ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
     (Fintype.card Digest : ℝ≥0∞)
+  set slackT := ((qTag * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+    (Fintype.card Digest : ℝ≥0∞)
+  set slackT' := ((qTag * sessionsPerTag : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞)
   have hSt : S ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probOutput_le_one
   have hBt : B ≠ ⊤ := ne_top_of_le_ne_top one_ne_top probEvent_le_one
   have : Nonempty Digest := ⟨(SampleableType.selectElem (β := Digest)).defaultResult⟩
@@ -615,6 +625,8 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Nonce] [Fintype Digest]
   have hslackRt : slackR ≠ ⊤ := hslack_ne _ _ Fintype.card_pos
   have hslackNt : slackN ≠ ⊤ := hslack_ne _ _ Fintype.card_pos
   have hslackSt : slackS ≠ ⊤ := hslack_ne _ _ Fintype.card_pos
+  have hslackTt : slackT ≠ ⊤ := hslack_ne _ _ Fintype.card_pos
+  have hslackT't : slackT' ≠ ⊤ := hslack_ne _ _ Fintype.card_pos
   have hslackReq : slackR.toReal =
       ((qReader * Fintype.card TagId : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
     simp [slackR, ENNReal.toReal_div]
@@ -624,15 +636,27 @@ theorem unlinkPRFIdeal_gap_le_unlinkBad [Fintype Nonce] [Fintype Digest]
   have hslackSeq : slackS.toReal =
       ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
     simp [slackS, ENNReal.toReal_div]
-  have hMt : M.toReal ≤ S.toReal + B.toReal + slackR.toReal + slackN.toReal + slackS.toReal := by
+  have hslackTeq : slackT.toReal =
+      ((qTag * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+    simp [slackT, ENNReal.toReal_div]
+  have hslackT'eq : slackT'.toReal =
+      ((qTag * sessionsPerTag : ℕ) : ℝ) / (Fintype.card Digest : ℝ) := by
+    simp [slackT', ENNReal.toReal_div]
+  have hMt : M.toReal ≤ S.toReal + B.toReal + slackR.toReal + slackN.toReal + slackS.toReal +
+      slackT.toReal + slackT'.toReal := by
     have hSB : S + B ≠ ⊤ := ENNReal.add_ne_top.mpr ⟨hSt, hBt⟩
     have hSBR : S + B + slackR ≠ ⊤ := ENNReal.add_ne_top.mpr ⟨hSB, hslackRt⟩
     have hSBRN : S + B + slackR + slackN ≠ ⊤ := ENNReal.add_ne_top.mpr ⟨hSBR, hslackNt⟩
+    have hSBRNS : S + B + slackR + slackN + slackS ≠ ⊤ :=
+      ENNReal.add_ne_top.mpr ⟨hSBRN, hslackSt⟩
+    have hSBRNST : S + B + slackR + slackN + slackS + slackT ≠ ⊤ :=
+      ENNReal.add_ne_top.mpr ⟨hSBRNS, hslackTt⟩
     rw [← ENNReal.toReal_add hSt hBt, ← ENNReal.toReal_add hSB hslackRt,
-      ← ENNReal.toReal_add hSBR hslackNt, ← ENNReal.toReal_add hSBRN hslackSt]
+      ← ENNReal.toReal_add hSBR hslackNt, ← ENNReal.toReal_add hSBRN hslackSt,
+      ← ENNReal.toReal_add hSBRNS hslackTt, ← ENNReal.toReal_add hSBRNST hslackT't]
     exact ENNReal.toReal_mono
-      (ENNReal.add_ne_top.mpr ⟨hSBRN, hslackSt⟩) hcore
-  rw [hslackReq, hslackNeq, hslackSeq] at hMt
+      (ENNReal.add_ne_top.mpr ⟨hSBRNST, hslackT't⟩) hcore
+  rw [hslackReq, hslackNeq, hslackSeq, hslackTeq, hslackT'eq] at hMt
   linarith
 
 end UnlinkReduction
