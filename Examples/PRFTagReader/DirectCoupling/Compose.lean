@@ -3601,8 +3601,266 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
         rw [show ∀ a b c d e : ℝ≥0∞, a + (b + c + d + e) = a + b + c + d + e from
               fun a b c d e => by ring]
         gcongr <;> exact Nat.le_succ _
-      · -- **Case m = false** (closed in C3).
-        sorry
+      · -- **Case m = false.** M rejects (slot-0 miss). The S reader bit `sAcc gS` is exactly the
+        -- slot-positive collision indicator `cacheBadReader gS transcript` (the slot-0 disjunct is
+        -- ruled out by `m = false`, and slot-positive cells are uncached in `c₀` so they read raw
+        -- `gS`). Its uniform-sample mass is bounded by `|TagId|·sp/|Digest|` via
+        -- `probEvent_cacheBadReader_uniformSample_le`, charged to the slack₃ unit.
+        replace hmb : m = false := by
+          cases hm' : m with
+          | false => rfl
+          | true => exact absurd hm' hmb
+        -- Reading an uncached slot-positive cell of `tableExtending c₀ gS` returns the raw `gS`.
+        have htE : ∀ (gS : (TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (tag : TagId) (sid : Fin sessionsPerTag), sid ≠ 0 →
+            OracleComp.tableExtending c₀ gS ((tag, sid), transcript.nonce) =
+              gS ((tag, sid), transcript.nonce) := fun gS tag sid hsid => by
+          show (c₀ ((tag, sid), transcript.nonce)).getD _ = _
+          rw [hc₀Inv tag sid hsid transcript.nonce]; rfl
+        -- The S reader bit unfolds to a slot-existential over the raw table.
+        have hsAccIff : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            (unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nonce => OracleComp.tableExtending c₀ gS (slot, nonce))
+              (singlePattern (TagId := TagId) sessionsPerTag) transcript = true)
+            ↔ ∃ tag sid,
+              OracleComp.tableExtending c₀ gS ((tag, sid), transcript.nonce) = transcript.auth :=
+          fun gS => by
+            unfold unlinkReaderAccepts tagAccepts singlePattern
+            simp only [decide_eq_true_eq]
+        -- (g) Under `m = false`, the S reader bit equals the slot-positive collision flag.
+        have hsAccE : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+            unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
+              (fun slot nonce => OracleComp.tableExtending c₀ gS (slot, nonce))
+              (singlePattern (TagId := TagId) sessionsPerTag) transcript
+            = cacheBadReader (sessionsPerTag := sessionsPerTag) gS transcript := by
+          intro gS
+          rw [Bool.eq_iff_iff, hsAccIff gS, cacheBadReader_eq_true_iff]
+          constructor
+          · rintro ⟨tag, sid, hcell⟩
+            by_cases hsid0 : sid = 0
+            · -- slot-0 ⟹ would make `m = true`, contradiction with `m = false`.
+              subst hsid0
+              have hmtrue : m = true := by
+                rw [hm]
+                unfold unlinkReaderAccepts tagAccepts multiplePattern
+                simp only [decide_eq_true_eq]
+                exact ⟨tag, 0, by rw [← hcellConst tag gS]; exact hcell⟩
+              rw [hmb] at hmtrue; exact absurd hmtrue (by simp)
+            · exact ⟨tag, sid, hsid0, by rw [← htE gS tag sid hsid0]; exact hcell⟩
+          · rintro ⟨tag, sid, hsid, hcell⟩
+            exact ⟨tag, sid, by rw [htE gS tag sid hsid]; exact hcell⟩
+        -- Rewrite the M bit to `false` (LHS/BAD) and the actual S bit to `cacheBadReader` (RHS).
+        rw [hmb]
+        simp only [hsAccE]
+        -- Strip the `multipleBadReaderAdvance` perturbation from the LHS-success and BAD terms: the
+        -- success bool and the bad flag both ignore `cacheBad`, so per-`gS,gFine` the run
+        -- distribution is unchanged when starting from `(s, sB)` instead of the advanced state.
+        have hLHS_irr :
+            probEvent (do
+              let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                  (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                    gFine transcript sB)) (fun x => x = true)
+            = probEvent (do
+              let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) => z.1) <$>
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                  (s, sB)) (fun x => x = true) := by
+          refine probEvent_bind_congr' _ _ fun gS => ?_
+          refine probEvent_bind_congr' _ _ fun gFine => ?_
+          refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+          have hirr := evalDist_simulateQ_multipleBadTableHandlerFine_cacheBad_irrelevant
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c₀ gS)) gFine (k (ReaderReply.ofBool false)) s
+            (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB) sB
+            sB.cacheBad rfl rfl rfl
+          calc 𝒟[(fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                    z.1) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c₀ gS)) gFine)
+                    (k (ReaderReply.ofBool false))).run
+                    (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                      gFine transcript sB)]
+              = 𝒟[(fun z => z.1) <$> ((fun z => (z.1, z.2.1, {z.2.2 with
+                    cacheBad := (sB.cacheBad : Bool)})) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c₀ gS)) gFine)
+                    (k (ReaderReply.ofBool false))).run
+                    (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                      gFine transcript sB))] := by rw [Functor.map_map]
+            _ = 𝒟[(fun z => z.1) <$> ((fun z => (z.1, z.2.1, {z.2.2 with
+                    cacheBad := (sB.cacheBad : Bool)})) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c₀ gS)) gFine)
+                    (k (ReaderReply.ofBool false))).run (s, sB))] := by
+                  rw [evalDist_map, hirr, ← evalDist_map]
+            _ = 𝒟[(fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                    z.1) <$>
+                  (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                    (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                    (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                      (OracleComp.tableExtending c₀ gS)) gFine)
+                    (k (ReaderReply.ofBool false))).run (s, sB)] := by
+                  rw [Functor.map_map]
+        have hBAD_irr :
+            probEvent (do
+              let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  (z.1, z.2.2)) <$>
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                  (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                    gFine transcript sB)) (fun z => z.2.bad = true)
+            = probEvent (do
+              let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+              (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                  (z.1, z.2.2)) <$>
+                (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                  (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                  (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                    (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                  (s, sB)) (fun z => z.2.bad = true) := by
+          refine probEvent_bind_congr' _ _ fun gS => ?_
+          refine probEvent_bind_congr' _ _ fun gFine => ?_
+          have hirr := evalDist_simulateQ_multipleBadTableHandlerFine_cacheBad_irrelevant
+            (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+              (OracleComp.tableExtending c₀ gS)) gFine (k (ReaderReply.ofBool false)) s
+            (multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB) sB
+            sB.cacheBad rfl rfl rfl
+          set proj : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) →
+              Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) :=
+            fun z => (z.1, z.2.1, {z.2.2 with cacheBad := (sB.cacheBad : Bool)}) with hproj
+          set Eb : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) → Prop :=
+            (fun w : Bool × UnlinkBadState TagId Nonce Digest => w.2.bad = true) ∘
+              (fun w => (w.1, w.2.2)) with hEb
+          have hElaz : ∀ X : ProbComp (Bool × (UnlinkState TagId ×
+                UnlinkBadState TagId Nonce Digest)),
+              Pr[Eb | X] = Pr[Eb | proj <$> X] := fun X => by
+            rw [probEvent_map]
+            exact probEvent_congr' (fun _ _ => Iff.rfl) rfl
+          rw [probEvent_map, probEvent_map,
+              hElaz ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                (s, multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag)
+                  gFine transcript sB)),
+              hElaz ((simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                  (OracleComp.tableExtending c₀ gS)) gFine) (k (ReaderReply.ofBool false))).run
+                (s, sB))]
+          exact probEvent_congr' (fun _ _ => Iff.rfl) hirr
+        rw [hLHS_irr, hBAD_irr, probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput]
+        refine (ih (ReaderReply.ofBool false) qR' qT s c₀ sB R'
+          (hqRk _) (hqTk _) hqRle' hc₀Inv hRespInv').trans ?_
+        -- **Asymmetric discard.** Replace the S reader bit `false` by its actual value
+        -- `cacheBadReader gS`. For every `gS` with `cacheBadReader gS = false` the bit is `false`
+        -- and the two S-runs coincide; for the rest, drop the `false`-run summand (≤ 1) and charge
+        -- its uniform mass to the `E`-event. The `E`-mass is `≤ |TagId| * sessionsPerTag / |Digest|`.
+        have hEmass :
+            Pr[fun b : Bool => b = true | do
+                let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                pure (cacheBadReader (sessionsPerTag := sessionsPerTag) gS transcript)] ≤
+              ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+                (Fintype.card Digest : ℝ≥0∞) :=
+          probEvent_cacheBadReader_uniformSample_le (TagId := TagId) (Nonce := Nonce)
+            (Digest := Digest) (sessionsPerTag := sessionsPerTag) transcript
+        have hDiscard :
+            Pr[= true | do
+                let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (simulateQ (singleTableHandler (OracleComp.tableExtending c₀ gS))
+                  (k (ReaderReply.ofBool false))).run' s] ≤
+              Pr[= true | do
+                let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                (simulateQ (singleTableHandler (OracleComp.tableExtending c₀ gS))
+                  (k (ReaderReply.ofBool
+                    (cacheBadReader (sessionsPerTag := sessionsPerTag) gS transcript)))).run' s] +
+              ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+                (Fintype.card Digest : ℝ≥0∞) := by
+          refine le_trans ?_ (add_le_add_right hEmass _)
+          rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum, probEvent_bind_eq_tsum,
+            ← ENNReal.tsum_add]
+          refine ENNReal.tsum_le_tsum fun gS => ?_
+          rw [← mul_add]
+          gcongr _ * ?_
+          by_cases hcb : cacheBadReader (sessionsPerTag := sessionsPerTag) gS transcript = true
+          · -- `E gS`: drop the `false`-run summand (`Pr ≤ 1`); charge it to the `E` term, which is
+            -- `1` here.
+            rw [hcb, probEvent_pure_eq_indicator]
+            simp only [Set.indicator, Set.mem_setOf_eq, if_true]
+            exact probOutput_le_one.trans le_add_self
+          · -- `¬E gS`: `cacheBadReader gS = false`, so the actual S-run uses the bit `false`, the two
+            -- summands coincide, and the `E` term is `0`.
+            rw [Bool.not_eq_true] at hcb
+            rw [hcb, probEvent_pure_eq_indicator]
+            simp only [Set.indicator, Set.mem_setOf_eq, reduceCtorEq, if_false, add_zero, le_refl]
+        -- Flatten the right-hand slack and split the `(qR'+1)` units so the discard's `T·sp/|D|`
+        -- and the `≤`-monotone `qR' ≤ qR'+1` headroom land in their own summands.
+        have hsplitR : ((qR' + 1) * Fintype.card TagId : ℕ) =
+            (qR' * Fintype.card TagId : ℕ) + Fintype.card TagId := by ring
+        have hsplitC : ((qR' + 1) * Fintype.card TagId * sessionsPerTag : ℕ) =
+            (qR' * Fintype.card TagId * sessionsPerTag : ℕ) +
+              Fintype.card TagId * sessionsPerTag := by ring
+        rw [hsplitC, hsplitR, Nat.cast_add, Nat.cast_add, ENNReal.add_div, ENNReal.add_div]
+        -- The discard's `T·sp/|D|` charge pairs with the `qR'+1 = qR'+1` headroom unit on the
+        -- `C`-slack; the extra `T/|D|` unit on the `A`-slack is pure (≥ 0) headroom.
+        set S0 : ℝ≥0∞ := Pr[= true | do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (simulateQ (singleTableHandler (OracleComp.tableExtending c₀ gS))
+              (k (ReaderReply.ofBool false))).run' s] with hS0
+        set Scb : ℝ≥0∞ := Pr[= true | do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (simulateQ (singleTableHandler (OracleComp.tableExtending c₀ gS))
+              (k (ReaderReply.ofBool
+                (cacheBadReader (sessionsPerTag := sessionsPerTag) gS transcript)))).run' s] with hScb
+        set BADt : ℝ≥0∞ := probEvent (do
+            let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+            (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                (z.1, z.2.2)) <$>
+              (simulateQ (multipleBadTableHandlerFine (slotZeroSubTable (sessionsPerTag :=
+                sessionsPerTag) (OracleComp.tableExtending c₀ gS)) gFine)
+                (k (ReaderReply.ofBool false))).run (s, sB)) (fun z => z.2.bad = true) with hBADt
+        set Tsp : ℝ≥0∞ := ((Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞) with hTsp
+        set A : ℝ≥0∞ := ((qR' * Fintype.card TagId : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞) with hA
+        set Td : ℝ≥0∞ := (Fintype.card TagId : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) with hTd
+        set B : ℝ≥0∞ := ((qRInit * qT : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) with hB
+        set C : ℝ≥0∞ := ((qR' * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞) with hC
+        set Dt : ℝ≥0∞ := ((qT * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
+          (Fintype.card Digest : ℝ≥0∞) with hDt
+        -- Goal: `S0 + BADt + A + B + C + Dt ≤ Scb + BADt + (A + Td) + B + (C + Tsp) + Dt`.
+        calc S0 + BADt + A + B + C + Dt
+            ≤ (Scb + Tsp) + BADt + A + B + C + Dt := by gcongr
+          _ ≤ Scb + BADt + (A + Td) + B + (C + Tsp) + Dt := by
+              rw [show (Scb + Tsp) + BADt + A + B + C + Dt
+                    = Scb + BADt + A + B + (C + Tsp) + Dt from by ring,
+                  show Scb + BADt + (A + Td) + B + (C + Tsp) + Dt
+                    = (Scb + BADt + A + B + (C + Tsp) + Dt) + Td from by ring]
+              exact le_self_add
+          _ = Scb + BADt + (A + Td + B + (C + Tsp) + Dt) := by ring
 
 end UnlinkReduction
 
