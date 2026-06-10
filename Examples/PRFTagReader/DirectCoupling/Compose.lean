@@ -25,9 +25,8 @@ Pr[multipleIdealQueryImpl true] ≤
     + qTag·|TagId|·sessionsPerTag / |Digest| + qTag·sessionsPerTag / |Digest|
 ```
 
-without any `HasDistinctUnlinkReaderNonces` hypothesis on the adversary. Compared with
-`multipleIdeal_le_singleIdeal_add_bad` in `MultipleBadCollision.lean`, the `hdist` hypothesis
-is gone and the bound carries two additional tag-side slack terms (the last two above).
+for every adversary, with no distinctness hypothesis on its reader nonces. The bound carries two
+tag-side slack terms (the last two above) on top of the reader and nonce-aliasing slacks.
 
 The direct coupling identifies the multiple-session world's RO cell `(tag, n)` with the
 single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
@@ -48,11 +47,11 @@ single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
 
 ## Main results
 
-* `multipleBadEager_le_singleEager_DC_aux` — eager-form direct coupling aux, structural induction
-  on the adversary. The DC analogue of `multipleBadEager_le_hybridEager_aux`
-  *without* the `hdist` hypothesis.
-* `multipleIdeal_le_singleIdeal_add_bad_DC` — lazy-form headline. The DC analogue of
-  `multipleIdeal_le_singleIdeal_add_bad` *without* `hdist`.
+* `multipleBadEager_le_singleEager_DC_aux` — eager-form direct coupling aux, by structural
+  induction on the adversary, coupling the multiple-session world directly to the single-session
+  world with no distinctness hypothesis on the reader nonces.
+* `multipleIdeal_le_singleIdeal_add_bad_DC` — lazy-form headline, the standard eagerization of the
+  eager-form aux, again with no reader-nonce distinctness hypothesis.
 
 ## Layout
 
@@ -79,9 +78,8 @@ namespace UnlinkReduction
 
 The structural induction over the adversary, coupling M-side
 `multipleBadTableHandler (slotZeroSubTable gS)` (with `UnlinkBadState` instrumentation) against
-S-side `singleTableHandler gS` over a shared single-session RO table `gS`. Mirrors
-`multipleBadEager_le_hybridEager_aux`, but with M coupled directly to S via the
-slot-0 sub-table embedding rather than going through Hybrid.
+S-side `singleTableHandler gS` over a shared single-session RO table `gS`. M is coupled directly to
+S via the slot-0 sub-table embedding, with no intermediate hybrid world.
 
 The aux is deliberately formulated in terms of *eager* table handlers and a *shared* draw `$ᵗ gS`;
 the lazy headline `multipleIdeal_le_singleIdeal_add_bad_DC` below recovers it via the standard
@@ -95,10 +93,9 @@ instrumentation) success probability is bounded by the eager-form `singleTableHa
 additive slacks: `qR·|TagId|/|Digest|`, `qRInit·qT/|Nonce|`, `qR·|TagId|·sessionsPerTag/|Digest|`,
 and `qT·|TagId|·sessionsPerTag/|Digest|`.
 
-The hypothesis-free analogue of `multipleBadEager_le_hybridEager_aux`: no
-`HasDistinctUnlinkReaderNonces`, no `MultipleHybridCoupling` invariant, no `MultipleHybridColFresh`
-freshness predicate. The coupling is invariant-free at the eager level. The bound is established by
-structural induction over the adversary `oa`:
+The coupling is hypothesis- and invariant-free at the eager level: no reader-nonce distinctness
+hypothesis, no cache-coupling invariant, and no collision-freshness predicate. The bound is
+established by structural induction over the adversary `oa`:
 
 * **Tag steps.** The slot-0 sub-table embedding is fixed (independent of state); at slot 0 the M
   and S tag responses agree pointwise. Slot-positive tag divergence is captured by the
@@ -2607,22 +2604,23 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
 
 end UnlinkReduction
 
-/-! ### Lazy-form headline (drops hdist)
+/-! ### Lazy-form headline
 
-The lazy-form analogue of `multipleIdeal_le_singleIdeal_add_bad`
-*without* the `HasDistinctUnlinkReaderNonces` hypothesis. Routes through
+The lazy-form multiple-vs-single ideal-world bound, holding for every adversary with no
+distinctness hypothesis on its reader nonces. Routes through
 `multipleBadEager_le_singleEager_DC_aux` via the standard eagerization equivalences for the
 multiple-bad handler (`evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending`) and the
 single-ideal handler (`probOutput_singleIdeal_run'_eq_tableSample`). -/
 
 namespace UnlinkReduction
 
-/-- **Multi-to-single via direct M-S coupling, no `hdist`.** The hdist-free analogue of
-`multipleIdeal_le_singleIdeal_add_bad` (`MultipleBadCollision.lean`): it does *not* require
-`HasDistinctUnlinkReaderNonces` on the adversary, at the cost of two additional tag-side slack
-terms `qTag·|TagId|·sessionsPerTag / |Digest|` and `qTag·sessionsPerTag / |Digest|`.
+/-- **Multi-to-single via direct M-S coupling.** Bounds the multiple-session ideal world by the
+single-session ideal world plus the multiple-bad collision probability and five unconditional
+slack terms, for every adversary and with no distinctness hypothesis on its reader nonces. Two of
+the slacks are tag-side, `qTag·|TagId|·sessionsPerTag / |Digest|` and `qTag·sessionsPerTag /
+|Digest|`.
 
-Internally bypasses the M→Hybrid→S chain: the direct M-S coupling via `slotZeroSubTable` works
+The direct M-S coupling via `slotZeroSubTable` works
 unconditionally on the adversary (no nonce-distinctness assumption) because the per-step
 identification of M's cell `(tag, n)` with S's cell `((tag, 0), n)` is a fixed embedding, not a
 state-dependent one. The bound is supplied by `multipleBadEager_le_singleEager_DC_aux`, lifted to

@@ -28,8 +28,8 @@ module hosts:
   `evalDist_simulateQ_multipleBadTableHandlerFine_forget_cacheBad_eq`, showing the `cacheBad`
   field is invisible to the original handler and marginalizes away from the Fine handler.
 
-The headline aux lemma `multipleBadEager_le_hybridEager_aux` and its two large sub-branches live
-in the sibling modules `MultipleToHybrid.Eager` and `MultipleToHybrid.EagerReader`.
+These shared definitions and bridges supply the eager-table instrumentation consumed by the
+direct-coupling headline in `DirectCoupling.Compose`.
 -/
 
 open OracleComp OracleSpec ENNReal

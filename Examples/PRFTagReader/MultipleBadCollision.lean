@@ -4,18 +4,15 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Quang Dao
 -/
 
-import Examples.PRFTagReader.MultipleToHybrid.Eager
 import Examples.PRFTagReader.DirectCoupling.Compose
+import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
 
 /-!
 # PRF Tag/Reader Protocol — Multiple-Bad Collision Bound
 
-Composes the two hops into the multiple-vs-single ideal-world bound and discharges the
-multiple-bad collision term in closed form:
+Discharges the multiple-bad collision term in closed form and packages the multiple-vs-single
+random-function gap of the headline reduction:
 
-* `multipleIdeal_le_hybrid_add_bad` (multiple → hybrid) and
-  `hybrid_le_singleIdeal_add_readerSlack` (hybrid → single, from
-  `Hybrid`/`HybridToSingle`) combine to give `multipleIdeal_le_singleIdeal_add_bad`;
 * `multipleBadStep_*` lemmas track the per-step bad-flag bound and the session counter;
 * `simulateQ_multipleBad_prob_le` unrolls those step lemmas to a union bound, yielding
   `multipleBad_bad_le_sessionCollisionBound`;
@@ -36,98 +33,14 @@ variable {TagId Nonce Digest K : Type}
   [DecidableEq Digest] [SampleableType Digest]
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
 
-/-! ### Multiple-vs-single bound via the hybrid
+/-! ### Multiple-vs-single bound
 
-The multiple-vs-single bound `multipleIdeal_le_singleIdeal_add_bad` follows by chaining the two
-hops:
-
-* **Multiple→Hybrid** (`multipleIdeal_le_hybrid_add_bad`): the multiple-session ideal world is
-  bounded by the hybrid world plus the within-tag nonce-collision probability (the `bad` flag of
-  the instrumented `multipleBadQueryImpl`) plus the reader/tag slacks
-  `qReader * |TagId| / |Digest|` and `qReader * qTag / |Nonce|`.
-* **Hybrid→Single** (`hybrid_le_singleIdeal_add_readerSlack`): the hybrid world is bounded by the
-  single-session ideal world plus the reader-slack term
-  `qReader * |TagId| * sessionsPerTag / |Digest|`.
-
-Combining the two yields the headline bound below, with the nonce-collision term expressed in the
-`multipleBadQueryImpl` shape (this is the shape that the multiple→hybrid transition actually
-produces; downstream consumers either match this shape or take the bridge as a hypothesis). -/
-
-/-- Core coupling bound for the unlinkability reduction, proved by chaining the multiple→hybrid
-transition (`multipleIdeal_le_hybrid_add_bad`) and the hybrid→single transition
-(`hybrid_le_singleIdeal_add_readerSlack`).
-
-The multiple-session ideal world is bounded by the single-session ideal world plus the
-within-tag nonce-collision probability (carried by the instrumented `multipleBadQueryImpl`'s
-`bad` flag) plus three additive slack terms:
-
-* `qReader * Fintype.card TagId / Fintype.card Digest` (multiple→hybrid reader-cell asymmetry
-  between the multiple and hybrid worlds);
-* `qReader * qTag / Fintype.card Nonce` (multiple→hybrid Sub-B tag-cache aliasing slack);
-* `qReader * Fintype.card TagId * sessionsPerTag / Fintype.card Digest` (hybrid→single
-  reader-cell asymmetry).
-
-The bound assumes `HasDistinctUnlinkReaderNonces` (each nonce is carried by at most one reader
-query), which both transitions require. -/
-lemma multipleIdeal_le_singleIdeal_add_bad [Fintype Nonce] [Fintype Digest]
-    (adversary : UnlinkAdversary TagId Nonce Digest)
-    (qReader qTag : ℕ)
-    (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
-    (hqTag : OracleComp.IsQueryBoundP adversary (·.isLeft) qTag)
-    (hdist : HasDistinctUnlinkReaderNonces adversary) :
-    Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
-        (UnlinkState.init, ∅)] ≤
-      Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
-        (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
-        (UnlinkState.init, ∅)] +
-      Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
-        (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
-          (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
-          ((UnlinkState.init, ∅), UnlinkBadState.init)] +
-      ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) +
-      ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) +
-      ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        (Fintype.card Digest : ℝ≥0∞) := by
-  have hA := multipleIdeal_le_hybrid_add_bad (sessionsPerTag := sessionsPerTag)
-    adversary qReader qTag hqReader hqTag hdist
-  have hB := hybrid_le_singleIdeal_add_readerSlack (sessionsPerTag := sessionsPerTag)
-    adversary qReader hdist hqReader
-  -- Chain the two transitions: hybrid ≤ single + hybrid→single slack, applied inside hA's RHS.
-  calc Pr[= true | (simulateQ (multipleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
-              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
-              (UnlinkState.init, ∅)]
-      ≤ _ := hA
-    _ ≤ _ := by
-        -- Apply Hybrid-to-single by widening the hybrid term.
-        have hHybridLe :
-            Pr[= true | (simulateQ (hybridLazyHandler (TagId := TagId) (Nonce := Nonce)
-                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
-                (HybridState.init, ∅)] +
-            Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
-              (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
-                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
-                ((UnlinkState.init, ∅), UnlinkBadState.init)] +
-            ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-              (Fintype.card Digest : ℝ≥0∞) +
-            ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞)
-              ≤
-            Pr[= true | (simulateQ (singleIdealQueryImpl (TagId := TagId) (Nonce := Nonce)
-              (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run'
-              (UnlinkState.init, ∅)] +
-            ((qReader * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-              (Fintype.card Digest : ℝ≥0∞) +
-            Pr[fun z : Bool × MultipleBadState TagId Nonce Digest sessionsPerTag => z.2.2.bad |
-              (simulateQ (multipleBadQueryImpl (TagId := TagId) (Nonce := Nonce)
-                (Digest := Digest) (sessionsPerTag := sessionsPerTag)) adversary).run
-                ((UnlinkState.init, ∅), UnlinkBadState.init)] +
-            ((qReader * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-              (Fintype.card Digest : ℝ≥0∞) +
-            ((qReader * qTag : ℕ) : ℝ≥0∞) / (Fintype.card Nonce : ℝ≥0∞) := by
-          gcongr
-        refine hHybridLe.trans ?_
-        ring_nf
-        rfl
+The multiple-vs-single ideal-world coupling is supplied by the sorry-free, hypothesis-free
+direct-coupling headline `UnlinkReduction.multipleIdeal_le_singleIdeal_add_bad_DC`: the
+multiple-session ideal world is bounded by the single-session ideal world plus the within-tag
+nonce-collision probability (the `bad` flag of the instrumented `multipleBadQueryImpl`) and five
+unconditional cell-asymmetry and nonce-aliasing slack terms. The collision term is expressed in
+the `multipleBadQueryImpl` shape, which the bound below discharges in closed form. -/
 
 /-! ### Multiple-vs-single bound: session-collision bound for `multipleBadQueryImpl`
 

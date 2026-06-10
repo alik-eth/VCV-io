@@ -505,7 +505,7 @@ lemma singleIdealQueryImpl_reader_run
   simp [simulateQ_prfIdeal_unlinkToSinglePRFReaderImpl_run transcript s c]
 
 omit [Nonempty TagId] [NeZero sessionsPerTag] in
-/-- Base case of any coupling induction for `multipleIdeal_le_singleIdeal_add_bad`: on a `pure`
+/-- Base case of the multiple-vs-single ideal-world coupling induction: on a `pure`
 adversary the multiple- and single-session ideal handlers return the same bit, so the
 multiple-world success probability is trivially bounded by the single-world one plus the
 bad-event probability. Holds for arbitrary (not necessarily coupled) initial states. -/

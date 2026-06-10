@@ -22,8 +22,8 @@ reduction. Includes:
 * initial-state lemmas (`MHBInv_init`, `MHBRel_init`, `MultipleHybridCoupling_init`,
   `multipleHybridColFresh_init`).
 
-The eager-table coupling proof itself (`multipleBadEager_le_hybridEager_aux`) lives in the
-sibling `MultipleToHybrid.Eager` module.
+These supply the state-coupling infrastructure consumed by the eager-table coupling arguments in
+the sibling `MultipleToHybrid.EagerSetup` module.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -803,7 +803,7 @@ lemma MultipleHybridCoupling_tag_step
         · rw [Function.update_of_ne hts] at hsn'
           exact ⟨sid', hsn'⟩
 
-/-! ### Multiple-to-hybrid: closing `multipleIdeal_le_hybrid_add_bad`
+/-! ### Multiple-to-hybrid per-query coupling steps
 
 The reader and tag per-query coupling steps are discharged below and assembled through the
 heterogeneous bad+slack `simulateQ` rule `probOutput_simulateQ_run'_le_add_bad_add_slack`. -/
