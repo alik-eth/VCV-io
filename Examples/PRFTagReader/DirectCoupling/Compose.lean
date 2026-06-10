@@ -2424,17 +2424,90 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                     ((tag, (0 : Fin sessionsPerTag)), n) = u := fun gS' u => by
               rw [OracleComp.tableExtending_cacheQuery]
               simp [Function.update_self]
-            -- Step 2: marginalize LHS-success and BAD events (M-side reads slot-0).
-            -- Step 3: marginalize RHS S-event (S reads slot-K; uncached by hcInv).
-            -- Step 4: apply IH at ⟨n, u_0⟩ over c+u_0@slot-0.
-            -- Step 5: bridge S-side via swap-bridge `singleTableHandler_cache_swap_eq`.
-            -- Step 6: rename u_0 ↔ u_K via `evalDist_uniformSample_bind_update_two_map`.
-            -- The full implementation (~300 LoC) mirrors slot-zero Case B's marginalization
-            -- structure (lines 1660-1850), with two crucial additions:
-            -- (a) S-side reads slot-K cell, requiring separate marginalization with hcInv
-            --     showing the cell is uncached.
-            -- (b) The cache-extension asymmetry (IH at slot-0 vs goal at slot-K) is bridged
-            --     via the (sorry-free) `singleTableHandler_cache_swap_eq` lemma.
+            -- Step 2: marginalize LHS-success event over slot-0 (same as slot-zero Case B).
+            have hLHS_marg :
+                Pr[(· = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)) gFine)
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(· = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          z.1) <$>
+                        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'))
+                            gFine)
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              refine bind_congr fun gFine => ?_
+              rw [hext_eq gS' u, hcell_u gS' u]
+            have hBAD_marg :
+                Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending c gS)) gFine)
+                          (k (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, OracleComp.tableExtending c gS
+                              ((tag, (0 : Fin sessionsPerTag)), n)⟩ :
+                              TagTranscript Nonce Digest))))]
+              = Pr[(fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad = true) |
+                  (do let u ← $ᵗ Digest
+                      let gS' ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                          (z.1, z.2.2)) <$>
+                        (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                          (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                          (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                            (OracleComp.tableExtending
+                              (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS'))
+                            gFine)
+                          (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run
+                          (advM, multipleBadAdvance tag sB
+                            (some (⟨n, u⟩ : TagTranscript Nonce Digest))))] := by
+              refine probEvent_congr' (fun _ _ => Iff.rfl) ?_
+              rw [hmarg _]
+              refine congrArg evalDist ?_
+              refine bind_congr fun u => ?_
+              refine bind_congr fun gS' => ?_
+              refine bind_congr fun gFine => ?_
+              rw [hext_eq gS' u, hcell_u gS' u]
+            -- Step 3: marginalize RHS S-event over slot-K cell (uncached by hcInv).
+            -- Step 4: apply IH at ⟨n, u_0⟩ over c+u_0@slot-0; bridge via swap-bridge.
+            -- Step 5: rename u_0 ↔ u_K.
+            -- These steps require: hmarg_K (slot-K marginalization), hRHS_marg_K, then
+            -- composing probEvent_bind_le_add_bad_disagree with the swap-bridge.
             sorry
           · -- Case M-hit: c slot-0 = some u₀.
             -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
