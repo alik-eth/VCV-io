@@ -34,10 +34,12 @@ single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
   independent uniforms off a nonce collision. The `multipleBadAdvance` bad flag captures the
   nonce-collision case; off-bad, the per-step output distributions agree marginally because
   both reads are fresh uniforms.
-* **Reader step.** M's cells `{(tag, transcript.nonce) | tag}` embed into S's cells
-  `{((tag, sid), transcript.nonce) | tag, sid}` via `slotZeroEmbed`. M-accept implies S-accept
-  (`mReader_accepts_imp_sReader_accepts`, Session 2). The "S-accepts, M-rejects" gap is the
-  reader-cell asymmetry slack `qReader · |TagId| · sessionsPerTag / |Digest|`.
+* **Reader step.** Only the slot-0 column at the queried nonce is lazified on both sides, so the M
+  reader bit collapses to a deterministic bit `m` of the resulting cache while slot-positive cells
+  stay uncached. M-accept implies S-accept (`mReader_accepts_imp_sReader_accepts`), and this
+  implication is one-sided: when `m` is `true` both sides continue with the same reply, and when
+  `m` is `false` the S-side's slot-positive collision branch is *discarded* over `ℝ≥0∞`, charging
+  only the collision event's uniform mass `≤ |TagId| · sessionsPerTag / |Digest|` per reader query.
 
 ## Main results
 
@@ -1363,26 +1365,44 @@ lemma evalDist_simulateQ_multipleBadTableHandlerFine_cacheBad_irrelevant
       evalDist_simulateQ_multipleBadTableHandlerFine_forget_cacheBad_pointwise_eq g gFine oa (s, sB')]
   exact evalDist_simulateQ_multipleBadTableHandler_cacheBad_irrelevant g oa s sB sB' cb hSU hR hB
 
-/-- **Direct M-S coupling aux (eager).** Under a shared `$ᵗ gS` sample, the eager-form
-`multipleBadTableHandler (slotZeroSubTable gS)` LHS is bounded by the eager-form
-`singleTableHandler gS` RHS plus the multiple-bad bad-probability plus the three additive slacks.
+omit [Nonempty TagId] in
+/-- **Direct M-S coupling aux (eager).** Under a shared `$ᵗ gS` sample, the eager-form fine handler
+`multipleBadTableHandlerFine (slotZeroSubTable (tableExtending c gS))` (with `UnlinkBadState`
+instrumentation) success probability is bounded by the eager-form `singleTableHandler
+(tableExtending c gS)` success probability, plus the multiple-bad `bad`-probability, plus four
+additive slacks: `qR·|TagId|/|Digest|`, `qRInit·qT/|Nonce|`, `qR·|TagId|·sessionsPerTag/|Digest|`,
+and `qT·|TagId|·sessionsPerTag/|Digest|`.
 
 The hypothesis-free analogue of `multipleBadEager_le_hybridEager_aux`: no
 `HasDistinctUnlinkReaderNonces`, no `MultipleHybridCoupling` invariant, no `MultipleHybridColFresh`
-freshness predicate. The direct M-S coupling is invariant-free at the eager level because:
+freshness predicate. The coupling is invariant-free at the eager level. The bound is established by
+structural induction over the adversary `oa`:
 
-* The slot-0 sub-table embedding is *fixed* (independent of any state); tag-step coupling at
-  slot 0 is pointwise pure-equality (Session 3's
-  `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessionsUsed_zero`).
-* Slot-≥1 tag divergence is captured by the `multipleBadAdvance` bad flag — off-bad, M and S
-  produce statistically identical fresh uniforms despite reading different cells.
-* Reader-step divergence is bounded by the cell-cardinality gap
-  `|TagId| * (sessionsPerTag - 1) / |Digest|` per reader query (slack₃ from `slack-not-inherent`
-  memory).
+* **Tag steps.** The slot-0 sub-table embedding is fixed (independent of state); at slot 0 the M
+  and S tag responses agree pointwise. Slot-positive tag divergence is captured by the
+  `multipleBadAdvance` bad flag — off-bad, M and S produce statistically identical fresh uniforms
+  despite reading different cells. The per-nonce disagreement is split on membership in `R`, the
+  set of reader-touched nonces: off `R` the response invariant `hRespInv` carries the closed
+  argument through, and the on-`R` mass is charged to the `qRInit·qT/|Nonce|` slack.
+* **Reader steps.** Only the slot-0 column at the queried nonce is lazified on both sides (via
+  `idealCacheMapM` over the cells `{((T,0), nonce) : T}`), extending the cache `c → c₀` while
+  leaving slot-positive cells uncached so the strong cache invariant `hcInv` survives. The M
+  reader bit then collapses to a deterministic bit `m` of `c₀`. When `m = true` the S reader also
+  accepts (the slot-0 witness lifts), both sides continue with the same reply, and the induction
+  hypothesis at `(c₀, qR', R ∪ {nonce})` closes the step. When `m = false`, M rejects; the asymmetry
+  `mAcc ⟹ sAcc` is one-sided, so over `ℝ≥0∞` the S-side's slot-positive collision branch is
+  *discarded*: the actual S reader bit equals `cacheBadReader gS`, and replacing it by the constant
+  `false` reply costs exactly the collision event `E gS := ∃ T sid ≠ 0, gS ((T,sid), nonce) = auth`,
+  whose uniform mass `≤ |TagId|·sessionsPerTag/|Digest|` is charged to a single slack unit.
 
-**Privacy.** Kept `private` while the reader case (Phase 9.5) is open, so downstream callers
-cannot depend on the unverified bound. Will be exported once the reader case closes. -/
-private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
+The first-time-per-nonce bookkeeping is threaded through `qRInit`, `R`, and `hqRle : qR + R.card ≤
+qRInit`: each reader query inserts its nonce into `R`, and the reader-drawn slot-0 cache entries
+only break `hRespInv` off `R`, which the gated form `hRespInv` (conditioned on `n ∉ R`) absorbs.
+
+The aux is deliberately formulated in terms of eager table handlers and a shared draw `$ᵗ gS`; the
+lazy headline `multipleIdeal_le_singleIdeal_add_bad_DC` recovers it via the standard eagerization
+equivalences. -/
+lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
     (oa : UnlinkAdversary TagId Nonce Digest) (qR qT qRInit : ℕ)
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
@@ -3169,7 +3189,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
           = pure (ReaderReply.ofBool (mAcc gS), s,
               multipleBadReaderAdvance (sessionsPerTag := sessionsPerTag) gFine transcript sB) := by
         intro gS gFine
-        show (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
+        change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
             (sessionsPerTag := sessionsPerTag)
             (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
               (OracleComp.tableExtending c gS)) (Sum.inr transcript)) s
@@ -3414,7 +3434,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
             (c₀ ((tag, (0 : Fin sessionsPerTag)), transcript.nonce)).getD
               (transcript.auth) := fun tag gS => by
         obtain ⟨u, hu⟩ := Option.isSome_iff_exists.mp (hc₀cached tag)
-        show (c₀ ((tag, (0 : Fin sessionsPerTag)), transcript.nonce)).getD
+        change (c₀ ((tag, (0 : Fin sessionsPerTag)), transcript.nonce)).getD
             (gS ((tag, (0 : Fin sessionsPerTag)), transcript.nonce)) = _
         rw [hu]; rfl
       -- (d) The M reader bit is therefore a constant `m` independent of `gS`.
@@ -3615,7 +3635,7 @@ private lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Di
             (tag : TagId) (sid : Fin sessionsPerTag), sid ≠ 0 →
             OracleComp.tableExtending c₀ gS ((tag, sid), transcript.nonce) =
               gS ((tag, sid), transcript.nonce) := fun gS tag sid hsid => by
-          show (c₀ ((tag, sid), transcript.nonce)).getD _ = _
+          change (c₀ ((tag, sid), transcript.nonce)).getD _ = _
           rw [hc₀Inv tag sid hsid transcript.nonce]; rfl
         -- The S reader bit unfolds to a slot-existential over the raw table.
         have hsAccIff : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
@@ -3881,11 +3901,10 @@ namespace UnlinkReduction
 Internally bypasses the M→Hybrid→S chain: the direct M-S coupling via `slotZeroSubTable` works
 unconditionally on the adversary (no nonce-distinctness assumption) because the per-step
 identification of M's cell `(tag, n)` with S's cell `((tag, 0), n)` is a fixed embedding, not a
-state-dependent one.
-
-**Privacy.** Kept `private` while the reader case of the underlying aux is open, so downstream
-callers cannot depend on the unverified bound. Will be exported once the aux closes. -/
-private theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
+state-dependent one. The bound is supplied by `multipleBadEager_le_singleEager_DC_aux`, lifted to
+the lazy ideal handlers by the standard eagerization equivalences and instantiated at `R = ∅`,
+`qRInit = qReader`. -/
+theorem multipleIdeal_le_singleIdeal_add_bad_DC [Fintype Nonce] [Fintype Digest]
     (adversary : UnlinkAdversary TagId Nonce Digest)
     (qReader qTag : ℕ)
     (hqReader : OracleComp.IsQueryBoundP adversary (·.isRight) qReader)
