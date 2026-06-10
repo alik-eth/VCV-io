@@ -2381,11 +2381,58 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
           rcases hc0 : c ((tag, (0 : Fin sessionsPerTag)), n) with _ | u₀
           · -- Case M-miss: c slot-0 = none. Marginalize + IH + swap-bridge.
             sorry
-          · -- Case M-hit: c slot-0 = some u₀. By hRespInv, sB.responses(tag, n) ≠ none.
-            -- multipleBadAdvance at transcript ⟨n, u₀⟩ fires bad := true.
-            -- The starting state for the inner simulateQ has bad = true; by
-            -- `multipleBadTableHandlerFine_run_preserves_bad`, the result also has bad = true.
-            -- So LHS-success event is dominated by BAD event: drop everything else via `le_add_right`.
+          · -- Case M-hit: c slot-0 = some u₀.
+            -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
+            have hcell : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
+                OracleComp.tableExtending c gS ((tag, (0 : Fin sessionsPerTag)), n) = u₀ :=
+              fun gS => by
+                show (c ((tag, (0 : Fin sessionsPerTag)), n)).getD
+                    (gS ((tag, (0 : Fin sessionsPerTag)), n)) = u₀
+                rw [hc0]; rfl
+            simp_rw [hcell]
+            -- Step 2: hRespInv → responses (tag, n) ≠ none → multipleBadAdvance flips bad := true.
+            have hresp_some : sB.responses (tag, n) ≠ none :=
+              hRespInv tag n (by rw [hc0]; exact Option.some_ne_none _)
+            have hbad_init : (multipleBadAdvance tag sB
+                (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))).bad = true := by
+              show (sB.bad || (sB.responses (tag, n)).isSome) = true
+              rw [Option.isSome_iff_ne_none.mpr hresp_some]
+              simp
+            -- Step 3: By preserves_bad, every reachable output has z.2.2.bad = true.
+            -- So LHS-success event (z.1 = true) is dominated by BAD event (z.2.2.bad = true).
+            have hLHS_le_BAD :
+                probEvent (do
+                    let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        z.1) <$>
+                      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending c gS)) gFine)
+                        (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))
+                  (fun x => x = true)
+                ≤ probEvent (do
+                    let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    let gFine ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                    (fun z : Bool × (UnlinkState TagId × UnlinkBadState TagId Nonce Digest) =>
+                        (z.1, z.2.2)) <$>
+                      (simulateQ (multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (slotZeroSubTable (sessionsPerTag := sessionsPerTag)
+                          (OracleComp.tableExtending c gS)) gFine)
+                        (k (some (⟨n, u₀⟩ : TagTranscript Nonce Digest)))).run
+                        (advM, multipleBadAdvance tag sB
+                          (some (⟨n, u₀⟩ : TagTranscript Nonce Digest))))
+                  (fun z => z.2.bad = true) := by
+              -- Both events are over the same underlying simulateQ run; preserve_bad gives
+              -- the unconditional z.2.2.bad = true.
+              sorry
+            -- Step 4: BAD ≤ S + BAD + slacks. Mechanical reshape via add_le_add chains.
+            refine hLHS_le_BAD.trans ?_
+            -- TODO: chain of `le_self_add` + `add_le_add_right` to inject BAD into RHS.
             sorry
       · -- Phase 9.4: slot-exhausted. Both M-Fine and S handlers return `pure (none, s, sB)` /
         -- `pure (none, s)` (since `multipleBadAdvance tag sB none = sB` and `gFine` is not
