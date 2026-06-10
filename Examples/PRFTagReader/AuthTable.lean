@@ -935,6 +935,67 @@ lemma simulateQ_authTableHandler_run_proj_readerForged_union (g : TagId × Nonce
       rw [ih _ resp hon (S ∪ Δ), ih _ resp hon Δ]
       simp only [Functor.map_map, Finset.union_assoc]
 
+omit [Nonempty TagId] [SampleableType Digest] in
+/-- **Growth-lowering of the forge probability.** Lowering the starting `readerForged` from a
+larger set `T` to a smaller `S ⊆ T` can only increase the probability that the run grows the log
+beyond its starting contents: the freshly-appended set is independent of the start (by
+`simulateQ_authTableHandler_run_proj_readerForged_union`), and the forge event `∃ x ∈ rf, x ∉ start`
+is anti-monotone in `start`. This decouples the `g`-dependent post-step baseline from the table. -/
+lemma probEvent_readerForged_growth_lower (g : TagId × Nonce → Digest) {β : Type}
+    (oa : OracleComp (AuthOracleSpec TagId Nonce Digest) β)
+    (resp : ((TagId × Nonce) →ₒ Digest).QueryCache)
+    (hon S T : Finset (TagId × TagTranscript Nonce Digest)) (hST : S ⊆ T) :
+    Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ T |
+        (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+          oa).run
+          ({ responses := resp, honestOutputs := hon, readerForged := T } :
+            AuthIdealState TagId Nonce Digest)] ≤
+      Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ S |
+        (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+          oa).run
+          ({ responses := resp, honestOutputs := hon, readerForged := S } :
+            AuthIdealState TagId Nonce Digest)] := by
+  -- Both forge events factor through the `(honestOutputs, readerForged)` projection, which the
+  -- growth lemma writes as `(p ↦ (p.1, start ∪ p.2)) <$> proj(run from ∅)`.
+  have hkey : ∀ (U : Finset (TagId × TagTranscript Nonce Digest)),
+      Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ U |
+          (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+            oa).run
+            ({ responses := resp, honestOutputs := hon, readerForged := U } :
+              AuthIdealState TagId Nonce Digest)]
+        = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+              Finset (TagId × TagTranscript Nonce Digest) => ∃ x ∈ p.2, x ∉ U |
+          (fun z : β × AuthIdealState TagId Nonce Digest =>
+            (z.2.honestOutputs, z.2.readerForged)) <$>
+            (simulateQ (authTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest) g)
+              oa).run
+              ({ responses := resp, honestOutputs := hon, readerForged := ∅ } :
+                AuthIdealState TagId Nonce Digest)] := by
+    intro U
+    rw [show Pr[fun z : β × AuthIdealState TagId Nonce Digest => ∃ x ∈ z.2.readerForged, x ∉ U |
+          (simulateQ (authTableHandler g) oa).run
+            ({ responses := resp, honestOutputs := hon, readerForged := U } :
+              AuthIdealState TagId Nonce Digest)]
+        = Pr[fun p : Finset (TagId × TagTranscript Nonce Digest) ×
+              Finset (TagId × TagTranscript Nonce Digest) => ∃ x ∈ p.2, x ∉ U |
+          (fun z : β × AuthIdealState TagId Nonce Digest =>
+            (z.2.honestOutputs, z.2.readerForged)) <$>
+            (simulateQ (authTableHandler g) oa).run
+              ({ responses := resp, honestOutputs := hon, readerForged := U } :
+                AuthIdealState TagId Nonce Digest)] from by rw [probEvent_map]; rfl]
+    rw [simulateQ_authTableHandler_run_proj_readerForged_union g oa resp hon U, probEvent_map]
+    refine probEvent_congr' (fun p _ => ?_) rfl
+    simp only [Function.comp, Finset.mem_union]
+    constructor
+    · rintro ⟨x, hx, hxU⟩
+      exact ⟨x, hx.resolve_left (fun h => hxU h), hxU⟩
+    · rintro ⟨x, hx, hxU⟩
+      exact ⟨x, Or.inr hx, hxU⟩
+  rw [hkey S, hkey T]
+  refine probEvent_mono ?_
+  rintro p _ ⟨x, hx, hxT⟩
+  exact ⟨x, hx, fun h => hxT (hST h)⟩
+
 /-! ### Static union bound in the eager world and the collision bound -/
 
 omit [Nonempty TagId] in
