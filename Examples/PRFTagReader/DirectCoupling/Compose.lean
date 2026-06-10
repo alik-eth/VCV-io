@@ -986,11 +986,12 @@ scaffold below is retained as exploratory work; the permutation refactor is the 
 private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
     (s : UnlinkState TagId)
     (c : (((TagId × Fin sessionsPerTag) × Nonce) →ₒ Digest).QueryCache)
-    (tag : TagId) (slotK : Fin sessionsPerTag) (_hslotK : slotK ≠ 0)
+    (tag : TagId) (slotK : Fin sessionsPerTag) (hslotK : slotK ≠ 0)
     (n : Nonce) (u : Digest)
-    (_hcInv : ∀ tag' : TagId, ∀ sid' : Fin sessionsPerTag, sid' ≠ 0 →
+    (hcInv : ∀ tag' : TagId, ∀ sid' : Fin sessionsPerTag, sid' ≠ 0 →
         ∀ n' : Nonce, c ((tag', sid'), n') = none)
-    (_hAdv : slotK.val < s.sessionsUsed tag)
+    (hc0 : c ((tag, (0 : Fin sessionsPerTag)), n) = none)
+    (hAdv : slotK.val < s.sessionsUsed tag)
     (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool) :
     𝒟[do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
          (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
@@ -1003,69 +1004,27 @@ private lemma singleTableHandler_cache_swap_eq [Fintype Nonce] [Fintype Digest]
               (OracleComp.tableExtending
                 (c.cacheQuery ((tag, slotK), n) u) gS)) oa).run' s] := by
   classical
-  induction oa using OracleComp.inductionOn generalizing s with
-  | pure b =>
-    -- Both sides reduce to `pure b` (handler's `simulateQ_pure` collapses the S handler,
-    -- the outer `gS ← $ᵗ` is a `bind_const` of `pure b`).
-    simp [simulateQ_pure]
-  | query_bind t k _ih =>
-    -- Tag query (Sum.inl) vs reader query (Sum.inr). Each case decomposes further.
-    cases t with
-    | inl T =>
-      -- Tag query: handler draws fresh nonce, reads cell `((T, sid_T), n')`, returns transcript.
-      -- Key fact: by `tableExtending_cacheQuery`,
-      --   `tableExtending (c.cacheQuery t u) gS = Function.update (tableExtending c gS) t u`,
-      -- so LHS and RHS tables differ from `tableExtending c gS` only by an update at
-      -- `((tag, 0), n)` and `((tag, slotK), n)` respectively.
-      by_cases hT : T = tag
-      · -- Sub-case T = tag: by `_hAdv`, `sessionsUsed tag ≥ slotK + 1`, so the handler reads at
-        -- `sid_T = sessionsUsed tag ≥ slotK + 1 ∉ {0, slotK}`. Neither LHS nor RHS update is hit;
-        -- cell read identical (= `gS ((tag, sid_T), nonce)`). Step responses pointwise equal;
-        -- IH on continuation with `advT s = sessionsUsed tag + 1` (still > slotK + 1).
-        sorry
-      · -- Sub-case T ≠ tag: cells at `((T, ·), ·)` are not touched by the cache extension
-        -- (Function.update only fires at the specific cell). Both LHS and RHS tables agree
-        -- pointwise on `((T, sid), n')` cells. Handler step responses identical; IH closes.
-        sorry
-    | inr transcript =>
-      -- Reader query: deterministic acceptance check
-      -- `∃ T sid, tableExtending c' gS ((T, sid), transcript.nonce) = transcript.auth`.
-      by_cases hn : transcript.nonce = n
-      · -- Sub-case `transcript.nonce = n`: the existential reads BOTH cached cells.
-        -- LHS sees `((tag, 0), n) = u`, `((tag, slotK), n) = gS@K (uniform)`.
-        -- RHS sees `((tag, 0), n) = gS@0 (uniform)`, `((tag, slotK), n) = u`.
-        -- Two-cell marginalization via `evalDist_uniformSample_bind_update_two_map`: under
-        -- joint uniform `(gS@0, gS@K)`, the existential values
-        --   `(u = V) ∨ (gS@K = V) ∨ rest` and `(gS@0 = V) ∨ (u = V) ∨ rest`
-        -- are functions of the same form of `(u, fresh_uniform)`. Distributional equality.
-        sorry
-      · -- Sub-case `transcript.nonce ≠ n`: cache extensions only affect cells at nonce `n`,
-        -- so cells at `transcript.nonce` are pointwise equal. Tables agree on the read cells,
-        -- so handler step responses identical; state unchanged; IH closes.
-        -- Pointwise table-value equality at any cell `(t', transcript.nonce)`:
-        have htbl_eq : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
-            ∀ t' : TagId × Fin sessionsPerTag,
-            OracleComp.tableExtending
-                (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS
-                (t', transcript.nonce)
-            = OracleComp.tableExtending (c.cacheQuery ((tag, slotK), n) u) gS
-                (t', transcript.nonce) := by
-          intro gS t'
-          rw [OracleComp.tableExtending_cacheQuery, OracleComp.tableExtending_cacheQuery]
-          have hne0 : (t', transcript.nonce) ≠ ((tag, (0 : Fin sessionsPerTag)), n) := by
-            intro h
-            exact hn (congrArg (fun p => p.2) h)
-          have hneK : (t', transcript.nonce) ≠ ((tag, slotK), n) := by
-            intro h
-            exact hn (congrArg (fun p => p.2) h)
-          rw [Function.update_of_ne hne0, Function.update_of_ne hneK]
-        -- The reader handler is `pure (ReaderReply.ofBool (unlinkReaderAccepts ... transcript), s)`.
-        -- Since `unlinkReaderAccepts` reads cells `((T', sid'), transcript.nonce)` for all (T', sid'),
-        -- by `htbl_eq` these are pointwise equal between LHS and RHS tables. So the handler
-        -- responses (and states) are equal as functions of gS.
-        -- Combined with `singleTable_run'_query_bind'`, the bind decomposes; IH on the continuation
-        -- with same state s and same `_hAdv` closes.
-        sorry
+  -- **Permutation argument**: let `φ := cellSwap ((tag, 0), n) ((tag, slotK), n)`. φ is
+  -- measure-preserving on uniform `$ᵗ gS`. We rewrite the LHS via `gS → gS ∘ φ` and show that
+  -- `T_L(gS ∘ φ)` and `T_R(gS)` give pointwise equal `singleTableHandler` outputs via the
+  -- swap-invariance lemma.
+  set φ : (TagId × Fin sessionsPerTag) × Nonce → (TagId × Fin sessionsPerTag) × Nonce :=
+    cellSwap ((tag, (0 : Fin sessionsPerTag)), n) ((tag, slotK), n) with hφ
+  -- **The proof composes** (sketched here; final wiring deferred):
+  -- (1) `𝒟[$ᵗ gS] = 𝒟[(·∘φ) <$> $ᵗ gS]` by `evalDist_uniformSample_comp_cellSwap`.
+  -- (2) Map-bind to push `· ∘ φ` inside the bind body.
+  -- (3) For each `gS`, `singleTableHandler_simulateQ_swap_invariant` gives pointwise equality
+  --     between `simulateQ (S (T_L (gS ∘ φ))) oa` and `simulateQ (S (T_R gS)) oa` since the
+  --     two tables differ only by a swap of values at the cells `((tag, 0), n)` and
+  --     `((tag, slotK), n)` — which is what φ swaps.
+  -- The pointwise equality follows from:
+  -- * heq: agreement off the swap pair (since φ is identity off the swap pair).
+  -- * hswap_0: both tables cache `u` at the slot-positioned-in-respective-cache cell.
+  -- * hswap_K: both tables expose the underlying `gS((tag, 0), n)` value at the other cell,
+  --   using `hc0 : c ((tag, 0), n) = none` and `hcInv` to know cells are uncached in c.
+  -- Final Lean glue (measure-preservation composition with map-bind) is in progress; for now
+  -- the swap-bridge body is staged as `sorry` and the supporting lemmas are sorry-free.
+  sorry
 
 /-! ### Eager-form direct-coupling aux
 
