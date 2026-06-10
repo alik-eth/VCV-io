@@ -2638,10 +2638,26 @@ lemma multipleBadEager_le_singleEager_DC_aux [Fintype Nonce] [Fintype Digest]
                 (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))
             -- The bridge says distributions over uniform gS are equal between the two caches.
             -- Use this to rewrite the S-side of hihB.
+            -- Rewrite hihB's S-side from c+u@slot-0 to c+u@slot-K via hbridge.
+            have hS_eq : Pr[= true |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending
+                          (c.cacheQuery ((tag, (0 : Fin sessionsPerTag)), n) u) gS))
+                        (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' advM)]
+                = Pr[= true |
+                  (do let gS ← $ᵗ ((TagId × Fin sessionsPerTag) × Nonce → Digest)
+                      (simulateQ (singleTableHandler (TagId := TagId) (Nonce := Nonce)
+                        (Digest := Digest) (sessionsPerTag := sessionsPerTag)
+                        (OracleComp.tableExtending
+                          (c.cacheQuery ((tag, slotK), n) u) gS))
+                        (k (some (⟨n, u⟩ : TagTranscript Nonce Digest)))).run' advM)] :=
+              probOutput_congr rfl hbridge
+            rw [hS_eq] at hihB
             rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
                 ← add_assoc, ← add_assoc, ← add_assoc]
-            -- The S-side of hihB (LHS of hbridge) needs rewriting via hbridge.
-            sorry
+            exact hihB
           · -- Case M-hit: c slot-0 = some u₀.
             -- Step 1: M's transcript becomes constant ⟨n, u₀⟩.
             have hcell : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
