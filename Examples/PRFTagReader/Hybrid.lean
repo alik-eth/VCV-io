@@ -9,8 +9,8 @@ import Examples.PRFTagReader.Table
 /-!
 # PRF Tag/Reader Protocol — Hybrid Handler
 
-Milestone 5 of the unlinkability reduction: the hybrid table handler `hybridTableHandler`, its
-state `HybridState`, and the lazy-form companion `hybridLazyHandler`. The hybrid world is the
+The hybrid table handler `hybridTableHandler`, its state `HybridState`, and the lazy-form
+companion `hybridLazyHandler`. The hybrid world is the
 intermediate game between the multiple-session ideal world (per-tag PRF cell) and the
 single-session ideal world (per-session PRF cell): tag oracles run on the single-session table
 keyed on `(tag, sid, nonce)`, but the reader oracle inspects only cells that the tag oracle has
@@ -33,7 +33,7 @@ variable {TagId Nonce Digest : Type}
   [DecidableEq Digest] [SampleableType Digest]
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
 
-/-! #### Milestone 5: the hybrid table handler
+/-! #### Hybrid table handler
 
 The 2-hop hybrid game closing the unlinkability reduction. The hybrid world `H` runs on the
 *single-session* random-oracle table `gS : (TagId × Fin sessionsPerTag) × Nonce → Digest`, with:

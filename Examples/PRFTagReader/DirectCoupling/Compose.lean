@@ -49,10 +49,10 @@ single-session world's reference-slot cell `((tag, 0), n)` via `slotZeroEmbed` /
 ## Main results
 
 * `multipleBadEager_le_singleEager_DC_aux` — eager-form direct coupling aux, structural induction
-  on the adversary. The DC analogue of `multipleBadEager_le_hybridEager_aux` (Eager.lean:85)
+  on the adversary. The DC analogue of `multipleBadEager_le_hybridEager_aux`
   *without* the `hdist` hypothesis.
 * `multipleIdeal_le_singleIdeal_add_bad_DC` — lazy-form headline. The DC analogue of
-  `multipleIdeal_le_singleIdeal_add_bad` (MultipleBadCollision.lean:71) *without* `hdist`.
+  `multipleIdeal_le_singleIdeal_add_bad` *without* `hdist`.
 
 ## Layout
 
@@ -80,7 +80,7 @@ namespace UnlinkReduction
 The structural induction over the adversary, coupling M-side
 `multipleBadTableHandler (slotZeroSubTable gS)` (with `UnlinkBadState` instrumentation) against
 S-side `singleTableHandler gS` over a shared single-session RO table `gS`. Mirrors
-`multipleBadEager_le_hybridEager_aux` (Eager.lean:85), but with M coupled directly to S via the
+`multipleBadEager_le_hybridEager_aux`, but with M coupled directly to S via the
 slot-0 sub-table embedding rather than going through Hybrid.
 
 The aux is deliberately formulated in terms of *eager* table handlers and a *shared* draw `$ᵗ gS`;
@@ -2609,7 +2609,7 @@ end UnlinkReduction
 
 /-! ### Lazy-form headline (drops hdist)
 
-The lazy-form analogue of `multipleIdeal_le_singleIdeal_add_bad` (`MultipleBadCollision.lean:71`)
+The lazy-form analogue of `multipleIdeal_le_singleIdeal_add_bad`
 *without* the `HasDistinctUnlinkReaderNonces` hypothesis. Routes through
 `multipleBadEager_le_singleEager_DC_aux` via the standard eagerization equivalences for the
 multiple-bad handler (`evalDist_simulateQ_multipleBadQueryImpl_run_eq_tableExtending`) and the
