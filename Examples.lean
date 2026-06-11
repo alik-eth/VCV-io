@@ -28,6 +28,7 @@ import Examples.PRFTagReader.Asymptotic
 import Examples.PRFTagReader.Auth
 import Examples.PRFTagReader.BadEvent
 import Examples.PRFTagReader.Collision
+import Examples.PRFTagReader.Collision.ForgeStep
 import Examples.PRFTagReader.Defs
 import Examples.PRFTagReader.DirectCoupling
 import Examples.PRFTagReader.DirectCoupling.Compose
@@ -36,8 +37,6 @@ import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.DirectCoupling.TagSlotPositive
 import Examples.PRFTagReader.DirectCoupling.TagSlotZero
-import Examples.PRFTagReader.Hybrid
-import Examples.PRFTagReader.HybridToSingle
 import Examples.PRFTagReader.MultipleBadCollision
 import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
 import Examples.PRFTagReader.MultipleToHybrid.Setup

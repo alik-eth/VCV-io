@@ -8,6 +8,7 @@ import Examples.PRFTagReader.DirectCoupling
 import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
+import VCVio.EvalDist.Monad.Disagreement
 import VCVio.OracleComp.QueryTracking.RandomOracle.AdaptiveUnion
 
 /-!
