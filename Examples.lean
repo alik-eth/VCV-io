@@ -26,6 +26,8 @@ import Examples.OneTimePad.UC
 import Examples.PRFTagReader
 import Examples.PRFTagReader.Asymptotic
 import Examples.PRFTagReader.Auth
+import Examples.PRFTagReader.AuthProbe
+import Examples.PRFTagReader.AuthTable
 import Examples.PRFTagReader.BadEvent
 import Examples.PRFTagReader.Collision
 import Examples.PRFTagReader.Collision.ForgeStep
