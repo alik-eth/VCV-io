@@ -126,6 +126,7 @@ import VCVio.OracleComp.QueryTracking.RandomOracle.AdaptiveUnion
 import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
 import VCVio.OracleComp.QueryTracking.RandomOracle.Eager
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
+import VCVio.OracleComp.QueryTracking.RandomOracle.FirstFire
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 import VCVio.OracleComp.QueryTracking.ResourceProfile
 import VCVio.OracleComp.QueryTracking.SeededOracle
