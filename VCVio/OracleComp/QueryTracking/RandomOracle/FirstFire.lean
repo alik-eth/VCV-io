@@ -381,7 +381,7 @@ theorem probeMany_succ (q : ℕ) (st : ProbeState D R) (σ : List Bool → D × 
 size `k ≤ m` leaves `c - (k + 1)` missing draws out of `c - k`, each continuing with the tail
 budget `x / (c - max m (k + 1))`, and the total stays within `x / (c - m)`. For `k < m` the
 survival factor is at most `1`; for `k = m` it cancels the inflated tail denominator exactly. -/
-private lemma firstFire_telescope_step {c k m : ℕ} (x : ℝ≥0∞) (hk : k ≤ m) :
+lemma firstFire_telescope_step {c k m : ℕ} (x : ℝ≥0∞) (hk : k ≤ m) :
     ((c - (k + 1) : ℕ) : ℝ≥0∞) * ((c - k : ℕ) : ℝ≥0∞)⁻¹ *
       (x / ((c - max m (k + 1) : ℕ) : ℝ≥0∞)) ≤ x / ((c - m : ℕ) : ℝ≥0∞) := by
   rcases hk.lt_or_eq with hlt | rfl
