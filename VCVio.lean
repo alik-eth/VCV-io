@@ -124,6 +124,7 @@ import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
 import VCVio.OracleComp.QueryTracking.RandomOracle.Eager
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
 import VCVio.OracleComp.QueryTracking.RandomOracle.FirstFire
+import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeAmbient
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeEquiv
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
