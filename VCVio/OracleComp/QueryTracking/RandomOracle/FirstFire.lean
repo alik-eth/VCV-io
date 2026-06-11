@@ -56,21 +56,21 @@ the second target chosen as an arbitrary function of the first reply, with total
 probability `≤ 2 / |R|`. `probEvent_probeTwo_distinct_le` is the analogous bound when the second
 probe targets a different cell.
 
-## The general first-fire bound (not yet formalized here)
+## The general first-fire bound
 
-For an adaptive adversary making `q` probes from a state `K`, the target statement is
+`probEvent_probeMany_le` is the general statement: an adaptive strategy (`probeMany`) issuing `q`
+probes from a state whose exclusion sets all have at most `m` elements (`ProbeState.ExclLe`)
+fires some genuine probe with probability at most `q / (|R| - m)`. The proof is a head-first
+induction on `q` whose telescope is exact: a genuine head probe at an `excluded S` cell fires
+with probability `1 / (|R| - S.card)` and on a miss grows that cell's exclusion set to
+`S.card + 1` elements, and in the worst case `S.card = m` the inflated tail bound
+`(q - 1) / (|R| - m - 1)` is paid only on the `|R| - m - 1` missing draws:
 
-`Pr[ some genuine probe fires within q probes from K ] ≤ q / (|R| - maxExcl K)`,
+`1/(|R| - m) + ((|R| - m - 1)/(|R| - m)) · (q - 1)/(|R| - m - 1) = q/(|R| - m)`.
 
-where `maxExcl K` is the supremum of `S.card` over the `excluded S` cells of `K`. The intended
-proof is a head-first induction on `q` whose telescope is exact: with `D = |R|` and
-`m = maxExcl K`,
-
-`1/(D - m) + (1 - 1/(D - m)) · (q - 1)/(D - m - 1) = q/(D - m)`,
-
-since a genuine probe at an `excluded S` cell fires with probability `1/(D - S.card)` and on a
-miss grows that cell's exclusion set by one. The lemmas in this file are the `q = 1` and `q = 2`
-instances of that bound.
+`probEvent_probeStep_fresh_eq` and `probEvent_probeTwo_le` are the `q = 1` and `q = 2` shapes of
+the argument; `probEvent_probeMany_init_le` instantiates the general bound at the initial state,
+where it reads `q / |R|`.
 -/
 
 open OracleComp OracleSpec
@@ -279,5 +279,208 @@ theorem probEvent_probeTwo_distinct_le (st : ProbeState D R) (d₁ d₂ : D) (a�
     Pr[ (fun b : Bool => b = true) | probeTwo st d₁ d₂ a₁ f ] ≤
       2 / (Fintype.card R : ℝ≥0∞) :=
   probEvent_probeTwo_le st d₁ d₂ a₁ f hst₁ fun _ => hst₂
+
+/-! ## Genuine probes and exclusion-cardinality bounds
+
+`CellKnowledge.genuine` is the per-probe charge flag: a probe counts as a candidate fire only if
+it is made at an undetermined cell with a not-yet-excluded target, so deterministic `true`
+replies (re-asking a `known` value) are never charged. `ProbeState.ExclLe` is the invariant
+threaded through the general bound: every exclusion set has cardinality at most `m`, and a miss
+at a genuine probe degrades it by at most one. -/
+
+/-- Whether a probe with target `a` at a cell with this knowledge is *genuine*: the cell is
+undetermined and `a` has not already been ruled out. Only a genuine probe draws fresh
+randomness, so only a genuine `true` reply counts as a fire; the deterministic `true` reply at a
+`known` cell is never charged. -/
+def CellKnowledge.genuine : CellKnowledge R → R → Bool
+  | .known _, _ => false
+  | .excluded S, a => decide (a ∉ S)
+
+omit [Fintype R] in
+/-- A probe at a `known` cell is never genuine. -/
+@[simp]
+lemma CellKnowledge.genuine_known (v a : R) : (CellKnowledge.known v).genuine a = false := rfl
+
+omit [Fintype R] in
+/-- A probe at an undetermined cell is genuine exactly when its target is not yet excluded. -/
+@[simp]
+lemma CellKnowledge.genuine_excluded (S : Finset R) (a : R) :
+    (CellKnowledge.excluded S).genuine a = decide (a ∉ S) := rfl
+
+/-- Every exclusion set of the state has cardinality at most `m`. Genuine probes from such a
+state fire with probability at most `1 / (|R| - m)`, and a miss grows a single exclusion set by
+one element, so an adaptive `q`-probe sequence stays within the first-fire budget
+`q / (|R| - m)`. -/
+def ProbeState.ExclLe (st : ProbeState D R) (m : ℕ) : Prop :=
+  ∀ d S, st d = .excluded S → S.card ≤ m
+
+omit [DecidableEq D] [DecidableEq R] [Fintype R] in
+/-- The initial probe state has every exclusion set empty. -/
+lemma ProbeState.exclLe_init : (ProbeState.init D R).ExclLe 0 := by
+  intro d S hS
+  simp only [ProbeState.init] at hS
+  injection hS with h
+  subst h
+  simp
+
+omit [DecidableEq R] [Fintype R] in
+/-- Determining a cell's value preserves any exclusion-cardinality bound: the updated cell no
+longer carries an exclusion set, and every other cell is unchanged. -/
+lemma ProbeState.ExclLe.update_known {st : ProbeState D R} {m : ℕ} (hst : st.ExclLe m)
+    (d : D) (v : R) : ProbeState.ExclLe (Function.update st d (.known v)) m := by
+  intro d' S hS
+  rcases eq_or_ne d' d with rfl | hne
+  · rw [Function.update_self] at hS
+    exact absurd hS (by simp)
+  · rw [Function.update_of_ne hne] at hS
+    exact hst d' S hS
+
+omit [Fintype R] in
+/-- A miss at a genuine probe grows a single exclusion set by at most one element: updating one
+cell to `excluded (insert a S)` turns an `m`-bounded state into a `max m (S.card + 1)`-bounded
+one. -/
+lemma ProbeState.ExclLe.update_insert {st : ProbeState D R} {m : ℕ} (hst : st.ExclLe m)
+    (d : D) (a : R) (S : Finset R) :
+    ProbeState.ExclLe (Function.update st d (.excluded (insert a S))) (max m (S.card + 1)) := by
+  intro d' T hT
+  rcases eq_or_ne d' d with rfl | hne
+  · rw [Function.update_self] at hT
+    injection hT with h
+    exact le_max_of_le_right (h ▸ Finset.card_insert_le a S)
+  · rw [Function.update_of_ne hne] at hT
+    exact le_max_of_le_left (hst d' T hT)
+
+/-! ## The general adaptive bound -/
+
+/-- An adaptive `q`-probe program: the strategy `σ` maps the list of boolean replies seen so far
+to the next probe `(cell, target)`, and the program returns whether some *genuine* probe fired —
+that is, replied `true` at an undetermined cell with a not-yet-excluded target. The adversary
+observes every reply, including the deterministic replies of non-genuine probes, but only
+genuine `true` replies are charged. -/
+noncomputable def probeMany : ℕ → ProbeState D R → (List Bool → D × R) → OptionT ProbComp Bool
+  | 0, _, _ => pure false
+  | q + 1, st, σ =>
+    probeStep st (σ []).1 (σ []).2 >>= fun z =>
+      (fun b => ((st (σ []).1).genuine (σ []).2 && z.1) || b) <$>
+        probeMany q z.2 fun h => σ (z.1 :: h)
+
+/-- Zero probes never fire. -/
+@[simp]
+theorem probeMany_zero (st : ProbeState D R) (σ : List Bool → D × R) :
+    probeMany 0 st σ = pure false := rfl
+
+/-- `q + 1` probes are one `probeStep` at the strategy's first choice followed by `q` probes
+from the updated state, with the head probe's genuine-fire flag OR-ed onto the tail result. -/
+theorem probeMany_succ (q : ℕ) (st : ProbeState D R) (σ : List Bool → D × R) :
+    probeMany (q + 1) st σ =
+      probeStep st (σ []).1 (σ []).2 >>= fun z =>
+        (fun b => ((st (σ []).1).genuine (σ []).2 && z.1) || b) <$>
+          probeMany q z.2 fun h => σ (z.1 :: h) := rfl
+
+/-- The exact arithmetic of one telescope step: a genuine head probe at an `excluded`-set of
+size `k ≤ m` leaves `c - (k + 1)` missing draws out of `c - k`, each continuing with the tail
+budget `x / (c - max m (k + 1))`, and the total stays within `x / (c - m)`. For `k < m` the
+survival factor is at most `1`; for `k = m` it cancels the inflated tail denominator exactly. -/
+private lemma firstFire_telescope_step {c k m : ℕ} (x : ℝ≥0∞) (hk : k ≤ m) :
+    ((c - (k + 1) : ℕ) : ℝ≥0∞) * ((c - k : ℕ) : ℝ≥0∞)⁻¹ *
+      (x / ((c - max m (k + 1) : ℕ) : ℝ≥0∞)) ≤ x / ((c - m : ℕ) : ℝ≥0∞) := by
+  rcases hk.lt_or_eq with hlt | rfl
+  · rw [max_eq_left (Nat.succ_le_of_lt hlt)]
+    calc ((c - (k + 1) : ℕ) : ℝ≥0∞) * ((c - k : ℕ) : ℝ≥0∞)⁻¹ * (x / ((c - m : ℕ) : ℝ≥0∞))
+        ≤ ((c - k : ℕ) : ℝ≥0∞) * ((c - k : ℕ) : ℝ≥0∞)⁻¹ * (x / ((c - m : ℕ) : ℝ≥0∞)) := by
+          gcongr
+          exact Nat.le_succ k
+      _ ≤ 1 * (x / ((c - m : ℕ) : ℝ≥0∞)) := mul_le_mul' (ENNReal.mul_inv_le_one _) le_rfl
+      _ = x / ((c - m : ℕ) : ℝ≥0∞) := one_mul _
+  · rw [max_eq_right (Nat.le_succ k), div_eq_mul_inv, div_eq_mul_inv]
+    calc ((c - (k + 1) : ℕ) : ℝ≥0∞) * ((c - k : ℕ) : ℝ≥0∞)⁻¹ *
+          (x * ((c - (k + 1) : ℕ) : ℝ≥0∞)⁻¹)
+        = ((c - (k + 1) : ℕ) : ℝ≥0∞) * ((c - (k + 1) : ℕ) : ℝ≥0∞)⁻¹ *
+            (x * ((c - k : ℕ) : ℝ≥0∞)⁻¹) := by ring
+      _ ≤ 1 * (x * ((c - k : ℕ) : ℝ≥0∞)⁻¹) := mul_le_mul' (ENNReal.mul_inv_le_one _) le_rfl
+      _ = x * ((c - k : ℕ) : ℝ≥0∞)⁻¹ := one_mul _
+
+/-- **Adaptive first-fire bound.** An adaptive strategy issuing `q` probes from a state whose
+exclusion sets all have cardinality at most `m` fires some genuine probe with probability at
+most `q / (|R| - m)`. The head probe either replies deterministically (leaving the state and the
+budget untouched), or is genuine at an `excluded S` cell with `S.card ≤ m`: it fires with
+probability `1 / (|R| - S.card) ≤ 1 / (|R| - m)`, and each of its `|R| - S.card - 1` missing
+draws continues with `q - 1` probes from a `max m (S.card + 1)`-bounded state, which the exact
+telescope of `firstFire_telescope_step` folds back into `(q - 1) / (|R| - m)`. -/
+theorem probEvent_probeMany_le (q m : ℕ) (st : ProbeState D R) (σ : List Bool → D × R)
+    (hst : st.ExclLe m) :
+    Pr[ (fun b : Bool => b = true) | probeMany q st σ ] ≤
+      (q : ℝ≥0∞) / ((Fintype.card R - m : ℕ) : ℝ≥0∞) := by
+  classical
+  induction q generalizing m st σ hst with
+  | zero => simp
+  | succ q ih =>
+    have hq : (q : ℝ≥0∞) / ((Fintype.card R - m : ℕ) : ℝ≥0∞) ≤
+        ((q + 1 : ℕ) : ℝ≥0∞) / ((Fintype.card R - m : ℕ) : ℝ≥0∞) :=
+      ENNReal.div_le_div_right (by exact_mod_cast q.le_succ) _
+    rcases hcell : st (σ []).1 with v | S
+    · -- `known` cell: the reply is deterministic and uncharged, the state is unchanged.
+      rw [probeMany_succ, probeStep_known ((σ []).2) hcell, pure_bind]
+      simp only [hcell, CellKnowledge.genuine_known, Bool.false_and, Bool.false_or, id_map']
+      exact le_trans (ih m st _ hst) hq
+    · by_cases ha : (σ []).2 ∈ S
+      · -- Already-excluded target: the reply is `false` and the state is unchanged.
+        rw [probeMany_succ, probeStep_excluded_mem ((σ []).2) hcell ha, pure_bind]
+        simp only [Bool.and_false, Bool.false_or, id_map']
+        exact le_trans (ih m st _ hst) hq
+      · -- Genuine head probe: expand the uniform draw and split off the hit branch.
+        have hk : S.card ≤ m := hst _ _ hcell
+        rw [probeMany_succ, probeStep_excluded_notMem ((σ []).2) hcell ha, bind_map_left]
+        simp only [hcell, CellKnowledge.genuine_excluded, ha, not_false_eq_true, decide_true,
+          Bool.true_and]
+        rw [probEvent_bind_eq_tsum, tsum_fintype,
+          ← Finset.sum_erase_add _ _ (Finset.mem_univ ((σ []).2)),
+          show ((q + 1 : ℕ) : ℝ≥0∞) / ((Fintype.card R - m : ℕ) : ℝ≥0∞) =
+              (q : ℝ≥0∞) / ((Fintype.card R - m : ℕ) : ℝ≥0∞) +
+                1 / ((Fintype.card R - m : ℕ) : ℝ≥0∞) from by
+            rw [Nat.cast_succ, ENNReal.add_div]]
+        refine add_le_add ?_ ?_
+        · -- Miss branches: each continues from the grown state, charged the tail budget.
+          refine le_trans (Finset.sum_le_sum (g := fun v => Pr[= v | $ (Finset.univ \ S)] *
+            ((q : ℝ≥0∞) / ((Fintype.card R - max m (S.card + 1) : ℕ) : ℝ≥0∞)))
+            fun v hv => ?_) ?_
+          · obtain ⟨hv_ne, -⟩ := Finset.mem_erase.1 hv
+            refine mul_le_mul' le_rfl ?_
+            rw [decide_eq_false hv_ne, if_neg hv_ne]
+            simp only [Bool.false_or, id_map']
+            exact ih _ _ _ (hst.update_insert (σ []).1 ((σ []).2) S)
+          · -- Survival mass `(|R| - S.card - 1) / (|R| - S.card)` times the tail budget.
+            rw [← Finset.sum_mul]
+            have hcard : ((Finset.univ.erase ((σ []).2)) ∩ (Finset.univ \ S)).card =
+                Fintype.card R - (S.card + 1) := by
+              have hset : (Finset.univ.erase ((σ []).2)) ∩ (Finset.univ \ S) =
+                  Finset.univ \ insert ((σ []).2) S := by
+                ext v
+                simp only [Finset.mem_inter, Finset.mem_erase, Finset.mem_sdiff,
+                  Finset.mem_univ, Finset.mem_insert, true_and, and_true, not_or]
+              rw [hset, Finset.card_sdiff_of_subset (Finset.subset_univ _), Finset.card_univ,
+                Finset.card_insert_of_notMem ha]
+            have hPsum : ∑ v ∈ Finset.univ.erase ((σ []).2), Pr[= v | $ (Finset.univ \ S)] =
+                ((Fintype.card R - (S.card + 1) : ℕ) : ℝ≥0∞) *
+                  ((Fintype.card R - S.card : ℕ) : ℝ≥0∞)⁻¹ := by
+              simp only [ProbComp.probOutput_uniformSelectFinset]
+              rw [Finset.sum_ite_mem, Finset.sum_const, nsmul_eq_mul, hcard,
+                Finset.card_sdiff_of_subset (Finset.subset_univ S), Finset.card_univ]
+            rw [hPsum]
+            exact firstFire_telescope_step _ hk
+        · -- Hit branch: reached with probability `1 / (|R| - S.card) ≤ 1 / (|R| - m)`.
+          refine le_trans (mul_le_mul' le_rfl probEvent_le_one) ?_
+          rw [mul_one, ProbComp.probOutput_uniformSelectFinset,
+            if_pos (Finset.mem_sdiff.2 ⟨Finset.mem_univ _, ha⟩),
+            Finset.card_sdiff_of_subset (Finset.subset_univ S), Finset.card_univ, one_div]
+          exact ENNReal.inv_le_inv' (Nat.cast_le.2 (Nat.sub_le_sub_left hk _))
+
+/-- **Adaptive first-fire bound from the initial state.** An adaptive strategy issuing `q`
+probes from the initial probe state fires some genuine probe with probability at most
+`q / |R|`. -/
+theorem probEvent_probeMany_init_le (q : ℕ) (σ : List Bool → D × R) :
+    Pr[ (fun b : Bool => b = true) | probeMany q (ProbeState.init D R) σ ] ≤
+      (q : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞) := by
+  simpa using probEvent_probeMany_le q 0 (ProbeState.init D R) σ ProbeState.exclLe_init
 
 end OracleComp
