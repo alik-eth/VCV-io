@@ -1004,7 +1004,7 @@ full table `g : TagId × Nonce → Digest` drawn up front (every cell digest fix
 feedback), and the forged-acceptance event is bounded by the first-fire probe coupling
 (`eagerForge_growth_le`): the `≤ q * |TagId|` reader-query cell reads are equality probes against
 the table, each firing with probability at most `maxDigestProb`. -/
-lemma authRF_forge_le [Fintype Nonce] [Finite Digest]
+lemma authRF_forge_le [Finite Nonce] [Finite Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
@@ -1019,6 +1019,7 @@ lemma authRF_forge_le [Fintype Nonce] [Finite Digest]
         (simulateQ (authRFQueryImpl (TagId := TagId) (Nonce := Nonce) (Digest := Digest))
           adversary).run st] ≤
       (q : ℝ≥0∞) * (Fintype.card TagId : ℝ≥0∞) * maxDigestProb := by
+  letI : Fintype Nonce := Fintype.ofFinite Nonce
   -- The forge event `readerForged ≠ ∅` factors through the `(honestOutputs, readerForged)`
   -- projection (forgery-free start: `≠ ∅` is `∃ x, x ∉ ∅`), so it transports to the eager-table
   -- world by `evalDist_simulateQ_authRFQueryImpl_run_proj_eq_tableExtending`; the eager forge bound
@@ -1063,10 +1064,9 @@ The proof passes to the eager-table world
 is replaced by a full table `g` drawn up front, after which the forged-acceptance event is bounded
 by the first-fire probe coupling over the reader-query cell reads (`authRF_forge_le`).
 
-The statement is in the finite setting (`[Fintype Nonce] [Fintype Digest]`, the same instances
-carried by the unlinkability headline theorems), where the eager full table exists as a sampled
-object. The hdist-conditional and distinct-reader-nonce siblings keep their statements. -/
-theorem authRFExp_le_collisionBound [Fintype Nonce] [Fintype Digest]
+The statement is in the finite setting (`[Finite Nonce] [Finite Digest]`), where the eager full
+table exists as a sampled object. The distinct-reader-nonce siblings keep their statements. -/
+theorem authRFExp_le_collisionBound [Finite Nonce] [Finite Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q)
@@ -1115,7 +1115,7 @@ omit [Nonempty TagId] in
 /-- Uniform-`Digest` specialization of `authRFExp_le_collisionBound`: when `Digest` is sampled
 uniformly, the per-digest probability is `1 / |Digest|`, so the collision bound reads
 `q * |TagId| / |Digest|`. -/
-theorem authRFExp_le_uniformCollisionBound [Fintype Nonce] [Fintype Digest]
+theorem authRFExp_le_uniformCollisionBound [Finite Nonce] [Fintype Digest]
     (adversary : AuthAdversary TagId Nonce Digest)
     (q : ℕ)
     (hq : OracleComp.IsQueryBoundP adversary (fun i => i.isRight) q) :
