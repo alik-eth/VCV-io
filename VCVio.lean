@@ -130,6 +130,7 @@ import VCVio.OracleComp.QueryTracking.RandomOracle.FirstFire
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeAmbient
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeEquiv
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeOracle
+import VCVio.OracleComp.QueryTracking.RandomOracle.RevealTilt
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 import VCVio.OracleComp.QueryTracking.ResourceProfile
 import VCVio.OracleComp.QueryTracking.SeededOracle
