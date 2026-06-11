@@ -21,6 +21,8 @@ specialisation is `m = ProbComp`.
 * `probEvent_bind_le_add_bad_of_disagree` — 3-way with bad-event side.
 * `probEvent_bind_le_add_bad_of_disagree'` — 3-way with per-step bad term in the IH.
 * `probEvent_bind_le_add_bad_disagree` — 4-way merge.
+* `probEvent_bind_le_add_tsum` — 2-way with pointwise slack charged at its average.
+* `probEvent_bind_le_add_bad_disagree_tsum` — 4-way merge with averaged slack.
 -/
 
 universe u v
@@ -205,3 +207,70 @@ lemma probEvent_bind_le_add_bad_disagree {mx : m α}
         · rw [← probEvent_eq_tsum_ite]; exact hD
         · rw [ENNReal.tsum_mul_right]
           exact mul_le_of_le_one_left (zero_le) tsum_probOutput_le_one
+
+/-- **Averaged additive bind bound.** If at every shared sample `x` the continuation `my` is
+within the *pointwise* slack `ε x` of the reference continuation `oc`, the binds differ by at
+most the average `∑' x, Pr[= x | mx] * ε x`. The base case of the disagreement family with the
+per-point slack kept as a function rather than bounded by its supremum. -/
+lemma probEvent_bind_le_add_tsum {mx : m α} {my oc : α → m β} {q : β → Prop}
+    {ε : α → ℝ≥0∞}
+    (h : ∀ x ∈ support mx, Pr[ q | my x] ≤ Pr[ q | oc x] + ε x) :
+    Pr[ q | mx >>= my] ≤ Pr[ q | mx >>= oc] + ∑' x, Pr[= x | mx] * ε x := by
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum, ← ENNReal.tsum_add]
+  refine ENNReal.tsum_le_tsum fun x => ?_
+  rw [← mul_add]
+  by_cases hx : x ∈ support mx
+  · exact mul_le_mul' le_rfl (h x hx)
+  · simp [probOutput_eq_zero_of_not_mem_support hx]
+
+/-- **Four-way disagreement+bad additive bind bound, averaged slack.** The variant of
+`probEvent_bind_le_add_bad_disagree` whose per-shared-sample slack is a function `ε₂ x` charged
+at its average `∑' x, Pr[= x | mx] * ε₂ x` rather than at its supremum: the disagreement set `D`
+is charged its full mass `ε₁`, and off `D` the `my`-world is bounded by the `oc`-world plus the
+per-shared-sample bad probability `Pr[r | ob x]` plus the pointwise slack `ε₂ x`. -/
+lemma probEvent_bind_le_add_bad_disagree_tsum {mx : m α}
+    {my : α → m β} {oc : α → m β} {ob : α → m γ}
+    {q : β → Prop} {r : γ → Prop} {D : α → Prop} {ε₁ : ℝ≥0∞} {ε₂ : α → ℝ≥0∞}
+    (hD : Pr[ D | mx] ≤ ε₁)
+    (h : ∀ x ∈ support mx, ¬ D x → Pr[ q | my x] ≤ Pr[ q | oc x] + Pr[ r | ob x] + ε₂ x) :
+    Pr[ q | mx >>= my] ≤ Pr[ q | mx >>= oc] + Pr[ r | mx >>= ob] + ε₁ +
+      ∑' x, Pr[= x | mx] * ε₂ x := by
+  classical
+  have := Classical.decPred q
+  have := Classical.decPred r
+  rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+  calc ∑' x, Pr[= x | mx] * Pr[q | my x]
+      ≤ ∑' x, (Pr[= x | mx] * Pr[q | oc x]
+            + Pr[= x | mx] * Pr[r | ob x] + (if D x then Pr[= x | mx] else 0)
+            + Pr[= x | mx] * ε₂ x) := by
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support mx
+        · by_cases hDx : D x
+          · simp only [if_pos hDx]
+            calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * 1 := mul_le_mul' le_rfl probEvent_le_one
+              _ = Pr[= x | mx] := mul_one _
+              _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] + Pr[= x | mx] * ε₂ x := by
+                  calc Pr[= x | mx]
+                      = 0 + 0 + Pr[= x | mx] + 0 := by ring
+                    _ ≤ Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                          + Pr[= x | mx] + Pr[= x | mx] * ε₂ x := by
+                        gcongr <;> exact zero_le
+          · simp only [if_neg hDx, add_zero]
+            calc Pr[= x | mx] * Pr[q | my x]
+                ≤ Pr[= x | mx] * (Pr[q | oc x] + Pr[r | ob x] + ε₂ x) :=
+                  mul_le_mul' le_rfl (h x hx hDx)
+              _ = Pr[= x | mx] * Pr[q | oc x] + Pr[= x | mx] * Pr[r | ob x]
+                    + Pr[= x | mx] * ε₂ x := by rw [left_distrib, left_distrib]
+        · simp [probOutput_eq_zero_of_not_mem_support hx]
+    _ = (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x])
+          + (∑' x, if D x then Pr[= x | mx] else 0)
+          + (∑' x, Pr[= x | mx] * ε₂ x) := by
+        rw [ENNReal.tsum_add, ENNReal.tsum_add, ENNReal.tsum_add]
+    _ ≤ (∑' x, Pr[= x | mx] * Pr[q | oc x])
+          + (∑' x, Pr[= x | mx] * Pr[r | ob x]) + ε₁
+          + (∑' x, Pr[= x | mx] * ε₂ x) := by
+        refine add_le_add (add_le_add (add_le_add le_rfl le_rfl) ?_) le_rfl
+        rw [← probEvent_eq_tsum_ite]; exact hD
