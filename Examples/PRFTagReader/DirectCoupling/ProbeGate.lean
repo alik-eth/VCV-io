@@ -7,7 +7,7 @@ Authors: Quang Dao, Oleksandr Vovkotrub
 import Examples.PRFTagReader.DirectCoupling
 import Examples.PRFTagReader.MultipleToHybrid.EagerSetup
 import VCVio.EvalDist.Monad.Disagreement
-import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeEquiv
+import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeColumn
 import VCVio.OracleComp.QueryTracking.RandomOracle.RevealTilt
 
 /-!
@@ -19,26 +19,27 @@ followed by one slot-positive tag read at a fresh uniform nonce, with an arbitra
 continuation `F` of the reader bit, the nonce, and the read digest.
 
 Both worlds read one shared table drawn from `genTable (ProbeState.init _ _)` over the
-single-session cell domain `(TagId × Fin sessionsPerTag) × Nonce`. The reader step is lazified at
-the *Boolean* level: `freshColumnSplit` folds `evalDist_genTable_probe_split` over the slot-zero
-column at `n₀` (`evalDist_genTable_bind_freshColumnSplit`), materializing one comparison bit per
-tag — never the cell values — and leaving the residual table distributed as `genTable` of the
-post-probe knowledge state: hit cells `known a₀`, miss cells `excluded {a₀}`. The tag step then
-reveals the M-side cell `((tag, 0), n)` from its *conditioned* allowed set, and the S-side cell
-`((tag, σ), n)` with `σ ≠ 0` from the *untouched* full set — the slot-positive cells are off the
-probed column, so the S-side reveal is a full uniform; the proof would not close here if the
-reader step had conditioned them.
+single-session cell domain `(TagId × Fin sessionsPerTag) × Nonce`. The reader step is lazified
+at the *Boolean* level: `evalDist_genTable_bind_probeColumnSplit` redistributes the table draw
+along the slot-zero column at `n₀`, materializing one comparison bit per tag — never the cell
+values — and leaving the residual table distributed as `genTable` of the post-probe knowledge
+state: hit cells `known a₀`, miss cells `excluded {a₀}`. The tag step then reveals the M-side
+cell `((tag, 0), n)` from its *conditioned* allowed set, and the S-side cell `((tag, σ), n)`
+with `σ ≠ 0` from the *untouched* full set — the slot-positive cells are off the probed column,
+so the S-side reveal is a full uniform; the proof would not close here if the reader step had
+conditioned them.
 
 `probeGate_two_step` assembles the comparison: the M-side success probability is at most the
 S-side success probability plus three explicit charges, each tied to one mechanism:
 
 * `|TagId| / |Digest|` — the *fire* mass: some probe of the column genuinely hits
-  (`probEvent_fst_freshColumnSplit_le`); off this event the M reader bit is `false`
+  (`probEvent_probeColumnSplit_fired_le`, with `probeColumnSplit_support` identifying the
+  reply with the fired flag at the initial state); off this event the M reader bit is `false`
   deterministically in the knowledge state alone.
 * `(|Nonce| · |Digest|)⁻¹` — the *reveal tilt*: the probed column carries one exclusion in the
   M-side row, so the per-nonce defect `|Digest|⁻¹` of
   `probEvent_bind_uniformSelectFinset_sdiff_le` is paid only at the aliasing nonce `n₀`,
-  averaging to `(|Nonce| · |Digest|)⁻¹` over the fresh nonce draw.
+  averaged over the fresh nonce draw by `probEvent_bind_le_add_tsum`.
 * `|TagId| · sessionsPerTag / |Digest|` — the *slot-positive discard*: off the fire event the
   S reader bit equals the slot-positive collision indicator `cacheBadReader`, which is replaced
   by `false` at the cost of its mass under the residual `genTable`
@@ -48,283 +49,6 @@ S-side success probability plus three explicit charges, each tied to one mechani
 open OracleComp OracleSpec ENNReal
 
 namespace PRFTagReader
-
-/-! ## Boolean-level column lazification
-
-`freshColumnSplit a₀ cells K` draws, for each cell of `cells` in turn, a uniform value, retains
-only its comparison bit against the target `a₀` (OR-accumulated across the column), and records
-the corresponding knowledge update — the program form of folding
-`evalDist_genTable_probe_split` over a column of cells that are fresh in `K`. -/
-
-section ColumnSplit
-
-variable {D R : Type} [DecidableEq D] [DecidableEq R] [Fintype R]
-
-/-- Draw the cells of a column one at a time, keeping only the OR of the comparison bits against
-the target `a₀` together with the post-probe knowledge state: a hit determines the cell to `a₀`,
-a miss excludes `a₀` there. -/
-noncomputable def freshColumnSplit (a₀ : R) :
-    List D → ProbeState D R → OptionT ProbComp (Bool × ProbeState D R)
-  | [], K => pure (false, K)
-  | d :: ds, K =>
-    ($ (Finset.univ \ (∅ : Finset R))) >>= fun v =>
-      freshColumnSplit a₀ ds (Function.update K d
-        (if v = a₀ then .known a₀ else .excluded (insert a₀ ∅))) >>= fun z =>
-      pure (decide (v = a₀) || z.1, z.2)
-
-/-- Splitting an empty column draws nothing and reports no hit. -/
-@[simp] lemma freshColumnSplit_nil (a₀ : R) (K : ProbeState D R) :
-    freshColumnSplit a₀ [] K = pure (false, K) := rfl
-
-/-- Splitting a column is one probe-shaped draw at the head cell followed by the split of the
-tail from the updated knowledge state, with the head bit OR-ed onto the result. -/
-lemma freshColumnSplit_cons (a₀ : R) (d : D) (ds : List D) (K : ProbeState D R) :
-    freshColumnSplit a₀ (d :: ds) K =
-      ($ (Finset.univ \ (∅ : Finset R))) >>= fun v =>
-        freshColumnSplit a₀ ds (Function.update K d
-          (if v = a₀ then .known a₀ else .excluded (insert a₀ ∅))) >>= fun z =>
-        pure (decide (v = a₀) || z.1, z.2) := rfl
-
-/-- Congruence for `evalDist` under `bind`: continuations that agree in distribution on the
-support of the first computation yield equal bind distributions. -/
-private lemma evalDist_optionT_bind_congr {α β : Type} {mx : OptionT ProbComp α}
-    {f f' : α → OptionT ProbComp β}
-    (h : ∀ x ∈ support mx, 𝒟[f x] = 𝒟[f' x]) : 𝒟[mx >>= f] = 𝒟[mx >>= f'] :=
-  evalDist_ext fun y => probOutput_bind_congr fun x hx => by
-    rw [probOutput_def, probOutput_def, h x hx]
-
-/-- **Column redistribution.** Drawing a table consistent with `K` and running any continuation
-is the same as first splitting a column of fresh cells — drawing only the per-cell comparison
-bits against `a₀` — and then drawing the residual table consistent with the recorded post-probe
-knowledge. Iterates `evalDist_genTable_probe_split` along the column. -/
-lemma evalDist_genTable_bind_freshColumnSplit [Fintype D] {β : Type} (a₀ : R)
-    (cells : List D) (K : ProbeState D R) (hnd : cells.Nodup)
-    (hK : ∀ d ∈ cells, K d = .excluded ∅) (F : (D → R) → OptionT ProbComp β) :
-    𝒟[genTable K >>= F] =
-      𝒟[freshColumnSplit a₀ cells K >>= fun z => genTable z.2 >>= F] := by
-  induction cells generalizing K with
-  | nil => rw [freshColumnSplit_nil, pure_bind]
-  | cons d ds ih =>
-    have hd_ds : d ∉ ds := (List.nodup_cons.mp hnd).1
-    have hcell : K d = .excluded ∅ := hK d List.mem_cons_self
-    conv_lhs => rw [evalDist_bind,
-      evalDist_genTable_probe_split hcell (Finset.notMem_empty a₀), ← evalDist_bind,
-      bind_assoc]
-    rw [freshColumnSplit_cons, bind_assoc]
-    refine evalDist_optionT_bind_congr fun v _ => ?_
-    rw [bind_assoc]
-    simp only [pure_bind]
-    have hKtail : ∀ d' ∈ ds, Function.update K d
-        (if v = a₀ then CellKnowledge.known a₀ else .excluded (insert a₀ ∅)) d'
-          = CellKnowledge.excluded ∅ := fun d' hd' => by
-      rw [Function.update_of_ne (ne_of_mem_of_not_mem hd' hd_ds)]
-      exact hK d' (List.mem_cons_of_mem d hd')
-    by_cases hva : v = a₀
-    · simp only [if_pos hva]
-      simp only [if_pos hva] at hKtail
-      exact ih _ (List.nodup_cons.mp hnd).2 hKtail
-    · simp only [if_neg hva]
-      simp only [if_neg hva] at hKtail
-      exact ih _ (List.nodup_cons.mp hnd).2 hKtail
-
-/-- **Fire mass of a column split.** The probability that some bit of the column split comes up
-`true` is at most `(number of cells) / |R|`: each head draw hits with probability `|R|⁻¹` and
-the misses carry the tail bound. -/
-lemma probEvent_fst_freshColumnSplit_le (a₀ : R) (cells : List D) (K : ProbeState D R) :
-    Pr[fun z : Bool × ProbeState D R => z.1 = true | freshColumnSplit a₀ cells K] ≤
-      (cells.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞) := by
-  classical
-  induction cells generalizing K with
-  | nil =>
-    rw [freshColumnSplit_nil]
-    simp
-  | cons d ds ih =>
-    rw [freshColumnSplit_cons, Finset.sdiff_empty, probEvent_bind_eq_tsum, tsum_fintype,
-      ← Finset.sum_erase_add _ _ (Finset.mem_univ a₀), List.length_cons,
-      show ((ds.length + 1 : ℕ) : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞)
-          = (ds.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞)
-            + 1 / (Fintype.card R : ℝ≥0∞) from by rw [Nat.cast_succ, ENNReal.add_div]]
-    simp only [ProbComp.probOutput_uniformSelectFinset, Finset.mem_univ, if_true,
-      Finset.card_univ]
-    refine add_le_add ?_ ?_
-    · refine le_trans (Finset.sum_le_sum (g := fun _ => (Fintype.card R : ℝ≥0∞)⁻¹ *
-        ((ds.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞))) fun v hv => ?_) ?_
-      · obtain ⟨hv_ne, -⟩ := Finset.mem_erase.mp hv
-        refine mul_le_mul' le_rfl ?_
-        have htail : (freshColumnSplit a₀ ds (Function.update K d
-            (if v = a₀ then CellKnowledge.known a₀ else .excluded (insert a₀ ∅)))
-              >>= fun z => pure (decide (v = a₀) || z.1, z.2))
-            = freshColumnSplit a₀ ds (Function.update K d
-                (if v = a₀ then CellKnowledge.known a₀ else .excluded (insert a₀ ∅))) := by
-          simp only [decide_eq_false hv_ne, Bool.false_or, Prod.mk.eta]
-          exact bind_pure _
-        rw [htail]
-        exact ih _
-      · rw [Finset.sum_const, Finset.card_erase_of_mem (Finset.mem_univ a₀),
-          Finset.card_univ, nsmul_eq_mul, ← mul_assoc]
-        calc ((Fintype.card R - 1 : ℕ) : ℝ≥0∞) * (Fintype.card R : ℝ≥0∞)⁻¹ *
-              ((ds.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞))
-            ≤ 1 * ((ds.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞)) :=
-              mul_le_mul' (le_trans (mul_le_mul' (Nat.cast_le.mpr (Nat.sub_le _ _)) le_rfl)
-                (ENNReal.mul_inv_le_one _)) le_rfl
-          _ = (ds.length : ℝ≥0∞) / (Fintype.card R : ℝ≥0∞) := one_mul _
-    · refine le_trans (mul_le_mul' le_rfl probEvent_le_one) ?_
-      rw [mul_one, one_div]
-
-/-- **Support shape of a column split.** Along every path: cells off the column keep their
-knowledge, on a no-hit path every column cell has excluded exactly `a₀`, and feasibility is
-preserved (each miss draw itself witnesses the surviving value). -/
-lemma freshColumnSplit_support (a₀ : R) (cells : List D) (K : ProbeState D R)
-    (hnd : cells.Nodup) {z : Bool × ProbeState D R}
-    (hz : z ∈ support (freshColumnSplit a₀ cells K)) :
-    (∀ d, d ∉ cells → z.2 d = K d) ∧
-      (z.1 = false → ∀ d ∈ cells, z.2 d = CellKnowledge.excluded {a₀}) ∧
-      (K.Feasible → z.2.Feasible) := by
-  induction cells generalizing K z with
-  | nil =>
-    rw [freshColumnSplit_nil, support_pure, Set.mem_singleton_iff] at hz
-    subst hz
-    exact ⟨fun d _ => rfl, fun _ d hd => absurd hd (List.not_mem_nil), fun h => h⟩
-  | cons d ds ih =>
-    rw [freshColumnSplit_cons, mem_support_bind_iff] at hz
-    obtain ⟨v, -, hz⟩ := hz
-    rw [mem_support_bind_iff] at hz
-    obtain ⟨z', hz', hzz⟩ := hz
-    rw [support_pure, Set.mem_singleton_iff] at hzz
-    subst hzz
-    have hd_ds : d ∉ ds := (List.nodup_cons.mp hnd).1
-    obtain ⟨c1, c2, c3⟩ := ih _ (List.nodup_cons.mp hnd).2 hz'
-    refine ⟨?_, ?_, ?_⟩
-    · intro d' hd'
-      have hne : d' ≠ d := fun h => hd' (h ▸ List.mem_cons_self)
-      rw [c1 d' fun h => hd' (List.mem_cons_of_mem d h), Function.update_of_ne hne]
-    · intro hz1 d' hd'
-      have hor := Bool.or_eq_false_iff.mp hz1
-      have hv_ne : v ≠ a₀ := of_decide_eq_false hor.1
-      rcases List.mem_cons.mp hd' with rfl | hd'
-      · rw [c1 d' hd_ds, Function.update_self, if_neg hv_ne, Finset.insert_empty]
-      · exact c2 hor.2 d' hd'
-    · intro hKf
-      refine c3 (hKf.update d ?_)
-      by_cases hva : v = a₀
-      · rw [if_pos hva]
-        exact ⟨a₀, by simp⟩
-      · rw [if_neg hva]
-        exact ⟨v, by simp [hva]⟩
-
-end ColumnSplit
-
-/-! ## Reads of the residual table -/
-
-section ResidualReads
-
-variable {D R : Type} [Fintype D] [DecidableEq D] [Fintype R] [DecidableEq R]
-
-/-- Transport of an output probability along an `evalDist` identity. -/
-private lemma probOutput_congr_dist {α : Type} {mx my : OptionT ProbComp α} (x : α)
-    (h : 𝒟[mx] = 𝒟[my]) : Pr[= x | mx] = Pr[= x | my] := by
-  rw [probOutput_def, probOutput_def, h]
-
-/-- Transport of an event probability along an `evalDist` identity. -/
-private lemma probEvent_congr_dist {α : Type} {mx my : OptionT ProbComp α} (p : α → Prop)
-    (h : 𝒟[mx] = 𝒟[my]) : Pr[ p | mx] = Pr[ p | my] := by
-  rw [probEvent_def, probEvent_def, h]
-
-/-- Two draws may be taken in either order: the output distribution of drawing `mx` then `my`
-and combining is the same as drawing `my` then `mx`. -/
-private lemma evalDist_bind_bind_comm {α₁ α₂ β : Type} (mx : OptionT ProbComp α₁)
-    (my : OptionT ProbComp α₂) (F : α₁ → α₂ → OptionT ProbComp β) :
-    𝒟[mx >>= fun a => my >>= fun b => F a b] =
-      𝒟[my >>= fun b => mx >>= fun a => F a b] := by
-  refine evalDist_ext fun y => ?_
-  rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
-  have hL : ∀ a, Pr[= a | mx] * Pr[= y | my >>= fun b => F a b] =
-      ∑' b, Pr[= a | mx] * (Pr[= b | my] * Pr[= y | F a b]) := fun a => by
-    rw [probOutput_bind_eq_tsum, ENNReal.tsum_mul_left]
-  have hR : ∀ b, Pr[= b | my] * Pr[= y | mx >>= fun a => F a b] =
-      ∑' a, Pr[= b | my] * (Pr[= a | mx] * Pr[= y | F a b]) := fun b => by
-    rw [probOutput_bind_eq_tsum, ENNReal.tsum_mul_left]
-  rw [tsum_congr hL, tsum_congr hR, ENNReal.tsum_comm]
-  exact tsum_congr fun b => tsum_congr fun a => by ring
-
-/-- Averaged comparison of two continuations of a shared draw: a pointwise gap `ε x` integrates
-to the average `∑' x, Pr[= x | mx] * ε x`. -/
-private lemma probOutput_true_bind_le_bind_add_of_le {α : Type} (mx : OptionT ProbComp α)
-    (f g : α → OptionT ProbComp Bool) (ε : α → ℝ≥0∞)
-    (h : ∀ x, Pr[= true | f x] ≤ Pr[= true | g x] + ε x) :
-    Pr[= true | mx >>= f] ≤ Pr[= true | mx >>= g] + ∑' x, Pr[= x | mx] * ε x := by
-  rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum, ← ENNReal.tsum_add]
-  refine ENNReal.tsum_le_tsum fun x => ?_
-  rw [← mul_add]
-  exact mul_le_mul' le_rfl (h x)
-
-/-- A continuation that reads the table only at one undetermined cell sees exactly the uniform
-draw from that cell's allowed set: the reveal split of the consistent-table distribution,
-specialized to a single read. -/
-private lemma probOutput_genTable_bind_pure_comp {β : Type} (K : ProbeState D R)
-    (hK : K.Feasible) {d : D} {S : Finset R} (hcell : K d = CellKnowledge.excluded S)
-    (g : R → β) (y : β) :
-    Pr[= y | genTable K >>= fun gS => (pure (g (gS d)) : OptionT ProbComp β)] =
-      Pr[= y | ($ (Finset.univ \ S)) >>= fun v => (pure (g v) : OptionT ProbComp β)] := by
-  have hL : Pr[= y | genTable K >>= fun gS => (pure (g (gS d)) : OptionT ProbComp β)]
-      = Pr[= y | ($ (Finset.univ \ S)) >>= fun v =>
-          genTable (Function.update K d (CellKnowledge.known v)) >>= fun gS =>
-            (pure (g (gS d)) : OptionT ProbComp β)] := by
-    refine probOutput_congr_dist y ?_
-    conv_lhs => rw [evalDist_bind, evalDist_genTable_reveal_split hcell, ← evalDist_bind,
-      bind_assoc]
-  rw [hL, probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
-  refine tsum_congr fun v => ?_
-  congr 1
-  have hfeas' : ProbeState.Feasible (Function.update K d (CellKnowledge.known v)) :=
-    hK.update d (Finset.singleton_nonempty v)
-  have hval : Pr[= y | genTable (Function.update K d (CellKnowledge.known v)) >>= fun gS =>
-      (pure (g (gS d)) : OptionT ProbComp β)]
-      = Pr[= y | genTable (Function.update K d (CellKnowledge.known v)) >>= fun _ =>
-        (pure (g v) : OptionT ProbComp β)] :=
-    probOutput_bind_congr fun gS hgS => by
-      rw [apply_eq_of_mem_support_genTable hgS (Function.update_self d _ K)]
-  rw [hval, probOutput_bind_const, probFailure_genTable hfeas', tsub_zero, one_mul]
-
-/-- The probability that the residual table matches a target value at one undetermined cell is
-at most the inverse size of that cell's allowed set. -/
-private lemma probEvent_apply_eq_genTable_le (K : ProbeState D R) {d : D} {S : Finset R}
-    (hcell : K d = CellKnowledge.excluded S) (a : R) :
-    Pr[fun gS : D → R => gS d = a | genTable K] ≤
-      ((Fintype.card R - S.card : ℕ) : ℝ≥0∞)⁻¹ := by
-  classical
-  rw [probEvent_congr_dist _ (evalDist_genTable_reveal_split hcell),
-    probEvent_bind_eq_tsum, tsum_fintype]
-  have hinner : ∀ v : R,
-      Pr[fun gS : D → R => gS d = a |
-          genTable (Function.update K d (CellKnowledge.known v))] ≤
-        if v = a then 1 else 0 := by
-    intro v
-    by_cases hva : v = a
-    · rw [if_pos hva]
-      exact probEvent_le_one
-    · rw [if_neg hva]
-      refine le_of_eq (probEvent_eq_zero fun gS hgS h => hva ?_)
-      exact (apply_eq_of_mem_support_genTable hgS (Function.update_self d _ K)).symm.trans h
-  calc ∑ v : R, Pr[= v | ($ (Finset.univ \ S))] *
-        Pr[fun gS : D → R => gS d = a |
-          genTable (Function.update K d (CellKnowledge.known v))]
-      ≤ ∑ v : R, Pr[= v | ($ (Finset.univ \ S))] * (if v = a then 1 else 0) :=
-        Finset.sum_le_sum fun v _ => mul_le_mul' le_rfl (hinner v)
-    _ = Pr[= a | ($ (Finset.univ \ S) : OptionT ProbComp R)] := by
-        simp only [mul_ite, mul_one, mul_zero]
-        rw [Finset.sum_ite_eq' Finset.univ a
-          (fun v => Pr[= v | ($ (Finset.univ \ S) : OptionT ProbComp R)]),
-          if_pos (Finset.mem_univ a)]
-    _ ≤ ((Fintype.card R - S.card : ℕ) : ℝ≥0∞)⁻¹ := by
-        rw [ProbComp.probOutput_uniformSelectFinset]
-        split_ifs with h
-        · rw [Finset.card_sdiff_of_subset (Finset.subset_univ S), Finset.card_univ]
-        · exact bot_le
-
-end ResidualReads
-
-/-! ## The two-step gate -/
 
 section ProbeGate
 
@@ -384,20 +108,20 @@ private lemma probOutput_tag_reveal_tilt
       = Pr[= true | ((liftM ($ᵗ Nonce) : OptionT ProbComp Nonce) >>= fun n =>
         genTable K' >>= fun gS =>
           pure (G n (gS ((tag, (0 : Fin sessionsPerTag)), n))) : OptionT ProbComp Bool)] :=
-    probOutput_congr_dist true (evalDist_bind_bind_comm _ _ _)
+    probOutput_eq_of_evalDist_eq (evalDist_bind_bind_comm _ _ _) true
   have hScomm : Pr[= true | (genTable K' >>= fun gS => liftM ($ᵗ Nonce) >>= fun n =>
       pure (G n (gS ((tag, σ), n))) : OptionT ProbComp Bool)]
       = Pr[= true | ((liftM ($ᵗ Nonce) : OptionT ProbComp Nonce) >>= fun n =>
         genTable K' >>= fun gS =>
           pure (G n (gS ((tag, σ), n))) : OptionT ProbComp Bool)] :=
-    probOutput_congr_dist true (evalDist_bind_bind_comm _ _ _)
-  rw [hMcomm, hScomm]
-  refine le_trans (probOutput_true_bind_le_bind_add_of_le (liftM ($ᵗ Nonce))
-    (fun n => genTable K' >>= fun gS =>
-      pure (G n (gS ((tag, (0 : Fin sessionsPerTag)), n))))
-    (fun n => genTable K' >>= fun gS => pure (G n (gS ((tag, σ), n))))
-    (fun n => if n = n₀ then (Fintype.card Digest : ℝ≥0∞)⁻¹ else 0) fun n => ?_) ?_
+    probOutput_eq_of_evalDist_eq (evalDist_bind_bind_comm _ _ _) true
+  rw [hMcomm, hScomm, ← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+  refine le_trans (probEvent_bind_le_add_tsum
+    (oc := fun n => genTable K' >>= fun gS => pure (G n (gS ((tag, σ), n))))
+    (ε := fun n => if n = n₀ then (Fintype.card Digest : ℝ≥0∞)⁻¹ else 0)
+    fun n _ => ?_) ?_
   · beta_reduce
+    simp only [probEvent_eq_eq_probOutput]
     have hS : Pr[= true | (genTable K' >>= fun gS =>
         pure (G n (gS ((tag, σ), n))) : OptionT ProbComp Bool)]
         = Pr[= true | ($ (Finset.univ \ (∅ : Finset Digest))) >>= fun v =>
@@ -504,15 +228,16 @@ private lemma probeGate_offFire (tag : TagId) (σ : Fin sessionsPerTag) (hσ0 : 
           n (gS ((tag, σ), n))) : OptionT ProbComp Bool)] +
       Pr[fun gS => cacheBadReader (sessionsPerTag := sessionsPerTag) gS
           (⟨n₀, a₀⟩ : TagTranscript Nonce Digest) = true | genTable K'] := by
-    refine le_trans (probOutput_true_bind_le_bind_add_of_le (genTable K')
-      (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
-        pure (F false n (gS ((tag, σ), n))))
-      (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
+    rw [← probEvent_eq_eq_probOutput, ← probEvent_eq_eq_probOutput]
+    refine le_trans (probEvent_bind_le_add_tsum
+      (oc := fun gS => liftM ($ᵗ Nonce) >>= fun n =>
         pure (F (cacheBadReader (sessionsPerTag := sessionsPerTag) gS ⟨n₀, a₀⟩)
           n (gS ((tag, σ), n))))
-      (fun gS => if cacheBadReader (sessionsPerTag := sessionsPerTag) gS
-        (⟨n₀, a₀⟩ : TagTranscript Nonce Digest) = true then 1 else 0) fun gS => ?_) ?_
+      (ε := fun gS => if cacheBadReader (sessionsPerTag := sessionsPerTag) gS
+        (⟨n₀, a₀⟩ : TagTranscript Nonce Digest) = true then 1 else 0)
+      fun gS _ => ?_) ?_
     · beta_reduce
+      simp only [probEvent_eq_eq_probOutput]
       by_cases hcb : cacheBadReader (sessionsPerTag := sessionsPerTag) gS
           (⟨n₀, a₀⟩ : TagTranscript Nonce Digest) = true
       · rw [if_pos hcb]
@@ -628,40 +353,45 @@ theorem probeGate_two_step (tag : TagId) (σ : Fin sessionsPerTag) (hσ0 : σ �
   have hnd : cells.Nodup := by
     rw [hcells]
     exact (Finset.nodup_toList _).map fun T₁ T₂ h => congrArg (fun p => p.1.1) h
-  have hKinit : ∀ d ∈ cells,
-      (ProbeState.init ((TagId × Fin sessionsPerTag) × Nonce) Digest) d =
-        CellKnowledge.excluded ∅ := fun d _ => rfl
   -- Redistribute both worlds' table draws along the column split.
-  rw [probOutput_congr_dist true (evalDist_genTable_bind_freshColumnSplit a₀ cells _ hnd
-        hKinit (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
+  rw [probOutput_eq_of_evalDist_eq (evalDist_genTable_bind_probeColumnSplit a₀ cells _
+        (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
           pure (F (unlinkReaderAccepts (Slot := TagId)
               (fun T nn => slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS (T, nn))
               (multiplePattern sessionsPerTag) ⟨n₀, a₀⟩)
-            n (gS ((tag, (0 : Fin sessionsPerTag)), n))))),
-      probOutput_congr_dist true (evalDist_genTable_bind_freshColumnSplit a₀ cells _ hnd
-        hKinit (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
+            n (gS ((tag, (0 : Fin sessionsPerTag)), n))))) true,
+      probOutput_eq_of_evalDist_eq (evalDist_genTable_bind_probeColumnSplit a₀ cells _
+        (fun gS => liftM ($ᵗ Nonce) >>= fun n =>
           pure (F (unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
               (fun sl nn => gS (sl, nn)) (singlePattern sessionsPerTag) ⟨n₀, a₀⟩)
-            n (gS ((tag, σ), n)))))]
+            n (gS ((tag, σ), n))))) true]
   simp only [← probEvent_eq_eq_probOutput]
-  -- Fire mass of the column split.
-  have hfire : Pr[fun z : Bool ×
+  have hlen : cells.length = Fintype.card TagId := by
+    rw [hcells, List.length_map, Finset.length_toList, Finset.card_univ]
+  -- Fire mass: at the initial state every `true` reply is a genuine hit.
+  have hfire : Pr[fun z : Bool × Bool ×
       ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest => z.1 = true |
-      freshColumnSplit a₀ cells
+      probeColumnSplit a₀ cells
         (ProbeState.init ((TagId × Fin sessionsPerTag) × Nonce) Digest)] ≤
       (Fintype.card TagId : ℝ≥0∞) / (Fintype.card Digest : ℝ≥0∞) := by
-    refine le_trans (probEvent_fst_freshColumnSplit_le a₀ cells _) (le_of_eq ?_)
-    rw [hcells, List.length_map, Finset.length_toList, Finset.card_univ]
+    refine le_trans (probEvent_mono ?_) (le_trans
+      (probEvent_probeColumnSplit_fired_le a₀ cells 0 _ ProbeState.exclLe_init)
+      (le_of_eq ?_))
+    · intro z hz h1
+      rcases (probeColumnSplit_support a₀ cells _ hnd hz).2.2.2.2.1 h1 with hf | ⟨d, -, hk⟩
+      · exact hf
+      · exact absurd hk (by simp [ProbeState.init])
+    · rw [hlen, Nat.sub_zero]
   -- Off-fire, the per-branch comparison is the off-fire step at the recorded state.
-  have hperz : ∀ z ∈ support (freshColumnSplit a₀ cells
+  have hperz : ∀ z ∈ support (probeColumnSplit a₀ cells
       (ProbeState.init ((TagId × Fin sessionsPerTag) × Nonce) Digest)),
       ¬ z.1 = true →
-      Pr[(· = true) | genTable z.2 >>= fun gS => liftM ($ᵗ Nonce) >>= fun n =>
+      Pr[(· = true) | genTable z.2.2 >>= fun gS => liftM ($ᵗ Nonce) >>= fun n =>
           pure (F (unlinkReaderAccepts (Slot := TagId)
               (fun T nn => slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS (T, nn))
               (multiplePattern sessionsPerTag) ⟨n₀, a₀⟩)
             n (gS ((tag, (0 : Fin sessionsPerTag)), n)))] ≤
-        Pr[(· = true) | genTable z.2 >>= fun gS => liftM ($ᵗ Nonce) >>= fun n =>
+        Pr[(· = true) | genTable z.2.2 >>= fun gS => liftM ($ᵗ Nonce) >>= fun n =>
             pure (F (unlinkReaderAccepts (Slot := TagId × Fin sessionsPerTag)
                 (fun sl nn => gS (sl, nn)) (singlePattern sessionsPerTag) ⟨n₀, a₀⟩)
               n (gS ((tag, σ), n)))] +
@@ -670,22 +400,32 @@ theorem probeGate_two_step (tag : TagId) (σ : Fin sessionsPerTag) (hσ0 : σ �
               (Fintype.card Digest : ℝ≥0∞)) := by
     intro z hz hDz
     have hz1 : z.1 = false := Bool.eq_false_iff.mpr hDz
-    obtain ⟨hoff, hcolF, hfeasF⟩ := freshColumnSplit_support a₀ cells _ hnd hz
+    obtain ⟨c1, c2, c3, c4, -, c6⟩ := probeColumnSplit_support a₀ cells _ hnd hz
     simp only [probEvent_eq_eq_probOutput]
-    refine probeGate_offFire tag σ hσ0 n₀ a₀ F z.2 (hfeasF ProbeState.feasible_init)
-      (fun T => hcolF hz1 _ ?_) (fun n hn => ?_) (fun T sid hsid n => ?_)
-    · rw [hcells]
-      exact List.mem_map.mpr ⟨T, Finset.mem_toList.mpr (Finset.mem_univ T), rfl⟩
-    · refine (hoff _ fun hmem => ?_).trans rfl
+    refine probeGate_offFire tag σ hσ0 n₀ a₀ F z.2.2 (c4 ProbeState.feasible_init)
+      (fun T => ?_) (fun n hn => ?_) (fun T sid hsid n => ?_)
+    · -- The probed column carries exactly the exclusion `{a₀}` on a no-reply path.
+      have hmem : ((T, (0 : Fin sessionsPerTag)), n₀) ∈ cells := by
+        rw [hcells]
+        exact List.mem_map.mpr ⟨T, Finset.mem_toList.mpr (Finset.mem_univ T), rfl⟩
+      rcases c3 _ hmem with heq | ⟨hfired, -⟩ | ⟨S, hKd, -, hupd⟩
+      · exfalso
+        refine c2 hz1 _ hmem ?_
+        rw [heq]
+        simp [ProbeState.init]
+      · exact absurd (c6 hfired) (by simp [hz1])
+      · have hS : (∅ : Finset Digest) = S := by injection hKd
+        rw [hupd, ← hS, Finset.insert_empty]
+    · refine (c1 _ fun hmem => ?_).trans rfl
       rw [hcells] at hmem
       obtain ⟨T, -, hT⟩ := List.mem_map.mp hmem
       exact hn (congrArg Prod.snd hT).symm
-    · refine (hoff _ fun hmem => ?_).trans rfl
+    · refine (c1 _ fun hmem => ?_).trans rfl
       rw [hcells] at hmem
       obtain ⟨T', -, hT⟩ := List.mem_map.mp hmem
       exact hsid (congrArg (fun p => p.1.2) hT).symm
-  refine le_trans (probEvent_bind_le_add_of_disagree hfire hperz) (le_of_eq ?_)
-  rw [← add_assoc]
+  exact le_trans (probEvent_bind_le_add_of_disagree hfire hperz)
+    (le_of_eq (by rw [← add_assoc]))
 
 end ProbeGate
 

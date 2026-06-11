@@ -77,6 +77,7 @@ import VCVio.EvalDist.Instances.OptionT
 import VCVio.EvalDist.Instances.ReaderT
 import VCVio.EvalDist.List
 import VCVio.EvalDist.Monad.Basic
+import VCVio.EvalDist.Monad.BindCongr
 import VCVio.EvalDist.Monad.Disagreement
 import VCVio.EvalDist.Monad.Map
 import VCVio.EvalDist.Monad.Seq
@@ -128,6 +129,7 @@ import VCVio.OracleComp.QueryTracking.RandomOracle.Eager
 import VCVio.OracleComp.QueryTracking.RandomOracle.EagerTable
 import VCVio.OracleComp.QueryTracking.RandomOracle.FirstFire
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeAmbient
+import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeColumn
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeEquiv
 import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.RevealTilt
