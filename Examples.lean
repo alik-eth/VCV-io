@@ -37,6 +37,7 @@ import Examples.PRFTagReader.DirectCoupling.Compose
 import Examples.PRFTagReader.DirectCoupling.ProbeGate
 import Examples.PRFTagReader.DirectCoupling.ReaderCase
 import Examples.PRFTagReader.DirectCoupling.SharpAux
+import Examples.PRFTagReader.DirectCoupling.SharpTagSlotPositive
 import Examples.PRFTagReader.DirectCoupling.StepLemmas
 import Examples.PRFTagReader.DirectCoupling.Swap
 import Examples.PRFTagReader.DirectCoupling.TagSlotPositive

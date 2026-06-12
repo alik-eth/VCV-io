@@ -170,7 +170,13 @@ the `singleTableHandler` simulateQ outputs are IDENTICAL (not just distributiona
   bound by `V`) is the same on both sides. -/
 
 omit [Nonempty TagId] [DecidableEq Nonce] [SampleableType Digest] in
-private lemma singleTableHandler_simulateQ_swap_invariant
+/-- **Pointwise swap-invariance of `singleTableHandler`.** When two tables differ only by a swap
+of values at the cells `((tag, 0), n)` and `((tag, slotK), n)` of one nonce column, and the
+running state has already consumed the sessions of `tag` past `slotK` (`hAdv`), the
+`singleTableHandler` runs are *equal* as `ProbComp` programs: later tag steps of `tag` read
+slots above `slotK`, other tags and other nonce columns are untouched by the swap, and the
+reader existential over the whole column is invariant under permuting its cells. -/
+lemma singleTableHandler_simulateQ_swap_invariant
     (tag : TagId) (slotK : Fin sessionsPerTag) (hslotK : slotK ≠ 0)
     (n : Nonce)
     (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)

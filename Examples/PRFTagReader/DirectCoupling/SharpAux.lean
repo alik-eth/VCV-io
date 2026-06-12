@@ -44,8 +44,9 @@ The induction threads six facts about `(K, s, sB)`, with all reader budgets acco
 
 ## The bound
 
-`sharpCoupling_aux` bounds the M-side success probability by the S-side success probability,
-the bad-flag probability, and three slack terms:
+The assembled induction `sharpCoupling_aux` (in `DirectCoupling/SharpTagSlotPositive.lean`)
+bounds the M-side success probability by the S-side success probability, the bad-flag
+probability, and three slack terms:
 
 * fire `qR · |TagId| / (|Digest| - qRInit)` — reader probes that genuinely hit;
 * tilt `qT · qRInit / (|Nonce| · |Digest|)` — the averaged reveal-tilt of tag reveals at
@@ -53,11 +54,11 @@ the bad-flag probability, and three slack terms:
 * discard `qR · |TagId| · sessionsPerTag / (|Digest| - qRInit)` — the single-session reader's
   slot-positive acceptance branch.
 
-The induction cases proved here: the `pure` case, the slot-exhausted tag case, and the
-slot-zero tag case `sharpAux_tag_slotZero` — at a fresh tag both worlds reveal the *same*
-reference cell of the shared table, so the step couples exactly and charges nothing. The
-slot-positive tag case `sharpAux_tag_slotPositive` and the reader case `sharpAux_reader_step`
-are stated with their final signatures and proved separately.
+The induction case proved here is the slot-zero tag case `sharpAux_tag_slotZero` — at a fresh
+tag both worlds reveal the *same* reference cell of the shared table, so the step couples
+exactly and charges nothing. The slot-positive tag case lives in
+`DirectCoupling/SharpTagSlotPositive.lean`; the reader case `sharpAux_reader_step` is stated
+with its final signature and proved separately.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -177,7 +178,7 @@ variable {TagId Nonce Digest : Type}
 omit [SampleableType Digest] [NeZero sessionsPerTag] in
 /-- Pull a shared nonce draw of the lifted continuation out past the table draw: the lifted
 program is decomposed along the bind and the two independent draws are commuted. -/
-private lemma evalDist_genTable_bind_liftM_comm {γ : Type} [Fintype Nonce] [Fintype Digest]
+lemma evalDist_genTable_bind_liftM_comm {γ : Type} [Fintype Nonce] [Fintype Digest]
     (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest)
     (A : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → ProbComp γ)
     (Θ : ((TagId × Fin sessionsPerTag) × Nonce → Digest) → Nonce → ProbComp γ)
@@ -390,70 +391,6 @@ variable {TagId Nonce Digest : Type}
   [DecidableEq Nonce] [SampleableType Nonce]
   [DecidableEq Digest] [SampleableType Digest]
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
-
-/-- The slot-positive tag (`Sum.inl tag`, `1 ≤ s.sessionsUsed tag < sessionsPerTag`) induction
-step of the sharp coupling aux. Each world reveals its own cell of the shared table — the
-M side the reference cell `((tag, 0), n)` from its conditioned allowed set, the S side the live
-cell `((tag, σ), n)` from the full range by `liveSlotsFresh`. A determined reference cell with a
-recorded response fires the `bad` flag (`knownRecorded`); otherwise the reveal tilt of the
-conditioned cell is paid from the averaged per-row potential `slotZeroRowExcl`, the revealed
-value is identified across the worlds, and the S-side write at the live slot is normalized to
-the reference slot, parking the reference cell's exclusion set at the now-dead slot. The
-induction hypothesis is supplied as the explicit premise `ih`. -/
-lemma sharpAux_tag_slotPositive [Fintype Nonce] [Fintype Digest]
-    (qRInit qR qT : ℕ)
-    (s : UnlinkState TagId)
-    (sB : UnlinkBadState TagId Nonce Digest)
-    (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest)
-    (hqRle : qR ≤ qRInit)
-    (hKpos : slotPosExcluded K)
-    (hKdead : liveSlotsFresh K s)
-    (hKresp : knownRecorded K sB)
-    (hKexcl : K.ExclLe (qRInit - qR))
-    (hKrow : ∀ tag : TagId, slotZeroRowExcl K tag ≤ qRInit - qR)
-    (hKfeas : K.Feasible)
-    (tag : TagId)
-    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag) →
-      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
-    (ih : ∀ (u : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inl tag))
-        (qR qT : ℕ) (s : UnlinkState TagId) (sB : UnlinkBadState TagId Nonce Digest)
-        (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest),
-        OracleComp.IsQueryBoundP (k u) (·.isRight) qR →
-        OracleComp.IsQueryBoundP (k u) (·.isLeft) qT →
-        qR ≤ qRInit →
-        slotPosExcluded K →
-        liveSlotsFresh K s →
-        knownRecorded K sB →
-        K.ExclLe (qRInit - qR) →
-        (∀ tag : TagId, slotZeroRowExcl K tag ≤ qRInit - qR) →
-        K.Feasible →
-        Pr[= true | sharpM (k u) s sB K] ≤
-          Pr[= true | sharpS (k u) s K] +
-          Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
-            sharpBad (k u) s sB K] +
-          ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) +
-          ((qT * qRInit : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Nonce : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)) +
-          ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞))
-    (hqR : OracleComp.IsQueryBoundP (liftM (OracleSpec.query (Sum.inl tag)) >>= k)
-      (·.isRight) qR)
-    (hqT : OracleComp.IsQueryBoundP (liftM (OracleSpec.query (Sum.inl tag)) >>= k)
-      (·.isLeft) qT)
-    (hslot : s.sessionsUsed tag < sessionsPerTag)
-    (hzero : ¬ s.sessionsUsed tag = 0) :
-    Pr[= true | sharpM (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s sB K] ≤
-      Pr[= true | sharpS (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s K] +
-      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
-        sharpBad (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s sB K] +
-      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) +
-      ((qT * qRInit : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Nonce : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)) +
-      ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) := by
-  sorry
 
 /-- The reader (`Sum.inr transcript`) induction step of the sharp coupling aux. The queried
 reference-slot column is probed at the Boolean level (`probeColumnSplit`): off the fire event —
@@ -916,122 +853,6 @@ lemma sharpAux_tag_slotZero [Fintype Nonce] [Fintype Digest]
     rw [probEvent_eq_eq_probOutput, probEvent_eq_eq_probOutput,
       ← add_assoc, ← add_assoc]
     exact hih
-
-/-- **Sharp direct-coupling aux.** Over a shared table drawn from the consistent-table
-distribution of a knowledge state satisfying the six-conjunct invariant, the instrumented
-multiple-session success probability is bounded by the single-session success probability, the
-bad-flag probability, and the fire, tilt, and discard slacks. Structural induction over the
-adversary; the slot-positive tag and reader steps are supplied by `sharpAux_tag_slotPositive`
-and `sharpAux_reader_step`. -/
-lemma sharpCoupling_aux [Fintype Nonce] [Fintype Digest]
-    (oa : OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool) (qRInit qR qT : ℕ)
-    (s : UnlinkState TagId)
-    (sB : UnlinkBadState TagId Nonce Digest)
-    (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest)
-    (hqR : OracleComp.IsQueryBoundP oa (·.isRight) qR)
-    (hqT : OracleComp.IsQueryBoundP oa (·.isLeft) qT)
-    (hqRle : qR ≤ qRInit)
-    (hKpos : slotPosExcluded K)
-    (hKdead : liveSlotsFresh K s)
-    (hKresp : knownRecorded K sB)
-    (hKexcl : K.ExclLe (qRInit - qR))
-    (hKrow : ∀ tag : TagId, slotZeroRowExcl K tag ≤ qRInit - qR)
-    (hKfeas : K.Feasible) :
-    Pr[= true | sharpM oa s sB K] ≤
-      Pr[= true | sharpS oa s K] +
-      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad | sharpBad oa s sB K] +
-      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) +
-      ((qT * qRInit : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Nonce : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)) +
-      ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) := by
-  classical
-  induction oa using OracleComp.inductionOn generalizing qR qT s sB K hqRle hKpos hKdead
-      hKresp hKexcl hKrow hKfeas with
-  | pure b =>
-    -- Both runs collapse to the constant `b`; the table and fine draws integrate out by
-    -- feasibility.
-    have hM : Pr[= true | sharpM (pure b) s sB K] = if b = true then 1 else 0 := by
-      change Pr[= true | genTable K >>= fun _ => liftM _] = _
-      simp only [simulateQ_pure, StateT.run_pure, map_pure, bind_pure_comp,
-        probOutput_bind_const, probFailure_genTable hKfeas, tsub_zero, one_mul]
-      rw [OptionT.probOutput_liftM]
-      simp
-    have hS : Pr[= true | sharpS (pure b) s K] = if b = true then 1 else 0 := by
-      change Pr[= true | genTable K >>= fun _ => liftM _] = _
-      simp only [simulateQ_pure, StateT.run'_eq, StateT.run_pure, map_pure,
-        probOutput_bind_const, probFailure_genTable hKfeas, tsub_zero, one_mul]
-      rw [OptionT.probOutput_liftM]
-      simp
-    refine le_trans (le_of_eq hM) ?_
-    rw [← hS]
-    exact le_add_right (le_add_right (le_add_right (le_add_right le_rfl)))
-  | query_bind t k ih =>
-    cases t with
-    | inl tag =>
-      by_cases hslot : s.sessionsUsed tag < sessionsPerTag
-      · by_cases hzero : s.sessionsUsed tag = 0
-        · exact sharpAux_tag_slotZero qRInit qR qT s sB K hqRle hKpos hKdead hKresp hKexcl
-            hKrow hKfeas tag k ih hqR hqT hslot hzero
-        · exact sharpAux_tag_slotPositive qRInit qR qT s sB K hqRle hKpos hKdead hKresp
-            hKexcl hKrow hKfeas tag k ih hqR hqT hslot hzero
-      · -- Slot-exhausted: both heads return `none` with unchanged state.
-        have hqRk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isRight) qR := by
-          have := hqR
-          rw [OracleComp.isQueryBoundP_query_bind_iff] at this
-          simpa using this.2
-        have hqTsplit := hqT
-        rw [OracleComp.isQueryBoundP_query_bind_iff] at hqTsplit
-        have hqTpos : 0 < qT := hqTsplit.1.resolve_left (fun h => absurd rfl h)
-        obtain ⟨qT', rfl⟩ : ∃ qT', qT = qT' + 1 := ⟨qT - 1, by omega⟩
-        have hqTk : ∀ u, OracleComp.IsQueryBoundP (k u) (·.isLeft) qT' := fun u => by
-          simpa using hqTsplit.2 u
-        have hMstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
-            ∀ gFine : ((TagId × Fin sessionsPerTag) × Nonce) → Digest,
-            multipleBadTableHandlerFine (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-              (sessionsPerTag := sessionsPerTag)
-              (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS) gFine
-              (Sum.inl tag) (s, sB)
-            = pure (none, s, sB) := by
-          intro gS gFine
-          change (multipleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-              (sessionsPerTag := sessionsPerTag)
-              (slotZeroSubTable (sessionsPerTag := sessionsPerTag) gS) (Sum.inl tag)) s
-              >>= (fun r => pure (r.1, r.2, multipleBadAdvance tag sB r.1))
-              = _
-          rw [multipleTableHandler_tag_run_of_not_lt _ tag s hslot]
-          rfl
-        have hSstep : ∀ gS : (TagId × Fin sessionsPerTag) × Nonce → Digest,
-            singleTableHandler (TagId := TagId) (Nonce := Nonce) (Digest := Digest)
-              (sessionsPerTag := sessionsPerTag) gS (Sum.inl tag) s
-            = pure (none, s) := fun gS =>
-          singleTableHandler_tag_run_of_not_lt gS tag s hslot
-        have hMeq : sharpM (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s sB K
-            = sharpM (k none) s sB K := by
-          refine bind_congr fun gS => congrArg liftM ?_
-          refine bind_congr fun gFine => ?_
-          rw [multipleBadTableFine_run_query_bind', hMstep gS gFine, map_bind]
-          exact pure_bind _ _
-        have hSeq : sharpS (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s K
-            = sharpS (k none) s K := by
-          refine bind_congr fun gS => congrArg liftM ?_
-          rw [singleTable_run'_query_bind', hSstep gS]
-          exact pure_bind _ _
-        have hBeq : sharpBad (liftM (OracleSpec.query (Sum.inl tag)) >>= k) s sB K
-            = sharpBad (k none) s sB K := by
-          refine bind_congr fun gS => congrArg liftM ?_
-          refine bind_congr fun gFine => ?_
-          rw [multipleBadTableFine_run_query_bind', hMstep gS gFine, map_bind]
-          exact pure_bind _ _
-        rw [hMeq, hSeq, hBeq]
-        refine (ih none qR qT' s sB K (hqRk none) (hqTk none) hqRle hKpos hKdead hKresp
-          hKexcl hKrow hKfeas).trans ?_
-        gcongr
-        exact Nat.le_succ qT'
-    | inr transcript =>
-      exact sharpAux_reader_step qRInit qR qT s sB K hqRle hKpos hKdead hKresp hKexcl
-        hKrow hKfeas transcript k ih hqR hqT
 
 end SharpAux
 
