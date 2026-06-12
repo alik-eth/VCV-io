@@ -364,7 +364,15 @@ equality `multipleTableHandler_tag_run_eq_singleTableHandler_tag_run_of_sessions
 composed in `DirectCoupling/Compose.lean` by the eager-form induction
 `multipleBadEager_le_singleEager_DC_aux` and the lazy-form headline
 `multipleIdeal_le_singleIdeal_add_bad_DC` (the hdist-free multiple-to-single bound). This module
-deliberately stops at the per-step structural primitives. -/
+deliberately stops at the per-step structural primitives.
+
+A second, *sharp* composition runs both worlds against one consistent table drawn from the
+probe knowledge state of the reader's Boolean probe history: the experiments, six-conjunct
+invariant, and slot-zero case live in `DirectCoupling/SharpAux.lean`, the reader case in
+`DirectCoupling/SharpReaderCase.lean`, the slot-positive swap-bridge case and the assembled
+induction `sharpCoupling_aux` in `DirectCoupling/SharpTagSlotPositive.lean`, and the headline
+`multipleIdeal_le_singleIdeal_add_bad_DC_sharp` — same experiments, tilt slack
+`qTag · qReader / (|Nonce| · |Digest|)` — in `DirectCoupling/SharpCompose.lean`. -/
 
 end DirectCoupling
 
