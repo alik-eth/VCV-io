@@ -424,6 +424,32 @@ theorem probOutput_genTable_bind_pure_comp {β : Type} (K : ProbeState D R)
       rw [apply_eq_of_mem_support_genTable hgS (Function.update_self d _ K)]
   rw [hval, probOutput_bind_const, probFailure_genTable hfeas', tsub_zero, one_mul]
 
+/-- **Reveal redistribution at one cell.** A continuation reading the table at one undetermined
+cell `d` (and arbitrarily elsewhere) can have the cell's value drawn first: the draw is uniform
+on the allowed set, and the residual table is consistent with the cell determined to the drawn
+value. The bind-level form of `evalDist_genTable_reveal_split`, with the read value abstracted
+so that downstream occurrences are rewritten to the drawn value. -/
+theorem evalDist_genTable_bind_reveal_comp {β : Type} (K : ProbeState D R)
+    {d : D} {S : Finset R} (hcell : K d = CellKnowledge.excluded S)
+    (G : R → (D → R) → OptionT ProbComp β) :
+    𝒟[genTable K >>= fun gS => G (gS d) gS] =
+      𝒟[($ (Finset.univ \ S)) >>= fun u =>
+        genTable (Function.update K d (CellKnowledge.known u)) >>= fun gS => G u gS] := by
+  conv_lhs => rw [evalDist_bind, evalDist_genTable_reveal_split hcell, ← evalDist_bind,
+    bind_assoc]
+  refine evalDist_bind_congr fun u _ => ?_
+  refine evalDist_bind_congr fun gS hgS => ?_
+  rw [apply_eq_of_mem_support_genTable hgS (Function.update_self d _ K)]
+
+/-- A continuation reading the table at one *determined* cell sees the determined value: the
+read can be replaced by the constant. -/
+theorem evalDist_genTable_bind_known_comp {β : Type} (K : ProbeState D R)
+    {d : D} {v : R} (hcell : K d = CellKnowledge.known v)
+    (G : R → (D → R) → OptionT ProbComp β) :
+    𝒟[genTable K >>= fun gS => G (gS d) gS] = 𝒟[genTable K >>= fun gS => G v gS] :=
+  evalDist_bind_congr fun gS hgS => by
+    rw [apply_eq_of_mem_support_genTable hgS hcell]
+
 /-- The probability that the residual table matches a target value at one undetermined cell is
 at most the inverse size of that cell's allowed set. -/
 theorem probEvent_apply_eq_genTable_le (K : ProbeState D R) {d : D} {S : Finset R}
