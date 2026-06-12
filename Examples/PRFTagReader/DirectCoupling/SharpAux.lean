@@ -57,8 +57,8 @@ probability, and three slack terms:
 The induction case proved here is the slot-zero tag case `sharpAux_tag_slotZero` — at a fresh
 tag both worlds reveal the *same* reference cell of the shared table, so the step couples
 exactly and charges nothing. The slot-positive tag case lives in
-`DirectCoupling/SharpTagSlotPositive.lean`; the reader case `sharpAux_reader_step` is stated
-with its final signature and proved separately.
+`DirectCoupling/SharpTagSlotPositive.lean` and the reader case in
+`DirectCoupling/SharpReaderCase.lean`.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -163,7 +163,7 @@ end SharpExperiments
 section SharpHelpers
 
 /-- Transport of a distribution identity of `ProbComp` programs through the `OptionT` lift. -/
-private lemma evalDist_liftM_congr {γ : Type} {A B : ProbComp γ} (h : 𝒟[A] = 𝒟[B]) :
+lemma evalDist_liftM_congr {γ : Type} {A B : ProbComp γ} (h : 𝒟[A] = 𝒟[B]) :
     𝒟[(liftM A : OptionT ProbComp γ)] = 𝒟[(liftM B : OptionT ProbComp γ)] :=
   evalDist_ext fun x => by
     rw [OptionT.probOutput_liftM, OptionT.probOutput_liftM,
@@ -391,68 +391,6 @@ variable {TagId Nonce Digest : Type}
   [DecidableEq Nonce] [SampleableType Nonce]
   [DecidableEq Digest] [SampleableType Digest]
   {sessionsPerTag : ℕ} [NeZero sessionsPerTag]
-
-/-- The reader (`Sum.inr transcript`) induction step of the sharp coupling aux. The queried
-reference-slot column is probed at the Boolean level (`probeColumnSplit`): off the fire event —
-some genuine probe hits, with mass at most `|TagId| / (|Digest| - qRInit)` by
-`probEvent_probeColumnSplit_fired_le` — the M reader bit is determined by the prior knowledge
-alone, a `true` bit is an honest replay also accepted by the S side, and on a `false` bit the
-S side's slot-positive acceptance branch is discarded at the mass of the collision indicator
-under the residual table. The residual knowledge state records one new exclusion per probed
-cell, paid by the `qR`-decrement in the exclusion budgets. The induction hypothesis is supplied
-as the explicit premise `ih`. -/
-lemma sharpAux_reader_step [Fintype Nonce] [Fintype Digest]
-    (qRInit qR qT : ℕ)
-    (s : UnlinkState TagId)
-    (sB : UnlinkBadState TagId Nonce Digest)
-    (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest)
-    (hqRle : qR ≤ qRInit)
-    (hKpos : slotPosExcluded K)
-    (hKdead : liveSlotsFresh K s)
-    (hKresp : knownRecorded K sB)
-    (hKexcl : K.ExclLe (qRInit - qR))
-    (hKrow : ∀ tag : TagId, slotZeroRowExcl K tag ≤ qRInit - qR)
-    (hKfeas : K.Feasible)
-    (transcript : TagTranscript Nonce Digest)
-    (k : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript) →
-      OracleComp (UnlinkOracleSpec TagId Nonce Digest) Bool)
-    (ih : ∀ (u : (UnlinkOracleSpec TagId Nonce Digest).Range (Sum.inr transcript))
-        (qR qT : ℕ) (s : UnlinkState TagId) (sB : UnlinkBadState TagId Nonce Digest)
-        (K : ProbeState ((TagId × Fin sessionsPerTag) × Nonce) Digest),
-        OracleComp.IsQueryBoundP (k u) (·.isRight) qR →
-        OracleComp.IsQueryBoundP (k u) (·.isLeft) qT →
-        qR ≤ qRInit →
-        slotPosExcluded K →
-        liveSlotsFresh K s →
-        knownRecorded K sB →
-        K.ExclLe (qRInit - qR) →
-        (∀ tag : TagId, slotZeroRowExcl K tag ≤ qRInit - qR) →
-        K.Feasible →
-        Pr[= true | sharpM (k u) s sB K] ≤
-          Pr[= true | sharpS (k u) s K] +
-          Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
-            sharpBad (k u) s sB K] +
-          ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) +
-          ((qT * qRInit : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Nonce : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)) +
-          ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-            ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞))
-    (hqR : OracleComp.IsQueryBoundP (liftM (OracleSpec.query (Sum.inr transcript)) >>= k)
-      (·.isRight) qR)
-    (hqT : OracleComp.IsQueryBoundP (liftM (OracleSpec.query (Sum.inr transcript)) >>= k)
-      (·.isLeft) qT) :
-    Pr[= true | sharpM (liftM (OracleSpec.query (Sum.inr transcript)) >>= k) s sB K] ≤
-      Pr[= true | sharpS (liftM (OracleSpec.query (Sum.inr transcript)) >>= k) s K] +
-      Pr[fun z : Bool × UnlinkBadState TagId Nonce Digest => z.2.bad |
-        sharpBad (liftM (OracleSpec.query (Sum.inr transcript)) >>= k) s sB K] +
-      ((qR * Fintype.card TagId : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) +
-      ((qT * qRInit : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Nonce : ℝ≥0∞) * (Fintype.card Digest : ℝ≥0∞)) +
-      ((qR * Fintype.card TagId * sessionsPerTag : ℕ) : ℝ≥0∞) /
-        ((Fintype.card Digest - qRInit : ℕ) : ℝ≥0∞) := by
-  sorry
 
 /-- The slot-zero tag (`Sum.inl tag`, `s.sessionsUsed tag = 0`) induction step of the sharp
 coupling aux: both worlds reveal the *same* reference cell `((tag, 0), n)` of the shared table,

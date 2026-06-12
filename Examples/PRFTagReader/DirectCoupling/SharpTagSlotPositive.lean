@@ -5,6 +5,7 @@ Authors: Oleksandr Vovkotrub
 -/
 
 import Examples.PRFTagReader.DirectCoupling.SharpAux
+import Examples.PRFTagReader.DirectCoupling.SharpReaderCase
 import Examples.PRFTagReader.DirectCoupling.Swap
 import VCVio.OracleComp.QueryTracking.RandomOracle.RevealTilt
 
