@@ -1436,6 +1436,57 @@ The eager↔lazy per-state route is unsound (`probEvent_ghostHybridImpl_bad_le_l
 factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost value
 into the run, so the draws are genuinely deferrable. -/
 omit [SampleableType Stmt] in
+/-- **M2 residual: the deferred-sampling factorization in explicit-list form** (the single open
+obligation, stated against the Stage B explicit key-list game).
+
+This is `ghostBlind_bad_fac_exists` phrased against the *explicit draw-then-test* game
+`kn >>= fun n => drawList oa n >>= readManyList · (qH+1) σ` of Stage B (`OracleComp.drawList`,
+`OracleComp.readManyList`) rather than the i.i.d. `OracleComp.hiddenReadList` recursion. By the
+Stage B program-level equality `drawList_readManyList_eq_hiddenReadList` the two are the same
+computation, so this residual is *equivalent* to `ghostBlind_bad_fac_exists`; it is the form the
+factorization is naturally proved in, because the ghost-blind run literally *draws each rejected
+attempt's commitment into the ghost cache* (an explicit list of keys) — the front block
+`drawList oa n` of the deferred-sampling factorization — and the bad flag is exactly
+`readManyList (ghost keys) (qH+1) σ` against the adversary's value-free all-miss read strategy `σ`.
+
+Discharging this is the genuine deferred-sampling commutation: factor the ghost-blind
+`simulateQ (ghostBlindImpl …) (adv.main pk)` run so that every rejected attempt's commitment draw
+(produced inside `ghostSignBody`, output-irrelevant by `ghostHybridImpl_proj_trans` — the
+ghost-forgetting projection onto the value-free Trans hybrid) is pulled into an independent front
+list `drawList (Prod.fst <$> ids.commit pk sk) n`, with `kn` the run's ghost-key-count law (the
+final ghost cache size, mean `≤ qS/(1-p)` by the banked `ghostChargeK` telescope:
+`ghostHybridImpl_sign_expected_enncard_le` + `geomAttemptSum_le`) and `σ` the all-miss read strategy
+fixed by the manifest output-irrelevance of `ghostBlindImpl` at the read step
+(`probEvent_ghostBlindImpl_read_bad`). The raw per-key guess bound `hGuess` drops the rejection skew
+(the keys are charged by the *raw* `commit` mass, not the rejection-conditioned one). The crux is
+lifting this output-irrelevance through the opaque `simulateQ` fold over `adv.main pk` so the
+per-attempt draws commute to the front independently of the intervening adversary computation —
+the multi-week PMF×PMF joint coupling. Stage A (`OracleComp.probEvent_bind_fire_le_of_gen`) is the
+single-draw deferral primitive this lifts; Stage B (`drawList_readManyList_eq_hiddenReadList`,
+`probEvent_bind_drawList_readManyList_le`) is the n-draw bridge it feeds. -/
+theorem ghostBlind_bad_le_bind_drawList
+    (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
+      (S' := Option (Commit × Resp)) (oa := adv.main pk) qS qH)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit,
+      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
+    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
+      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+        ≤ ENNReal.ofReal ((qS : ℝ) / (1 - p_abort))) ∧
+      (Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+            ((((∅, ∅), []) :
+              ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+                List M), false)]
+        ≤ Pr[(fun b : Bool => b = true) |
+          kn >>= fun n =>
+            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+              pure (OracleComp.readManyList ws (qH + 1) σ)]) := by
+  sorry
+
+omit [SampleableType Stmt] in
 theorem ghostBlind_bad_fac_exists
     (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (hQ : ∀ pk, FiatShamir.signHashQueryBound M
@@ -1455,7 +1506,23 @@ theorem ghostBlind_bad_fac_exists
         ≤ Pr[(fun b : Bool => b = true) |
           kn >>= fun n =>
             OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n]) := by
-  sorry
+  -- Convert the Stage B explicit-list residual to the i.i.d. `hiddenReadList` form via the
+  -- program-level equality `drawList_readManyList_eq_hiddenReadList`: the two games are the same
+  -- computation, so the mean bound transfers verbatim and the inequality re-targets the equal RHS.
+  obtain ⟨σ, kn, hmean, hineq⟩ :=
+    ghostBlind_bad_le_bind_drawList ids hr M maxAttempts adv qS qH ε p_abort hp₀ hp hε hQ pk sk
+      hGuess hAbort
+  refine ⟨σ, kn, hmean, ?_⟩
+  have hgame : (kn >>= fun n =>
+        OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+          pure (OracleComp.readManyList ws (qH + 1) σ))
+      = kn >>= fun n =>
+          OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n :=
+    bind_congr fun n =>
+      OracleComp.drawList_readManyList_eq_hiddenReadList
+        (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n
+  rw [hgame] at hineq
+  exact hineq
 
 omit [SampleableType Stmt] in
 /-- **Ghost-blind ghost-read bound** (the sound headline target, modulo the M2 factorization).
