@@ -1192,7 +1192,14 @@ private lemma probOutput_simulateQ_run_eq_of_not_output_bad'
       rw [h_agree_good t s₀ u s', ih u s']
 
 open scoped Classical in
-private lemma probEvent_output_bad_eq'
+/-- **Bad-event equality for exact identical-until-bad**, with the inner monad over an
+arbitrary uniform spec `spec'`. Two state-extended implementations that agree on every
+non-bad output transition from a non-bad input state (`h_agree_good`) and are bad-input
+monotone (`h_mono₁`, `h_mono₂`) flip the output bad flag with *exactly the same*
+probability. This is the equality counterpart of `tvDist_simulateQ_run_le_probEvent_output_bad`
+(which bounds only the TV distance): the bad marginals coincide because the two runs differ
+only on the already-bad trajectory, where both flags read `true`. -/
+theorem probEvent_output_bad_eq'
     (impl₁ impl₂ : QueryImpl spec (StateT (σ × Bool) (OracleComp spec')))
     (h_agree_good : ∀ (t : spec.Domain) (s : σ) (u : spec.Range t) (s' : σ),
       Pr[= (u, (s', false)) | (impl₁ t).run (s, false)] =

@@ -1265,6 +1265,61 @@ lemma avgBadM_eager_le_lazy_joint (pk : Stmt) (sk : Wit)
         exact ih u _ _ (h_step_eq νe νl hInv (Sum.inr msg) (by simp) u)
 
 omit [SampleableType Stmt] in
+/-- **M1: the identical-until-bad / ghost-blind reduction** (foundational step of the sound
+#228 ghost-read bound). The eager hybrid handler `ghostHybridImpl … true` and the ghost-blind
+handler `ghostBlindImpl` flip the adversarial-read bad flag with *exactly the same*
+probability at the empty-cache Dirac start:
+
+`Pr[bad | (simulateQ (ghostHybridImpl … true) (adv.main pk)).run δ_∅]`
+`  = Pr[bad | (simulateQ ghostBlindImpl (adv.main pk)).run δ_∅]`.
+
+The two handlers are *identical until bad*: they coincide on uniform queries, on signing
+queries, and on ghost-*miss* reads (all run the same `roStep` / `ghostSignBody`), and on a
+ghost-*hit* read both flip the bad flag (`ghostBlindImpl_agree_good`), while neither ever
+unsets it (`ghostHybridImpl_bad_mono` / `ghostBlindImpl_bad_mono`). The blind handler answers
+a hit from the real layer instead of returning the ghost value, so the ghost-key values never
+influence the run — they are consulted only to record the would-hit. Because the runs differ
+only on the already-bad trajectory (where both flags read `true`), the bad marginals coincide,
+by the banked exact identical-until-bad bad-event equality
+`probEvent_output_bad_eq'`. -/
+lemma probEvent_ghostHybridImpl_bad_eq_ghostBlind (pk : Stmt) (sk : Wit) :
+    Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostHybridImpl ids M maxAttempts true pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)]
+      = Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)] :=
+  OracleComp.ProgramLogic.Relational.probEvent_output_bad_eq'
+    (ghostHybridImpl ids M maxAttempts true pk sk)
+    (ghostBlindImpl ids M maxAttempts pk sk)
+    (ghostBlindImpl_agree_good ids M maxAttempts pk sk)
+    (ghostHybridImpl_bad_mono ids M maxAttempts true pk sk)
+    (ghostBlindImpl_bad_mono ids M maxAttempts pk sk)
+    (adv.main pk) (((∅, ∅), []) : _)
+
+omit [SampleableType Stmt] in
+/-- **M1 (≤ form).** The eager ghost-read bad mass is bounded by the ghost-blind handler's
+bad mass at the empty-cache Dirac start; immediate from the equality
+`probEvent_ghostHybridImpl_bad_eq_ghostBlind`. This is the reduction the sound #228 spine
+chains with M2 (reads ⊥ ghost-key values) and M3 (geometric first-fire charge). -/
+lemma probEvent_ghostHybridImpl_bad_le_ghostBlind (pk : Stmt) (sk : Wit) :
+    Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostHybridImpl ids M maxAttempts true pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)]
+      ≤ Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)] :=
+  (probEvent_ghostHybridImpl_bad_eq_ghostBlind ids hr M maxAttempts adv pk sk).le
+
+omit [SampleableType Stmt] in
 /-- **Measure-level eager↔lazy ghost-read bad dominance** (the genuine deferred-sampling
 residual of #228). At the empty-cache Dirac start, the eager ghost handler's run sets the bad
 flag with probability at most that of the lazy (deferred-sampling) handler's run:

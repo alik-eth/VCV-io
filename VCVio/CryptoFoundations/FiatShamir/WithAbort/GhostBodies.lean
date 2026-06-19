@@ -506,6 +506,60 @@ lemma ghostHybridImpl_bad_mono (progSide : Bool) (pk : Stmt) (sk : Wit)
     obtain ⟨_, _, rfl⟩ := hz
     exact hp
 
+/-! ### Ghost-blind handler
+
+The ghost-blind handler `ghostBlindImpl` is the eager hybrid handler `ghostHybridImpl … true`
+with one change at the adversarial random-oracle read step: on a ghost-cache *hit* it still
+*records* the would-hit by flipping the bad flag, but it *answers* the read from the real
+cache via `roStep` — exactly as it does on a *miss* — instead of returning the ghost value.
+So the ghost-key values are pure side-data: they are consulted only to set the bad flag and
+never influence the run's behaviour. Structurally this is the Trans-side instrumented handler
+`ghostHybridImpl … false`, whose hit branch already answers from the real layer while flipping
+the flag; `ghostBlindImpl` is a named alias for that handler, isolating the ghost-blind role
+of the sound (#228) read-bound spine from the Prog→Trans hop usage of the Trans handler. -/
+
+/-- Ghost-blind hybrid handler: identical to `ghostHybridImpl … true` except that an
+adversarial random-oracle read at a ghost-cache hit answers from the real layer (`roStep`,
+the same as a miss) while still flipping the bad flag. The ghost value never influences the
+run. Definitionally the Trans-side handler `ghostHybridImpl … false`
+(`ghostBlindImpl_eq_ghostHybridImpl_false`). -/
+noncomputable def ghostBlindImpl (pk : Stmt) (sk : Wit) :
+    QueryImpl ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp)))
+      (StateT (GhostState M Commit Chal) ProbComp) :=
+  ghostHybridImpl ids M maxAttempts false pk sk
+
+omit [SampleableType Stmt] in
+/-- The ghost-blind handler is, by definition, the Trans-side instrumented handler. -/
+lemma ghostBlindImpl_eq_ghostHybridImpl_false (pk : Stmt) (sk : Wit) :
+    ghostBlindImpl ids M maxAttempts pk sk =
+      ghostHybridImpl ids M maxAttempts false pk sk := rfl
+
+omit [SampleableType Stmt] in
+/-- The eager (`ghostHybridImpl … true`) and ghost-blind handlers agree on every non-bad
+output transition from a non-bad input state: they coincide on uniform, signing, and
+ghost-*miss* read steps, and on a ghost-*hit* both flip the bad flag, so neither has any
+non-bad output there. This is the `h_agree_good` premise of the exact identical-until-bad
+machinery. -/
+lemma ghostBlindImpl_agree_good (pk : Stmt) (sk : Wit)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (s : ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) × List M)
+    (u : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t)
+    (s' : ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) × List M) :
+    Pr[= (u, (s', false)) |
+        (ghostHybridImpl ids M maxAttempts true pk sk t).run (s, false)] =
+      Pr[= (u, (s', false)) |
+        (ghostBlindImpl ids M maxAttempts pk sk t).run (s, false)] :=
+  ghostHybridImpl_agree_good ids M maxAttempts pk sk t s u s'
+
+omit [SampleableType Stmt] in
+/-- The ghost-blind handler never unsets the bad flag (bad-input monotonicity). -/
+lemma ghostBlindImpl_bad_mono (pk : Stmt) (sk : Wit)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (p : GhostState M Commit Chal) (hp : p.2 = true) :
+    ∀ z ∈ support ((ghostBlindImpl ids M maxAttempts pk sk t).run p),
+      z.2.2 = true :=
+  ghostHybridImpl_bad_mono ids M maxAttempts false pk sk t p hp
+
 /-! ## Hybrid run-level handlers -/
 
 /-- Run a cache-level action inside the hybrid state (random-oracle cache plus the list
