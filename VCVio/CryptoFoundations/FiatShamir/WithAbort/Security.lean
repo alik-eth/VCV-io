@@ -779,23 +779,13 @@ theorem relTriple_ghostHybrid_lazyGhost_sign (pk : Stmt) (sk : Wit)
 
 /-! ## Measure-level eager↔lazy coupling: support lemmas
 
-The live route for bounding the ghost-read bad probability is the measure-level coupling:
-
-```
-Pr[bad | eager] ≤ Pr[bad | lazy]   (probEvent_ghostHybridImpl_bad_le_lazy, open)
-  ≤ qS·(qH+1)·ε/(1-p)              (probEvent_lazyGhostHybridImpl_bad_le, proven)
-```
-
-The first inequality is the deferred-sampling residual (#228): both handlers agree on
-uniform and signing steps (banked above as `relTriple_ghostHybrid_lazyGhost_unif` /
-`relTriple_ghostHybrid_lazyGhost_sign`); the entire distributional gap is localized to the
-read step, where the eager run reuses signing-time-sampled ghost keys while the lazy run
-redraws a fresh commitment per read. The measure-level engine `avgBadM_eager_le_lazy_joint`
-formalizes this as a two-measure coupling `avgBadM eager νe oa ≤ avgBadM lazy νl oa` under
-a coupling invariant `Inv νe νl`; the lemmas below supply the per-step invariant-preservation
-premises: expected ghost-cache size, flag-preservation, charge-carry, and charge-K
-bookkeeping used by `avgBadM_eager_le_lazy_joint`. For the uniform and signing branches both
-handlers are definitionally identical (`lazyGhostHybridImpl_run_unif_eq` /
+The lemmas in this section supply bookkeeping used by `avgBadM_eager_le_lazy_joint`
+(banked below as a reusable two-measure coupling engine). Both handlers agree on uniform
+and signing steps (banked as `relTriple_ghostHybrid_lazyGhost_unif` /
+`relTriple_ghostHybrid_lazyGhost_sign`), so the per-step premises concern the per-step
+invariant-preservation at those steps: expected ghost-cache size, flag-preservation,
+charge-carry, and charge-K bookkeeping. For the uniform and signing branches both handlers
+are definitionally identical (`lazyGhostHybridImpl_run_unif_eq` /
 `lazyGhostHybridImpl_run_sign_eq`), so the post-step measures agree and any coupling
 invariant is threaded unchanged. -/
 
@@ -1160,27 +1150,22 @@ lemma avgBadM_ghostHybridImpl_threaded_K
 
 /-! ## Measure-level eager↔lazy coupling engine
 
-The headline ghost-read bad bound is reached by dominating the *eager* averaged bad mass by
-the *lazy* averaged bad mass and chaining the proven lazy bound
-`probEvent_lazyGhostHybridImpl_bad_le`. The two handlers `ghostHybridImpl … true` and
-`lazyGhostHybridImpl` carry the **same** `GhostState`, run the **same** `ghostSignBody`, and
-forward uniform queries identically (`lazyGhostHybridImpl_run_sign_eq`,
-`lazyGhostHybridImpl_run_unif_eq`); the entire eager↔lazy distributional gap is localized to
-the adversarial random-oracle read step.
+`avgBadM_eager_le_lazy_joint` is a banked, axiom-clean, reusable free-monad telescoping
+engine for dominating averaged bad masses under a two-measure coupling invariant. It is not
+currently on the live path of the #228 ghost-read bound (the live path goes through the sound
+M1→M2→M3 ghost-blind factorization route). It is retained here as general infrastructure for
+a future joint-law approach to the eager↔lazy comparison.
 
-`avgBadM_eager_le_lazy_joint` is the reusable free-monad telescoping engine for this
-comparison. It carries a **two-measure coupling invariant** `Inv νe νl` through the induction:
-the uniform and signing steps preserve `Inv` on the per-output post-step measures (the
-handlers are definitionally identical there, so `postStepOutM` agrees and `Inv` is threaded
-unchanged), the pure leaf compares the carried bad mass under `Inv`, and the read step
-supplies the single genuine deferred-sampling inequality — the eager read's averaged ghost-hit
-marginal over `νe` dominated by the lazy read's deferred-fire marginal over `νl`, with the
-invariant-conditional inductive hypothesis available for the continuations.
+The engine carries a **two-measure coupling invariant** `Inv νe νl` through the free-monad
+induction on `oa`: the uniform and signing steps preserve `Inv` on the per-output post-step
+measures (the handlers are definitionally identical on those steps, so `postStepOutM` agrees
+and `Inv` is threaded unchanged), the pure leaf compares the carried bad mass under `Inv`, and
+the read step supplies the genuine deferred-sampling inequality — the eager read's averaged
+ghost-hit marginal over `νe` dominated by the lazy read's deferred-fire marginal over `νl`.
 
 A per-state (single-measure, `νe = νl`) version of the read inequality is **false** — at a
 committed ghost-hit state the eager read flips the bad flag with mass `1` while the lazy read
-fires with sub-unit mass — so the two-measure coupling (averaging the signing-time commit draw
-into `νe` versus the read-time redraw of `νl`) is essential. -/
+fires with sub-unit mass — so the two-measure coupling is essential for any future application. -/
 
 omit [SampleableType Stmt] in
 /-- **Two-measure eager↔lazy averaged-bad coupling engine.** Threads a coupling invariant
@@ -1432,38 +1417,31 @@ miss and as the lazy handler). The crux is lifting the output-irrelevance throug
 fold so that the per-rejected-attempt draws commute to the front independently of the intervening
 adversary computation.
 
-The eager↔lazy per-state route is unsound (`probEvent_ghostHybridImpl_bad_le_lazy` below); this
-factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost value
-into the run, so the draws are genuinely deferrable. -/
+This factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost
+value into the run, so the draws are genuinely deferrable. -/
 omit [SampleableType Stmt] in
-/-- **M2 residual: the deferred-sampling factorization in explicit-list form** (the single open
-obligation, stated against the Stage B explicit key-list game).
+/-- **The sole remaining residual of the sound #228 ghost-read bound** (M2, explicit-list form).
 
-This is `ghostBlind_bad_fac_exists` phrased against the *explicit draw-then-test* game
-`kn >>= fun n => drawList oa n >>= readManyList · (qH+1) σ` of Stage B (`OracleComp.drawList`,
-`OracleComp.readManyList`) rather than the i.i.d. `OracleComp.hiddenReadList` recursion. By the
-Stage B program-level equality `drawList_readManyList_eq_hiddenReadList` the two are the same
-computation, so this residual is *equivalent* to `ghostBlind_bad_fac_exists`; it is the form the
-factorization is naturally proved in, because the ghost-blind run literally *draws each rejected
-attempt's commitment into the ghost cache* (an explicit list of keys) — the front block
-`drawList oa n` of the deferred-sampling factorization — and the bad flag is exactly
-`readManyList (ghost keys) (qH+1) σ` against the adversary's value-free all-miss read strategy `σ`.
+Exhibits the ghost-blind run's bad marginal as the front-loaded game
+`kn >>= fun n => drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+  pure (readManyList ws (qH+1) σ)`,
+with mean `E[kn] ≤ qS/(1-p)`.
 
-Discharging this is the genuine deferred-sampling commutation: factor the ghost-blind
-`simulateQ (ghostBlindImpl …) (adv.main pk)` run so that every rejected attempt's commitment draw
-(produced inside `ghostSignBody`, output-irrelevant by `ghostHybridImpl_proj_trans` — the
-ghost-forgetting projection onto the value-free Trans hybrid) is pulled into an independent front
-list `drawList (Prod.fst <$> ids.commit pk sk) n`, with `kn` the run's ghost-key-count law (the
-final ghost cache size, mean `≤ qS/(1-p)` by the banked `ghostChargeK` telescope:
-`ghostHybridImpl_sign_expected_enncard_le` + `geomAttemptSum_le`) and `σ` the all-miss read strategy
-fixed by the manifest output-irrelevance of `ghostBlindImpl` at the read step
-(`probEvent_ghostBlindImpl_read_bad`). The raw per-key guess bound `hGuess` drops the rejection skew
-(the keys are charged by the *raw* `commit` mass, not the rejection-conditioned one). The crux is
-lifting this output-irrelevance through the opaque `simulateQ` fold over `adv.main pk` so the
-per-attempt draws commute to the front independently of the intervening adversary computation —
-the multi-week PMF×PMF joint coupling. Stage A (`OracleComp.probEvent_bind_fire_le_of_gen`) is the
-single-draw deferral primitive this lifts; Stage B (`drawList_readManyList_eq_hiddenReadList`,
-`probEvent_bind_drawList_readManyList_le`) is the n-draw bridge it feeds. -/
+The downstream chain is fully banked and axiom-clean: `ghostBlind_bad_fac_exists` converts
+this to the i.i.d. `hiddenReadList` form via `drawList_readManyList_eq_hiddenReadList`;
+`probEvent_ghostBlindImpl_bad_le` (M3) charges the result via
+`probEvent_ghostBlind_bad_le_of_fac` to the target bound `qS·(qH+1)·ε/(1-p)`;
+`probEvent_ghostHybridImpl_bad_le_ghostBlind` (M1) reduces the eager form to the ghost-blind
+run; and `probEvent_ghostRead_bad_le` assembles the headline.
+
+The obstruction: the aggregate measure-threading through the opaque `simulateQ (adv.main pk)`
+fold. Every per-output (`postStepOutM`) decomposition reintroduces the rejection skew
+(`Pr[reject|mc]/Pr[reject]` from `commit|reject`); no functional of the ghost state absorbs it
+because the skew lives in the output-conditioning, not the state. The sound closure requires a
+non-per-output joint-law / aggregate-threading engine — lifting the ghost-value
+output-irrelevance (`ghostHybridImpl_proj_trans`) through the full fold so that the
+per-rejected-attempt commitment draws commute to the independent front block independently of
+the intervening adversary computation. This is the multi-week PMF×PMF joint coupling work. -/
 theorem ghostBlind_bad_le_bind_drawList
     (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (hQ : ∀ pk, FiatShamir.signHashQueryBound M
@@ -1552,68 +1530,6 @@ theorem probEvent_ghostBlindImpl_bad_le
     hGuess σ kn hmean hfac
 
 omit [SampleableType Stmt] in
-/-- **Measure-level eager↔lazy ghost-read bad dominance** (the genuine deferred-sampling
-residual of #228). At the empty-cache Dirac start, the eager ghost handler's run sets the bad
-flag with probability at most that of the lazy (deferred-sampling) handler's run:
-
-`Pr[bad | (simulateQ (ghostHybridImpl … true) (adv.main pk)).run δ_∅]`
-`  ≤ Pr[bad | (simulateQ lazyGhostHybridImpl (adv.main pk)).run δ_∅]`.
-
-This is the single open obstruction of the chain. It is the **measure-level** coupling
-`avgBadM eager δ_∅ (adv.main pk) ≤ avgBadM lazy δ_∅ (adv.main pk)` (via `avgBadM_pure_state`),
-to be discharged through the banked engine `avgBadM_eager_le_lazy_joint`: the uniform and
-signing steps preserve the coupling invariant `Inv` definitionally (the handlers agree there),
-the pure leaf is the carried-bad comparison, and the read step is the deferred-sampling
-
-`Pr[bad | (simulateQ (ghostHybridImpl … true) (adv.main pk)).run δ_∅]`
-`  ≤ Pr[bad | (simulateQ lazyGhostHybridImpl (adv.main pk)).run δ_∅]`.
-
-This is the single open obstruction of the chain. It is the **measure-level** coupling
-`avgBadM eager δ_∅ (adv.main pk) ≤ avgBadM lazy δ_∅ (adv.main pk)` (via `avgBadM_pure_state`),
-to be discharged through the banked engine `avgBadM_eager_le_lazy_joint`: the uniform and
-signing steps preserve the coupling invariant `Inv` definitionally (the handlers agree there),
-the pure leaf is the carried-bad comparison, and the read step is the deferred-sampling
-read-marginal match — the eager run's *signing-time-sampled* ghost-cache hit marginal
-dominated by the lazy run's *read-time-redrawn* deferred-fire marginal.
-
-The genuinely multi-week content lives in the coupling invariant for the read step: the eager
-ghost cache is populated by **rejection-conditioned** commit draws (`ghostSignBody` writes a
-ghost entry only on a rejected attempt and clears it on accept), so the correct `Inv` carries
-the rejection-conditioned joint law of `(νe, νl)` — `νe`'s committed ghost-cache law as the
-pushforward of `νl`'s pending deferred-draw counts under the per-slot commit law — rather than
-the (false) "pushforward of iid raw draws" invariant. A per-state (`νe = νl`) comparison is
-provably **false** at a committed ghost-hit state (eager fires with mass `1`, lazy sub-unit);
-only the two-measure averaging carried by the per-output post-step measures of
-`avgBadM_eager_le_lazy_joint` closes it. The downstream chain to the target is fully banked:
-the lazy bound is `probEvent_lazyGhostHybridImpl_bad_le`. -/
-lemma probEvent_ghostHybridImpl_bad_le_lazy (pk : Stmt) (sk : Wit) :
-    Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
-        (simulateQ (ghostHybridImpl ids M maxAttempts true pk sk) (adv.main pk)).run
-          ((((∅, ∅), []) :
-            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
-              List M), false)]
-      ≤ Pr[ fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
-        (simulateQ (lazyGhostHybridImpl ids M maxAttempts pk sk) (adv.main pk)).run
-          ((((∅, ∅), []) :
-            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
-              List M), false)] := by
-  classical
-  -- Both sides are `avgBadM … (Dirac δ_∅) (adv.main pk)` (`avgBadM_pure_state`); the engine
-  -- `avgBadM_eager_le_lazy_joint` reduces the dominance to the read-step coupling under the
-  -- rejection-conditioned invariant `Inv` (the multi-week deferred-sampling content).
-  rw [← OracleComp.ProgramLogic.Relational.avgBadM_pure_state
-      (ghostHybridImpl ids M maxAttempts true pk sk)
-      ((((∅, ∅), []) :
-        ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) × List M), false)
-      (adv.main pk),
-    ← OracleComp.ProgramLogic.Relational.avgBadM_pure_state
-      (lazyGhostHybridImpl ids M maxAttempts pk sk)
-      ((((∅, ∅), []) :
-        ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) × List M), false)
-      (adv.main pk)]
-  sorry
-
-omit [SampleableType Stmt] in
 /-- **Ghost-read collision bound** for the Prog → Trans hop: the probability that the
 adversary ever queries the random oracle at a ghost point (a rejected signing attempt's
 programmed point) is at most `qS·(qH+1)·ε/(1-p)`.
@@ -1645,11 +1561,11 @@ lemma probEvent_ghostRead_bad_le
             ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
               List M), false)]
       ≤ ENNReal.ofReal (qS * (qH + 1) * ε / (1 - p_abort)) := by
-  -- SOUND ROUTE (post-counterexample pivot). M1 reduces the eager ghost-read bad mass to the
-  -- ghost-blind run's bad mass (`probEvent_ghostHybridImpl_bad_le_ghostBlind`, identical until
-  -- bad), and the ghost-blind bound `probEvent_ghostBlindImpl_bad_le` (M2 factorization ∘ M3
-  -- charge) closes it at `qS·(qH+1)·ε/(1-p)`. The unsound eager↔lazy detour
-  -- (`probEvent_ghostHybridImpl_bad_le_lazy`) is no longer on the live path.
+  -- M1 reduces the eager ghost-read bad mass to the ghost-blind run's bad mass
+  -- (`probEvent_ghostHybridImpl_bad_le_ghostBlind`, identical until bad), and the ghost-blind
+  -- bound `probEvent_ghostBlindImpl_bad_le` (M2 factorization ∘ M3 charge) closes it at
+  -- `qS·(qH+1)·ε/(1-p)`. The residual `ghostBlind_bad_le_bind_drawList` carries the one
+  -- open obligation; all downstream steps are banked axiom-clean.
   refine (probEvent_ghostHybridImpl_bad_le_ghostBlind ids hr M maxAttempts adv pk sk).trans ?_
   refine le_trans (probEvent_ghostBlindImpl_bad_le ids hr M maxAttempts adv qS qH ε p_abort
     hp₀ hp hε hQ pk sk hGuess hAbort) (le_of_eq ?_)
