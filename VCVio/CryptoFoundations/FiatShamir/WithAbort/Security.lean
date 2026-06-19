@@ -1319,10 +1319,161 @@ lemma probEvent_ghostHybridImpl_bad_le_ghostBlind (pk : Stmt) (sk : Wit) :
               List M), false)] :=
   (probEvent_ghostHybridImpl_bad_eq_ghostBlind ids hr M maxAttempts adv pk sk).le
 
+/-! ### M3: the geometric first-fire charge (assembly)
+
+`probEvent_ghostBlind_bad_le_of_fac` is the **M3** charge: given the **M2** deferred-sampling
+factorization `hfac` — the ghost-blind run's bad marginal exhibited as the value-free
+multi-key hidden-target game `kn >>= hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH+1) σ`
+(rejected commitment values deferred to a front block, read off by the adversary's adaptive
+all-miss strategy `σ`) — the target bound `qS·(qH+1)·ε/(1-p)` follows by the banked
+union-bound + geometric-fold pipeline:
+
+* per-target guessing bound `hGuess` (raw `Pr[= w | commit] ≤ ε`) feeds the multi-key
+  first-fire union bound `OracleComp.probEvent_bind_hiddenReadList_le`, giving
+  `E[n]·((qH+1)·ε)` where `E[n] = ∑' n, Pr[= n | kn]·n` is the expected ghost-key count;
+* the expected-count mean bound `hmean` (`E[n] ≤ qS/(1-p)`, the aggregate of
+  `tsum_probOutput_commit_mul_abort_le` over the `qS` signing queries) folds into the target
+  via `hiddenReadList_fold_le_target`.
+
+The `Pr[reject|mc] ≤ 1` skew-drop is already baked into the raw-`commit` per-target bound
+`hGuess` (the hidden targets are drawn from the *raw* commit law, not the rejection-conditioned
+law), so no skew survives into this charge. The accepting attempt contributes `0` because it
+is not a rejected draw and so is absent from `kn`'s key count. -/
+omit [SampleableType Stmt] in
+theorem probEvent_ghostBlind_bad_le_of_fac
+    (qS qH : ℕ) (ε p_abort : ℝ) (hp : p_abort < 1)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit,
+      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (σ : List Bool → Commit) (kn : ProbComp ℕ)
+    (hmean : ∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+      ≤ ENNReal.ofReal ((qS : ℝ) / (1 - p_abort)))
+    (hfac : Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)]
+      ≤ Pr[(fun b : Bool => b = true) |
+        kn >>= fun n => OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n]) :
+    Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)]
+      ≤ ENNReal.ofReal (qS * ((qH : ℝ) + 1) * ε / (1 - p_abort)) := by
+  refine (OracleComp.probEvent_le_of_eq_bind_hiddenReadList (oa := Prod.fst <$> ids.commit pk sk)
+    (ε := ENNReal.ofReal ε) hGuess (qH + 1) σ kn hfac).trans ?_
+  -- The averaged union bound `E[n]·((qH+1)·ε)` folds into the target via the geometric fold.
+  refine le_trans (le_of_eq ?_)
+    (hiddenReadList_fold_le_target qS qH ε p_abort hp (fun n => Pr[= n | kn]) hmean)
+  -- Reconcile the `((qH+1)·ofReal ε)` factor shapes: `((qH:ℝ≥0∞)+1)` vs `↑(qH+1)`.
+  rw [← ENNReal.tsum_mul_right]
+  refine tsum_congr fun n => ?_
+  rw [mul_assoc]
+  congr 2
+  push_cast
+  ring
+
+/-! ### M2: the deferred-sampling factorization (the single open obligation)
+
+`ghostBlind_bad_fac_exists` is the **M2** content: the ghost-blind run's bad marginal *factors*
+as a value-free multi-key hidden-target game. This is the crux of the sound route and is the
+single open obligation; it is genuinely multi-week-class.
+
+Why it factors (the sound argument). In `ghostBlindImpl` an adversarial random-oracle read at a
+ghost-cache hit answers from the *real* layer via `roStep` — identically to a miss — and only
+*records* the would-hit by flipping the bad flag (`ghostBlindImpl_eq_ghostHybridImpl_false`,
+`ghostBlindImpl_agree_good`). So the ghost-cache *values* are write-only side-data: they never
+influence the run's outputs or continuation. Consequently the run's joint law of (adversary read
+points, reject pattern / loop lengths, real cache) is produced by a value-free run that is
+*independent of the stored commitment values*; those values are drawn `~ Prod.fst <$> ids.commit`
+per *rejected* attempt and gated into the ghost cache by the reject decision.
+
+Formalize as a deferred-sampling factorization: pull every rejected attempt's commitment draw
+into an independent front block `kn >>= fun n => hiddenReadList (Prod.fst <$> ids.commit pk sk)
+(qH+1) σ n`, where `kn` is the value-free run's ghost-key-count law (number of rejected attempts,
+`≤ qS` queries each contributing a geometric number of rejections) and `σ : List Bool → Commit`
+is the adversary's adaptive read strategy fixed by the all-miss history (every pre-first-hit read
+answers from the real layer, so the strategy is value-independent — the manifest output-irrelevance
+of `ghostBlindImpl`). The mean bound `E[n] ≤ qS/(1-p)` is the aggregate of
+`tsum_probOutput_commit_mul_abort_le` over the `qS` signing queries (each rejected attempt is
+reached with geometric probability, summed by `geomAttemptSum_le`).
+
+Banked tools for the eventual discharge: the read-marginal equalities
+`probEvent_ghostHybridImpl_read_bad_single_eq_lazyFire` /
+`probOutput_eagerMultiReadBad_eq_lazyFire_or` (the signing-time→read-time draw commutation, here
+applied to the value-free `ghostBlindImpl` continuation rather than the eager one whose
+continuation depends on the read value), `probOutput_lazyGhostFire_one`, and the value-free
+read-answer agreement (`ghostBlindImpl`'s hit branch is `roStep`, the same `map`-of-`roStep` as a
+miss and as the lazy handler). The crux is lifting the output-irrelevance through the `simulateQ`
+fold so that the per-rejected-attempt draws commute to the front independently of the intervening
+adversary computation.
+
+The eager↔lazy per-state route is unsound (`probEvent_ghostHybridImpl_bad_le_lazy` below); this
+factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost value
+into the run, so the draws are genuinely deferrable. -/
+omit [SampleableType Stmt] in
+theorem ghostBlind_bad_fac_exists
+    (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
+      (S' := Option (Commit × Resp)) (oa := adv.main pk) qS qH)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit,
+      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
+    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
+      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+        ≤ ENNReal.ofReal ((qS : ℝ) / (1 - p_abort))) ∧
+      (Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+            ((((∅, ∅), []) :
+              ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+                List M), false)]
+        ≤ Pr[(fun b : Bool => b = true) |
+          kn >>= fun n =>
+            OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n]) := by
+  sorry
+
+omit [SampleableType Stmt] in
+/-- **Ghost-blind ghost-read bound** (the sound headline target, modulo the M2 factorization).
+The ghost-blind run's adversarial-read bad mass is at most `qS·(qH+1)·ε/(1-p)`. Immediate from
+the M2 factorization `ghostBlind_bad_fac_exists` fed into the M3 charge assembly
+`probEvent_ghostBlind_bad_le_of_fac`. Chaining with M1's
+`probEvent_ghostHybridImpl_bad_le_ghostBlind` discharges the eager form
+(`probEvent_ghostRead_bad_le`) without the unsound eager↔lazy detour. -/
+theorem probEvent_ghostBlindImpl_bad_le
+    (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
+      (S' := Option (Commit × Resp)) (oa := adv.main pk) qS qH)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit,
+      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
+    Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
+          ((((∅, ∅), []) :
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
+              List M), false)]
+      ≤ ENNReal.ofReal (qS * ((qH : ℝ) + 1) * ε / (1 - p_abort)) := by
+  obtain ⟨σ, kn, hmean, hfac⟩ :=
+    ghostBlind_bad_fac_exists ids hr M maxAttempts adv qS qH ε p_abort hp₀ hp hε hQ pk sk
+      hGuess hAbort
+  exact probEvent_ghostBlind_bad_le_of_fac ids hr M maxAttempts adv qS qH ε p_abort hp pk sk
+    hGuess σ kn hmean hfac
+
 omit [SampleableType Stmt] in
 /-- **Measure-level eager↔lazy ghost-read bad dominance** (the genuine deferred-sampling
 residual of #228). At the empty-cache Dirac start, the eager ghost handler's run sets the bad
 flag with probability at most that of the lazy (deferred-sampling) handler's run:
+
+`Pr[bad | (simulateQ (ghostHybridImpl … true) (adv.main pk)).run δ_∅]`
+`  ≤ Pr[bad | (simulateQ lazyGhostHybridImpl (adv.main pk)).run δ_∅]`.
+
+This is the single open obstruction of the chain. It is the **measure-level** coupling
+`avgBadM eager δ_∅ (adv.main pk) ≤ avgBadM lazy δ_∅ (adv.main pk)` (via `avgBadM_pure_state`),
+to be discharged through the banked engine `avgBadM_eager_le_lazy_joint`: the uniform and
+signing steps preserve the coupling invariant `Inv` definitionally (the handlers agree there),
+the pure leaf is the carried-bad comparison, and the read step is the deferred-sampling
 
 `Pr[bad | (simulateQ (ghostHybridImpl … true) (adv.main pk)).run δ_∅]`
 `  ≤ Pr[bad | (simulateQ lazyGhostHybridImpl (adv.main pk)).run δ_∅]`.
@@ -1404,16 +1555,15 @@ lemma probEvent_ghostRead_bad_le
             ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
               List M), false)]
       ≤ ENNReal.ofReal (qS * (qH + 1) * ε / (1 - p_abort)) := by
-  -- MEASURE-LEVEL COUPLING ROUTE. Dominate the eager ghost-read bad mass by the lazy
-  -- (deferred-sampling) bad mass `probEvent_ghostHybridImpl_bad_le_lazy`, then close with the
-  -- proven lazy bound `probEvent_lazyGhostHybridImpl_bad_le` (`≤ qS·(qH+1)·ε/(1-p)`). The
-  -- eager↔lazy dominance is the measure-level coupling `avgBadM eager δ_∅ ≤ avgBadM lazy δ_∅`
-  -- through the engine `avgBadM_eager_le_lazy_joint`; the lazy bound is itself a single-world
-  -- resource-charged accumulator over the deferred-fire charge, where the per-output skew of
-  -- the eager read is absent.
-  refine (probEvent_ghostHybridImpl_bad_le_lazy ids hr M maxAttempts adv pk sk).trans ?_
-  exact probEvent_lazyGhostHybridImpl_bad_le ids hr M maxAttempts adv qS qH ε p_abort
-    hp₀ hp hε hQ pk sk hGuess hAbort
+  -- SOUND ROUTE (post-counterexample pivot). M1 reduces the eager ghost-read bad mass to the
+  -- ghost-blind run's bad mass (`probEvent_ghostHybridImpl_bad_le_ghostBlind`, identical until
+  -- bad), and the ghost-blind bound `probEvent_ghostBlindImpl_bad_le` (M2 factorization ∘ M3
+  -- charge) closes it at `qS·(qH+1)·ε/(1-p)`. The unsound eager↔lazy detour
+  -- (`probEvent_ghostHybridImpl_bad_le_lazy`) is no longer on the live path.
+  refine (probEvent_ghostHybridImpl_bad_le_ghostBlind ids hr M maxAttempts adv pk sk).trans ?_
+  refine le_trans (probEvent_ghostBlindImpl_bad_le ids hr M maxAttempts adv qS qH ε p_abort
+    hp₀ hp hε hQ pk sk hGuess hAbort) (le_of_eq ?_)
+  norm_cast
 
 /-! ## Hop lemmas
 
