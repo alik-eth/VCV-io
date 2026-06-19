@@ -1374,6 +1374,29 @@ theorem probEvent_ghostBlind_bad_le_of_fac
   push_cast
   ring
 
+omit [SampleableType Stmt] in
+/-- **Ghost-blind read-step bad indicator** (an M2 structural building block). Starting from a
+state with the bad flag unset, the ghost-blind handler's adversarial random-oracle read at `mc`
+sets the bad flag with mass exactly `1` if `mc` lies in the ghost-cache domain and `0`
+otherwise. Identical indicator to the eager handler's `probOutput_ghostHybridImpl_read_bad`, but
+here the *answer* is `roStep` on the real layer in **both** branches (hit and miss): the ghost
+value never reaches the output, only the bad flag records the structural hit. This is the
+manifest output-irrelevance of `ghostBlindImpl` at the read step — the per-read membership test
+the M2 factorization reads off as a `hiddenReadList` probe. -/
+lemma probEvent_ghostBlindImpl_read_bad (pk : Stmt) (sk : Wit) (mc : M × Commit)
+    (s : ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) × List M) :
+    Pr[fun z : Chal × GhostState M Commit Chal => z.2.2 = true |
+        (ghostBlindImpl ids M maxAttempts pk sk (.inl (.inr mc))).run (s, false)] =
+      if s.1.2 mc = none then 0 else 1 := by
+  rw [ghostBlindImpl_eq_ghostHybridImpl_false]
+  cases hgh : s.1.2 mc with
+  | some v =>
+      rw [ghostHybridImpl_run_ro_ghost_some ids M maxAttempts false pk sk hgh]
+      simp
+  | none =>
+      rw [ghostHybridImpl_run_ro_ghost_none ids M maxAttempts false pk sk hgh, if_pos rfl]
+      simp [probEvent_eq_zero]
+
 /-! ### M2: the deferred-sampling factorization (the single open obligation)
 
 `ghostBlind_bad_fac_exists` is the **M2** content: the ghost-blind run's bad marginal *factors*
