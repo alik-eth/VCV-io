@@ -336,4 +336,108 @@ theorem probEvent_le_of_eq_bind_hiddenReadList {β : Type} {run : ProbComp β} {
     Pr[bad | run] ≤ (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)) * ((q : ℝ≥0∞) * ε) :=
   hfac.trans (probEvent_bind_hiddenReadList_le hε q σ kn)
 
+/-! ## Single output-irrelevant draw deferral
+
+The lemmas above take the read strategy `σ` (and, in `hiddenReadList`, the key count) as already
+*extracted* data. The genuine new content of the sound route is the **deferral primitive**: lifting
+a single hidden draw out of an arbitrary run when that draw is used *only output-irrelevantly* —
+i.e. it influences neither the run's visible output nor the read points, only the boolean "fire"
+flag computed by membership tests against an adaptive read sequence.
+
+The key observation (cf. `ghostHybridImpl_proj_trans`: the ghost cache is a per-step deterministic
+projection of the single ghost-blind run, and the read answer is independent of the ghost value) is
+that such a draw can be *deferred* past its continuation. Concretely, a run `oa >>= k` whose
+continuation `k w` is built from a `w`-free generator `gen` (producing both the visible output and
+the read strategy) with `w` entering only through `readMany w q σ`, has its fire-marginal equal to
+that of the deferred game `gen >>= fun p => oa >>= fun w => …`. Each generated branch is then a
+`hiddenReadMany` game on a *fixed* strategy `p.2`, charged `q · ε` by
+`probEvent_hiddenReadMany_le`. This converts "front-load the draw across the opaque continuation"
+into a local `bind`-commutation, the tractable route. -/
+
+/-- **Bind-commutation for an output-irrelevant draw.** When the continuation `k w` is `gen >>= fun
+p => pure (p.1, readMany w q p.2)` — a `w`-free generator `gen` producing both the visible output
+`p.1` and the read strategy `p.2`, with the hidden draw `w` entering only through the fixed read
+game `readMany w q p.2` — the fire-marginal of the run `oa >>= k` is unchanged by deferring the
+draw of `w` to *after* `gen`. This is the local deferral step that replaces the abstract
+"front-load across the fold" with a `PMF.bind`-commutation, proved here directly at the
+`probEvent` level via `ENNReal.tsum_comm`. -/
+theorem probEvent_bind_fire_eq_defer {α : Type} (oa : ProbComp R)
+    (q : ℕ) (gen : ProbComp (α × (List Bool → R))) (k : R → ProbComp (α × Bool))
+    (hk : ∀ w : R, k w = gen >>= fun p => pure (p.1, readMany w q p.2)) :
+    Pr[(fun z : α × Bool => z.2 = true) | oa >>= k]
+      = Pr[(fun z : α × Bool => z.2 = true) |
+          gen >>= fun p => oa >>= fun w =>
+            (pure (p.1, readMany w q p.2) : ProbComp (α × Bool))] := by
+  have hL : Pr[(fun z : α × Bool => z.2 = true) | oa >>= k]
+      = ∑' (w : R) (p : α × (List Bool → R)),
+          Pr[= w | oa] * (Pr[= p | gen] *
+            Pr[(fun z : α × Bool => z.2 = true) |
+              (pure (p.1, readMany w q p.2) : ProbComp (α × Bool))]) := by
+    rw [probEvent_bind_eq_tsum]
+    refine tsum_congr fun w => ?_
+    rw [hk w, probEvent_bind_eq_tsum, ENNReal.tsum_mul_left]
+  have hR : Pr[(fun z : α × Bool => z.2 = true) |
+          gen >>= fun p => oa >>= fun w =>
+            (pure (p.1, readMany w q p.2) : ProbComp (α × Bool))]
+      = ∑' (p : α × (List Bool → R)) (w : R),
+          Pr[= p | gen] * (Pr[= w | oa] *
+            Pr[(fun z : α × Bool => z.2 = true) |
+              (pure (p.1, readMany w q p.2) : ProbComp (α × Bool))]) := by
+    rw [probEvent_bind_eq_tsum]
+    refine tsum_congr fun p => ?_
+    rw [probEvent_bind_eq_tsum, ENNReal.tsum_mul_left]
+  rw [hL, hR, ENNReal.tsum_comm]
+  refine tsum_congr fun p => tsum_congr fun w => ?_
+  ring
+
+/-- **Single output-irrelevant draw first-fire bound (structural form).** A run `oa >>= k` that
+draws one hidden value `w ← oa` (each outcome of mass at most `ε`) and feeds it to a continuation
+`k w = gen >>= fun p => pure (p.1, readMany w q p.2)` — a `w`-free generator `gen` producing the
+visible output and the read strategy, with `w` entering *only* through the fixed read game — fires
+with probability at most `q · ε`.
+
+This is the reusable single-draw deferral primitive of the sound route. It formalizes
+"output-irrelevant draw ⇒ the read points are a fixed strategy independent of `w`" by demanding the
+continuation factor through a `w`-free `gen`; the proof defers the draw past `gen`
+(`probEvent_bind_fire_eq_defer`) so each generated branch becomes a `hiddenReadMany` game on a fixed
+strategy `p.2`, charged `q · ε` by `probEvent_hiddenReadMany_le`. Stage B lifts the `n`-interleaved
+draws by induction with `gen` carrying the remaining draws; Stage C instantiates `gen`/`k` for the
+ghost-blind run via the projection `ghostHybridImpl_proj_trans`. -/
+theorem probEvent_bind_fire_le_of_gen {α : Type} {oa : ProbComp R} {ε : ℝ≥0∞}
+    (hε : ∀ r : R, Pr[= r | oa] ≤ ε) (q : ℕ) (gen : ProbComp (α × (List Bool → R)))
+    (k : R → ProbComp (α × Bool))
+    (hk : ∀ w : R, k w = gen >>= fun p => pure (p.1, readMany w q p.2)) :
+    Pr[(fun z : α × Bool => z.2 = true) | oa >>= k] ≤ (q : ℝ≥0∞) * ε := by
+  rw [probEvent_bind_fire_eq_defer oa q gen k hk]
+  refine probEvent_bind_le_of_forall_le fun p _ => ?_
+  have hinner : Pr[(fun z : α × Bool => z.2 = true) |
+        oa >>= fun w => (pure (p.1, readMany w q p.2) : ProbComp (α × Bool))]
+      = Pr[(fun b : Bool => b = true) | hiddenReadMany oa q p.2] := by
+    rw [hiddenReadMany, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+    refine tsum_congr fun w => ?_
+    rw [probEvent_pure, probEvent_pure]
+  rw [hinner]
+  exact probEvent_hiddenReadMany_le hε q p.2
+
+/-- **Single output-irrelevant draw first-fire bound (marginal form).** The convenience special
+case of `probEvent_bind_fire_le_of_gen` for a run `oa >>= k` whose continuation's fire-marginal is,
+for *every* hidden value `w`, exactly that of the fixed read game `readMany w q σ` against a single
+strategy `σ` independent of `w`. Whenever every outcome of `oa` has mass at most `ε`, the run fires
+with probability at most `q · ε`.
+
+Use this form when the deferred read strategy is a *fixed* `σ` (the simplest output-irrelevant
+case); use the structural `probEvent_bind_fire_le_of_gen` when the strategy is itself produced by
+`w`-free randomness. -/
+theorem probEvent_bind_fire_le_of_marginal_eq_readMany {α : Type} {oa : ProbComp R} {ε : ℝ≥0∞}
+    (hε : ∀ r : R, Pr[= r | oa] ≤ ε) (q : ℕ) (σ : List Bool → R) (k : R → ProbComp (α × Bool))
+    (hmarg : ∀ w : R, Pr[(fun z : α × Bool => z.2 = true) | k w]
+      = Pr[(fun b : Bool => b = true) | (pure (readMany w q σ) : ProbComp Bool)]) :
+    Pr[(fun z : α × Bool => z.2 = true) | oa >>= k] ≤ (q : ℝ≥0∞) * ε := by
+  have hcongr : Pr[(fun z : α × Bool => z.2 = true) | oa >>= k]
+      = Pr[(fun b : Bool => b = true) | hiddenReadMany oa q σ] := by
+    rw [hiddenReadMany, probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+    exact tsum_congr fun w => by rw [hmarg w]
+  rw [hcongr]
+  exact probEvent_hiddenReadMany_le hε q σ
+
 end OracleComp
