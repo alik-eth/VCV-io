@@ -4285,6 +4285,110 @@ private lemma tsum_probOutput_commit_mul_count_le {C P : Type} [DecidableEq C]
         rw [ENNReal.tsum_mul_right, mul_comm, tsum_count_eq_length]
 
 omit [SampleableType Stmt] in
+/-- **Value-substitution: the recorded read list is independent of the drawn-list content.** The
+expected multiplicity `E[readlist.count w]` of any fixed commitment `w` in the recorded read list of
+the read-recording run depends only on the start *real cache*, *signed list*, and *read list* — not
+on the start *drawn list* `D` nor the start *bad flag* `b`. This is the structural value-freeness at
+the heart of the ghost-read bound: the recorded reads answer via `roStep` on the real layer and
+never the drawn (rejected) values, so changing the drawn list (or the bad flag, which is write-only
+and never gates control flow) leaves the read-list marginal unchanged.
+
+Formally the expectation is invariant under both drawn-list and bad-flag start values. Proved by
+induction on `oa`:
+* **pure** — the read list is the start one (independent of `D`, `b`).
+* **uniform** — the draw is forwarded and the drawn list / bad flag / read list are untouched; the
+  inductive hypothesis applies to the unchanged-`D` continuation.
+* **read** — the read list grows by exactly `mc.2` (the same regardless of `D`); the bad flag
+  updates to `b || (mc.2 ∈ D)` (which *does* depend on `D`), but since the inductive hypothesis is
+  quantified over *all* bad-flag values, the two `D`-runs still agree.
+* **sign** — the body draws are the same regardless of `D`, `b`; the drawn list grows by the body's
+  rejected commitments and the bad flag is preserved, and the inductive hypothesis (quantified over
+  all `D`) closes the differing-drawn-list continuations. -/
+theorem deferredDrawRead_run_count_dl_invariant {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (w : Commit) (re : (M × Commit →ₒ Chal).QueryCache) (sgn : List M)
+    (rl : List Commit) :
+    ∀ (D₁ : List Commit) (b₁ : Bool) (D₂ : List Commit) (b₂ : Bool),
+      (∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+              ((((re, sgn), D₁), b₁), rl)] * (z.2.2.count w : ℝ≥0∞))
+        = ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+                ((((re, sgn), D₂), b₂), rl)] * (z.2.2.count w : ℝ≥0∞) := by
+  induction oa using OracleComp.inductionOn generalizing re sgn rl with
+  | pure a =>
+      intro D₁ b₁ D₂ b₂
+      simp only [simulateQ_pure, StateT.run_pure, tsum_probOutput_pure_mul]
+  | query_bind t ob ih =>
+      intro D₁ b₁ D₂ b₂
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind, tsum_probOutput_bind_mul]
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: drawn list / bad flag / read list untouched; forward draw.
+        set G : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range
+            (Sum.inl (Sum.inl n))) × DeferredReadState M Commit Chal → ℝ≥0∞ :=
+          fun x => ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              (z.2.2.count w : ℝ≥0∞) with hG
+        have hx₁ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inl n))).run
+              ((((re, sgn), D₁), b₁), rl)) =
+            (fun u => (u, ((((re, sgn), D₁), b₁), rl))) <$>
+              (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+        have hx₂ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inl n))).run
+              ((((re, sgn), D₂), b₂), rl)) =
+            (fun u => (u, ((((re, sgn), D₂), b₂), rl))) <$>
+              (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+        rw [hx₁, hx₂]
+        refine (tsum_probOutput_map_mul' _ _ G).trans
+          ((tsum_congr fun u => ?_).trans (tsum_probOutput_map_mul' _ _ G).symm)
+        exact congrArg _ (ih u re sgn rl D₁ b₁ D₂ b₂)
+      · -- READ: read list grows by `mc.2` (independent of `D`); the bad flag updates to
+        -- `b || (mc.2 ∈ D)` (D-dependent), but `ih` is quantified over *all* bad flags.
+        set G : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range
+            (Sum.inl (Sum.inr mc))) × DeferredReadState M Commit Chal → ℝ≥0∞ :=
+          fun x => ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              (z.2.2.count w : ℝ≥0∞) with hG
+        have hx₁ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inr mc))).run
+              ((((re, sgn), D₁), b₁), rl)) =
+            (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, ((((cu.2, sgn), D₁), b₁ || decide (mc.2 ∈ D₁)), mc.2 :: rl))) <$>
+              roStep M re mc := rfl
+        have hx₂ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inr mc))).run
+              ((((re, sgn), D₂), b₂), rl)) =
+            (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, ((((cu.2, sgn), D₂), b₂ || decide (mc.2 ∈ D₂)), mc.2 :: rl))) <$>
+              roStep M re mc := rfl
+        rw [hx₁, hx₂]
+        refine (tsum_probOutput_map_mul' _ _ G).trans
+          ((tsum_congr fun cu => ?_).trans (tsum_probOutput_map_mul' _ _ G).symm)
+        exact congrArg _
+          (ih cu.1 cu.2 sgn (mc.2 :: rl) D₁ (b₁ || decide (mc.2 ∈ D₁)) D₂
+            (b₂ || decide (mc.2 ∈ D₂)))
+      · -- SIGN: the body draws are `D`-independent; drawn list grows by the body's rejected
+        -- commitments and the bad flag is preserved; `ih` (over all `D`) closes the continuations.
+        set G : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range
+            (Sum.inr msg)) × DeferredReadState M Commit Chal → ℝ≥0∞ :=
+          fun x => ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              (z.2.2.count w : ℝ≥0∞) with hG
+        have hx₁ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run
+              ((((re, sgn), D₁), b₁), rl)) =
+            (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+              (alc.1.1, ((((alc.2, msg :: sgn), D₁ ++ alc.1.2), b₁), rl))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run re := rfl
+        have hx₂ : ((deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run
+              ((((re, sgn), D₂), b₂), rl)) =
+            (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+              (alc.1.1, ((((alc.2, msg :: sgn), D₂ ++ alc.1.2), b₂), rl))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run re := rfl
+        rw [hx₁, hx₂]
+        refine (tsum_probOutput_map_mul' _ _ G).trans
+          ((tsum_congr fun alc => ?_).trans (tsum_probOutput_map_mul' _ _ G).symm)
+        exact congrArg _
+          (ih alc.1.1 alc.2 (msg :: sgn) rl (D₁ ++ alc.1.2) b₁ (D₂ ++ alc.1.2) b₂)
+
+omit [SampleableType Stmt] in
 /-- **The sign-step value-free charge (the isolated remaining core of the #228 ghost-read bound).**
 This is the single-query step of the inline-run induction
 `readRecord_expected_pairs_nontape_general` at a *signing* query `Sum.inr msg`. The signing body
