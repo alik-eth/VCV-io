@@ -3761,6 +3761,44 @@ theorem deferredDrawRead_run_signed_prefix {γ : Type} (pk : Stmt) (sk : Wit)
         obtain ⟨alc, _, rfl⟩ := hxs; simp
 
 omit [SampleableType Stmt] in
+/-- **The drawn-list of the read-recording run grows.** From any start state the recorded drawn
+(rejected-commit) list only ever gets longer: uniform and read steps leave it untouched, signing
+steps append the body's rejected draws. So the start length is a lower bound on every reachable
+final length. -/
+theorem deferredDrawRead_run_drawn_prefix {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s : DeferredReadState M Commit Chal)
+      (z : γ × DeferredReadState M Commit Chal),
+      z ∈ support ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s) →
+      s.1.1.2.length ≤ z.2.1.1.2.length := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact le_rfl
+  | query_bind t ob ih =>
+      intro s z hz
+      rw [simulateQ_query_bind, StateT.run_bind, mem_support_bind_iff] at hz
+      obtain ⟨x, hx, hzx⟩ := hz
+      refine le_trans ?_ (ih x.1 x.2 z hzx)
+      rcases t with (n | mc) | msg
+      · have hxs : x ∈ support ((fun u => (u, s)) <$>
+            (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hx
+        rw [support_map] at hxs
+        obtain ⟨u, _, rfl⟩ := hxs; exact le_rfl
+      · have hxs : x ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+            (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                mc.2 :: s.2))) <$> roStep M s.1.1.1.1 mc) := hx
+        rw [support_map] at hxs
+        obtain ⟨cu, _, rfl⟩ := hxs; exact le_rfl
+      · have hxs : x ∈ support ((fun alc : (Option (Commit × Resp) × List Commit) ×
+            (M × Commit →ₒ Chal).QueryCache =>
+            (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1) := hx
+        rw [support_map] at hxs
+        obtain ⟨alc, _, rfl⟩ := hxs; simp
+
+omit [SampleableType Stmt] in
 /-- **Read-recording attempt-count mean.** The constructed attempt count
 `(drawnlist.length) + (signedlist.length - l.length)` (= #rejects + #signing-queries, the count that
 soundly dominates the consumed-attempt positions) of the read-recording run from the empty-draw
@@ -5114,7 +5152,119 @@ theorem nontape_signStep_charge {γ : Type}
     rw [hL₀]
     exact ghostSignDrawBody_continuation_charge ids M maxAttempts qH ε hε pk sk hGuess msg ob
       (fun u => hob u) (msg :: s.1.1.1.2) s.2 s.1.2 maxAttempts s.1.1.1.1 s.1.1.2
-  sorry
+  -- The continuation runs never fail, so their mass is `1`.
+  have hcontMass : ∀ (alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache),
+      (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+            ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)]) = 1 := fun alc =>
+    tsum_probOutput_eq_one' (deferredDrawRead_run_neverFail ids M maxAttempts pk sk (ob alc.1.1) _)
+  -- Per `alc`: split the pre-existing drawn count and rewrite the slack via the prefix lemmas.
+  -- The slack inner sum decomposes as the post-body inductive slack plus the body's `#attempts + 1`.
+  have hslack : ∀ (alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache),
+      (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+            ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+          (((z.2.1.1.2.length - s.1.1.2.length)
+            + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞))
+      = (∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+              ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+            (((z.2.1.1.2.length - (s.1.1.2 ++ alc.1.2).length)
+              + (z.2.1.1.1.2.length - (msg :: s.1.1.1.2).length) : ℕ) : ℝ≥0∞))
+        + ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞) := by
+    intro alc
+    rw [show ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞)
+        = (∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+                ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)]) *
+            ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞) from by rw [hcontMass alc, one_mul]]
+    rw [← ENNReal.tsum_mul_right, ← ENNReal.tsum_add]
+    refine tsum_congr fun z => ?_
+    by_cases hz : z ∈ support ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+        (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))
+    · have hdr := deferredDrawRead_run_drawn_prefix ids M maxAttempts pk sk (ob alc.1.1)
+        ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2) z hz
+      have hsg := deferredDrawRead_run_signed_prefix ids M maxAttempts pk sk (ob alc.1.1)
+        ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2) z hz
+      simp only at hdr hsg
+      rw [← mul_add]
+      congr 1
+      rw [← Nat.cast_add]
+      congr 1
+      simp only [List.length_append, List.length_cons] at hdr hsg ⊢
+      omega
+    · rw [probOutput_eq_zero_of_not_mem_support hz, zero_mul, zero_mul, zero_mul, add_zero]
+  -- Per `alc`: the inductive hypothesis at the post-body state, with the pre-existing drawn count
+  -- split into the start drawn count and the body coincidence (the bilinear count swap).
+  have h_alc : ∀ (alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache),
+      (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+            ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      ≤ (∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+              ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+            ((z.2.2.map (fun rc => s.1.1.2.count rc)).sum : ℝ≥0∞))
+        + (∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+                ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+              ((alc.1.2.map (fun w => z.2.2.count w)).sum : ℝ≥0∞))
+          + L₀ * ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+                  ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+                (((z.2.1.1.2.length - (s.1.1.2 ++ alc.1.2).length)
+                  + (z.2.1.1.1.2.length - (msg :: s.1.1.1.2).length) : ℕ) : ℝ≥0∞) := by
+    intro alc
+    have hih := ih alc.1.1 ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2) (hob alc.1.1)
+    -- The post-state read list is `s.2`, so the read-length factor is `L₀`.
+    simp only [hL₀.symm] at hih ⊢
+    refine le_trans hih (le_of_eq ?_)
+    congr 1
+    -- Pre-existing drawn count `(s.drawn ++ alc.1.2).count` splits into `s.drawn.count` plus the
+    -- body coincidence (via the bilinear count swap).
+    rw [← ENNReal.tsum_add]
+    refine tsum_congr fun z => ?_
+    rw [← mul_add]
+    congr 1
+    rw [← Nat.cast_add]
+    congr 1
+    rw [show (z.2.2.map (fun rc => (s.1.1.2 ++ alc.1.2).count rc))
+        = z.2.2.map (fun rc => s.1.1.2.count rc + alc.1.2.count rc) from
+      List.map_congr_left fun rc _ => by rw [List.count_append]]
+    rw [List.sum_map_add, sum_map_count_comm alc.1.2 z.2.2]
+  -- Assemble: sum the per-`alc` bound, split into pre-existing + body-coincidence + ih-slack, then
+  -- recombine the slack via `hslack` (the `#attempts + 1` gap) and the coincidence via `hbody`.
+  refine le_trans (ENNReal.tsum_le_tsum fun alc => mul_le_mul_left' (h_alc alc) _) ?_
+  simp_rw [mul_add]
+  rw [ENNReal.tsum_add, ENNReal.tsum_add, add_assoc]
+  refine add_le_add le_rfl ?_
+  -- The body coincidence plus the post-body inductive slack equal `L₀ · (the full RHS slack)`.
+  have hslackSum :
+      L₀ * ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞)
+        + (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+              (L₀ * ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                    (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2),
+                      s.2)] *
+                  (((z.2.1.1.2.length - (s.1.1.2 ++ alc.1.2).length)
+                    + (z.2.1.1.1.2.length - (msg :: s.1.1.1.2).length) : ℕ) : ℝ≥0∞)))
+      = L₀ * ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                  (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2),
+                    s.2)] *
+                (((z.2.1.1.2.length - s.1.1.2.length)
+                  + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞) := by
+    rw [← ENNReal.tsum_mul_left, ← ENNReal.tsum_mul_left, ← ENNReal.tsum_add]
+    refine tsum_congr fun alc => ?_
+    rw [hslack alc, mul_add, add_comm]
+    ring
+  rw [← hslackSum]
+  exact add_le_add hbody le_rfl
 
 omit [SampleableType Stmt] in
 /-- **The general per-pair charge over the inline read-recording run (induction carrier).** For an
