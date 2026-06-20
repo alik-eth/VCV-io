@@ -1826,13 +1826,19 @@ theorem ghostBlind_bad_le_deferredDraw {γ : Type}
 
 omit [SampleableType Stmt] in
 /-- **Piece B: the deferred → drawList deferral commute (the precise remaining obligation).**
-The deferred-draw run's bad marginal — starting with drawn prefix `ws₀` — is at most the
-front-loaded i.i.d. `drawList` game with the adaptive all-miss read strategy `σ` and a count law
-`kn` bounding the run's total-draw distribution.
+The deferred-draw run's bad marginal — starting with drawn prefix `ws₀` — is at most a front-loaded
+i.i.d. `drawList` game with *some* adaptive all-miss read strategy `σ` and *some* count law `kn`
+whose mean is `≤ qSrem/(1-p)`. The strategy `σ` and the count law `kn` are **constructed from the
+run itself** (they are existentially bound here, exactly as in the headline residual): `kn` is the
+deferred run's total-draw count law and `σ` is the all-miss read strategy. Stating `kn`/`σ`
+existentially — rather than as inputs with only a mean bound — is what makes this statement *sound*:
+for an arbitrary `kn` with only a mean bound the inequality is false (e.g. `kn = δ₀`); the bound
+holds only for the `kn` that genuinely dominates the run's draw count. The query bound `hQ` (≤ qSrem
+signing queries on `oa`) is what makes the constructed `kn`'s mean `≤ qSrem/(1-p)` sound.
 
-This is the single genuinely-open probabilistic content of the linchpin. Both sides are now
-concrete and value-free (the eager ghost-value irrelevance is already discharged into Piece A, which
-reduced the eager run to this deferred run): the deferred handler draws one i.i.d. raw
+This is the single genuinely-open probabilistic content of the linchpin. Both sides are now concrete
+and value-free (the eager ghost-value irrelevance is already discharged into Piece A, which reduced
+the eager run to this deferred run): the deferred handler draws one i.i.d. raw
 `Prod.fst <$> ids.commit pk sk` commitment per signing attempt and only ever *records* the growing
 list, while a read fires the bad flag iff its commitment is already in the drawn list. The remaining
 work is the *deferral commute*: pull the run's interleaved per-attempt draws out to the independent
@@ -1842,71 +1848,75 @@ front block `drawList … n`, leaving the pre-first-hit reads as the fixed all-m
 single-draw deferral atom is `OracleComp.probEvent_bind_fire_eq_defer` (value-freeness from
 `blindStepProj_map_ghostBlindImpl_indep`, packaged in `ghostBlind_singleDraw_fire_le`); lifting it
 across the opaque adversary fold so all attempts' draws commute to the front is the joint coupling.
-
-The count law `kn` must dominate the deferred run's total-draw count; at the headline its mean is
-`≤ qSrem/(1-p)` via `geomAttemptSum_le` / `tsum_probOutput_commit_mul_abort_le`. -/
+The mean `≤ qSrem/(1-p)` is `geomAttemptSum_le` / `tsum_probOutput_commit_mul_abort_le`. -/
 theorem deferredDraw_bad_le_drawList_fold {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
     (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (σ : List Bool → Commit)
     (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M)
-    (ws₀ : List Commit) (kn : ProbComp ℕ)
     (qSrem : ℕ)
-    (hmean : ∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) :
-    Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
-        (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
-      ≤ Pr[(fun b : Bool => b = true) |
-          kn >>= fun n =>
-            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-              pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M)
+    (ws₀ : List Commit) :
+    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
+      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+        ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) ∧
+      Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
+          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
+        ≤ Pr[(fun b : Bool => b = true) |
+            kn >>= fun n =>
+              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
   -- The deferral commute: front-load the deferred run's per-attempt draws into the `drawList`
   -- block, leaving the pre-first-hit reads as the fixed strategy `σ`. Multi-week joint coupling.
+  -- `kn` = the run's total-draw count law; `σ` = the all-miss read strategy.
   sorry
 
-/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral (pinned target)
+/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral
 
-`ghostBlind_bad_le_drawList_fold` is the pinned, well-typed target, generalized so the induction on
-the adversary computation `oa` goes through. The residual `ghostBlind_bad_le_bind_drawList` is its
-`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance. It chains Piece A
-(`ghostBlind_bad_le_deferredDraw`, proven) and Piece B
+`ghostBlind_bad_le_drawList_fold` is the linchpin in its **sound existential form**: it exhibits the
+eager ghost-blind run's bad marginal as a front-loaded `drawList` game for *some* `σ`/`kn` with
+mean `≤ qSrem/(1-p)`, generalized over the start `(re, gh, l)` and drawn prefix `ws₀`. The headline
+residual `ghostBlind_bad_le_bind_drawList` is its `gh = ∅`, `ws₀ = []`, `oa = adv.main pk`,
+`qSrem = qS` instance. It chains Piece A (`ghostBlind_bad_le_deferredDraw`, proven) and Piece B
 (`deferredDraw_bad_le_drawList_fold`, the precise remaining obligation).
 
-**Mean side.** `hmean` bounds the future-draw count expectation by `qSrem/(1-p)`; at the headline
-this is the aggregate of `tsum_probOutput_commit_mul_abort_le` over the `qSrem` remaining signing
-queries, folded by `geomAttemptSum_le` (each rejected attempt reached with geometric prob). -/
+`σ`/`kn` are existential — not free inputs with only a mean bound — because the bound is only sound
+for the `kn` that dominates the run's draw count (an arbitrary mean-bounded `kn` is insufficient;
+the prior pinned ∀-`kn` sketch was unsound on that point). -/
 omit [SampleableType Stmt] in
 theorem ghostBlind_bad_le_drawList_fold {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
     (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (σ : List Bool → Commit)
     (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (re gh : (M × Commit →ₒ Chal).QueryCache) (l : List M)
-    (ws₀ : List Commit) (kn : ProbComp ℕ)
-    (hPrefix : ∀ mc : M × Commit, gh mc ≠ none → mc.2 ∈ ws₀)
     (qSrem : ℕ)
-    (hmean : ∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) :
-    Pr[fun z : γ × GhostState M Commit Chal => z.2.2 = true |
-        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run (((re, gh), l), false)]
-      ≤ Pr[(fun b : Bool => b = true) |
-          kn >>= fun n =>
-            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-              pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Chain Piece A (proven) and Piece B (isolated): the eager start state
-  -- `(((re, gh), l), false)` couples to the deferred start `(((re, l), ws₀), false)` because
-  -- `hPrefix` is exactly the domain-coverage component of `deferredCoupleInv` (real cache and
-  -- signed list agree by `rfl`, the bad flags are both `false`).
-  refine le_trans
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re gh : (M × Commit →ₒ Chal).QueryCache) (l : List M)
+    (ws₀ : List Commit)
+    (hPrefix : ∀ mc : M × Commit, gh mc ≠ none → mc.2 ∈ ws₀) :
+    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
+      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+        ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) ∧
+      Pr[fun z : γ × GhostState M Commit Chal => z.2.2 = true |
+          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run (((re, gh), l), false)]
+        ≤ Pr[(fun b : Bool => b = true) |
+            kn >>= fun n =>
+              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+  -- Chain Piece A (proven) and Piece B (isolated). The eager start `(((re, gh), l), false)`
+  -- couples to the deferred start `(((re, l), ws₀), false)` because `hPrefix` is exactly the
+  -- domain-coverage component of `deferredCoupleInv` (real cache and signed list agree by `rfl`,
+  -- both bad flags `false`). Piece B supplies the existential `σ`/`kn`; Piece A's bound for the
+  -- deferred run composes by transitivity.
+  obtain ⟨σ, kn, hmean, hPieceB⟩ :=
+    deferredDraw_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+      hGuess hAbort oa qSrem hQ re l ws₀
+  exact ⟨σ, kn, hmean, le_trans
     (ghostBlind_bad_le_deferredDraw ids M maxAttempts pk sk oa (((re, gh), l), false)
-      (((re, l), ws₀), false) ⟨rfl, rfl, hPrefix, by simp⟩) ?_
-  exact deferredDraw_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-    hGuess hAbort σ oa re l ws₀ kn qSrem hmean
+      (((re, l), ws₀), false) ⟨rfl, rfl, hPrefix, by simp⟩) hPieceB⟩
 
 omit [SampleableType Stmt] in
 /-- **The sole remaining residual of the sound #228 ghost-read bound** (M2, explicit-list form).
@@ -1961,7 +1971,14 @@ theorem ghostBlind_bad_le_bind_drawList
           kn >>= fun n =>
             OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
               pure (OracleComp.readManyList ws (qH + 1) σ)]) := by
-  sorry
+  -- The `gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance of the sound linchpin
+  -- `ghostBlind_bad_le_drawList_fold`; the empty prefix makes `readManyList ([] ++ ws) =
+  -- readManyList ws`.
+  obtain ⟨σ, kn, hmean, hbound⟩ :=
+    ghostBlind_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk hGuess hAbort
+      (adv.main pk) qS (hQ pk) ∅ ∅ [] [] (fun mc h => absurd rfl h)
+  refine ⟨σ, kn, hmean, hbound.trans_eq ?_⟩
+  simp only [List.nil_append]
 
 omit [SampleableType Stmt] in
 theorem ghostBlind_bad_fac_exists
