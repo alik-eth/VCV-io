@@ -5100,6 +5100,20 @@ theorem nontape_signStep_charge {γ : Type}
   -- Both sides are now body averages; bound the LHS per `alc` by the inductive hypothesis at the
   -- post-body state, splitting the pre-existing drawn count and applying induction (1) to the body
   -- coincidence and the slack length identities.
+  -- The body-coincidence charge `E_alc[E_z[Σ_{rc∈readlist} alc.1.2.count rc]]` is bounded by
+  -- induction (1) (after the bilinear count swap `sum_map_count_comm`).
+  have hbody : (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+      Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+        ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+              ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)] *
+            ((alc.1.2.map (fun w => z.2.2.count w)).sum : ℝ≥0∞))
+      ≤ L₀ * ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞) := by
+    rw [hL₀]
+    exact ghostSignDrawBody_continuation_charge ids M maxAttempts qH ε hε pk sk hGuess msg ob
+      (fun u => hob u) (msg :: s.1.1.1.2) s.2 s.1.2 maxAttempts s.1.1.1.1 s.1.1.2
   sorry
 
 omit [SampleableType Stmt] in
