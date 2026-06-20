@@ -3064,6 +3064,317 @@ theorem readRecord_pred_le_expected_coincidences {γ : Type}
   have h1 : (1 : ℕ) ≤ z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) := hpos
   exact_mod_cast h1
 
+/-! ### First-moment reduction scaffolding for the coincidence-count bound
+
+The numeric residual `readRecord_expected_coincidences_le` reduces, by elementary arithmetic, to a
+single value-free cross-term atom. The reduction chain:
+
+* the coincidence count is dominated by the pair count
+  `Σ_{rc ∈ readlist} drawnlist.count rc` (`List.countP_le_sum_count_mem`);
+* the *number of recorded reads* is bounded **deterministically** by the read-query budget `qH`
+  (`deferredDrawReadImpl_run_readlist_length_le`), so the read-recording run's readlist length is at
+  most `s.readlist.length + qH`;
+* the expected drawn-list length of the read-recording run is at most
+  `s.drawnlist.length + qSrem · (1/(1-p))` (`deferredDrawRead_run_expected_drawnlist_length_le`, the
+  read-recording counterpart of `deferredDraw_run_expected_length_le`);
+* the genuine content is then the **value-free per-pair atom** `readRecord_expected_pairs_le`:
+  the expected pair count is at most `ε` times the expected `readlist.length · drawnlist.length`,
+  because each recorded drawn commit is a fresh raw `Prod.fst <$> ids.commit` draw (mass `≤ ε`) and
+  is independent of the value-free recorded read-commit list.
+
+`readRecord_expected_coincidences_le` chains these with the deterministic read bound
+(`readlist.length ≤ qH+1` from the empty start) and the final-arithmetic conversion. -/
+
+/-- Domination of the membership count by the per-element coincidence count: the number of recorded
+read-commits lying in the drawn list is at most `Σ_{rc ∈ readlist} drawnlist.count rc`, the total
+number of coinciding `(read, draw)` pairs. -/
+private lemma countP_mem_le_sum_count {α : Type} [DecidableEq α] (l d : List α) :
+    l.countP (fun rc => decide (rc ∈ d)) ≤ (l.map (fun rc => d.count rc)).sum := by
+  induction l with
+  | nil => simp
+  | cons a t ih =>
+      rw [List.countP_cons, List.map_cons, List.sum_cons]
+      by_cases h : a ∈ d
+      · simp only [decide_eq_true_eq, h, if_true]
+        have : 1 ≤ d.count a := List.one_le_count_iff.mpr h
+        omega
+      · simp only [decide_eq_true_eq, h, if_false]
+        omega
+
+omit [SampleableType Stmt] in
+/-- **Deterministic readlist-length bound.** Every reachable final state of the read-recording run
+records at most `qH` new read-commits, where `qH` bounds the random-oracle (read) queries `oa` makes
+(the `(· matches .inl (.inr _))` component of `signHashQueryBound`): each read step prepends exactly
+one commitment to the recorded read-commit list and uniform/signing steps leave it untouched. Hence
+`readlist.length ≤ s.readlist.length + qH` on the whole support — a *deterministic* (support-wide)
+bound, used to dominate the random `readlist.length` factor of the pair count by the constant
+`qH`. -/
+theorem deferredDrawReadImpl_run_readlist_length_le {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (qH : ℕ), oa.IsQueryBoundP (· matches Sum.inl (Sum.inr _)) qH →
+      ∀ (s : DeferredReadState M Commit Chal)
+        (z : γ × DeferredReadState M Commit Chal),
+        z ∈ support ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s) →
+        z.2.2.length ≤ s.2.length + qH := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qH _ s z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; simp
+  | query_bind t ob ih =>
+      intro qH hQ s z hz
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rw [simulateQ_query_bind, StateT.run_bind, mem_support_bind_iff] at hz
+      obtain ⟨x, hx, hzx⟩ := hz
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: readlist untouched; budget unchanged.
+        have hxs : x ∈ support ((fun u => (u, s)) <$>
+            (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hx
+        rw [support_map] at hxs
+        obtain ⟨u, _, rfl⟩ := hxs
+        have hih := ih u qH (by simpa using hQ2 u) s z hzx
+        simpa using hih
+      · -- READ: readlist grows by one; budget decrements by one (`0 < qH`).
+        have hpos : 0 < qH := by
+          rcases hQ1 with hno | hpos
+          · exact absurd rfl hno
+          · exact hpos
+        have hxs : x ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+            (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                mc.2 :: s.2))) <$>
+              roStep M s.1.1.1.1 mc) := hx
+        rw [support_map] at hxs
+        obtain ⟨cu, _, rfl⟩ := hxs
+        have hih := ih cu.1 (qH - 1) (by simpa using hQ2 cu.1)
+          ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)), mc.2 :: s.2) z hzx
+        simp only [List.length_cons] at hih
+        omega
+      · -- SIGN: readlist untouched; budget unchanged.
+        have hxs : x ∈ support ((fun alc : (Option (Commit × Resp) × List Commit) ×
+            (M × Commit →ₒ Chal).QueryCache =>
+            (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1) := hx
+        rw [support_map] at hxs
+        obtain ⟨alc, _, rfl⟩ := hxs
+        have hih := ih alc.1.1 qH (by simpa using hQ2 alc.1.1)
+          ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2) z hzx
+        simpa using hih
+
+omit [SampleableType Stmt] in
+/-- **Per-step expected drawn-list length growth of the read-recording handler.** One step of
+`deferredDrawReadImpl` grows the expected drawn-list length by at most `1/(1-p)` on a signing query
+and by `0` on uniform / random-oracle-read queries (which leave the drawn list `s.1.1.2`
+untouched). Identical to `deferredDrawImpl_step_expected_length_le` on the underlying deferred
+state; the extra read-commit list is irrelevant to the drawn-list length. -/
+lemma deferredDrawReadImpl_step_expected_drawnlist_length_le (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (s : DeferredReadState M Commit Chal) :
+    (∑' z : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t) ×
+        DeferredReadState M Commit Chal,
+      Pr[= z | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+        (z.2.1.1.2.length : ℝ≥0∞))
+      ≤ (s.1.1.2.length : ℝ≥0∞) +
+          (if (t matches Sum.inr _) then ENNReal.ofReal (1 / (1 - p_abort)) else 0) := by
+  classical
+  rcases t with (n | mc) | msg
+  · -- UNIFORM: state untouched, drawn list `s.1.1.2` preserved.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ (by simp [deferredDrawReadImpl]))
+    intro z hz
+    have hzs : z ∈ support ((fun u => (u, s)) <$>
+        (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hz
+    rw [support_map] at hzs
+    obtain ⟨u, _, rfl⟩ := hzs; rfl
+  · -- READ: writes only the base cache / bad flag / readlist; drawn list `s.1.1.2` preserved.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ ?_)
+    · intro z hz
+      have hzs : z ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+              mc.2 :: s.2))) <$>
+            roStep M s.1.1.1.1 mc) := hz
+      rw [support_map] at hzs
+      obtain ⟨cu, _, rfl⟩ := hzs; rfl
+    · simp only [deferredDrawReadImpl, StateT.run_mk]
+      rcases hg : s.1.1.1.1 mc with _ | v <;> simp [roStep, hg]
+  · -- SIGN: drawn list becomes `s.1.1.2 ++ alc.1.2`; expected new length ≤ 1/(1-p).
+    rw [if_pos (by simp)]
+    have hrun : (deferredDrawReadImpl ids M maxAttempts pk sk (.inr msg)).run s =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1 := rfl
+    rw [hrun]
+    refine le_of_eq_of_le (tsum_probOutput_map_mul'
+      ((ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1)
+      (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+        (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)))
+      (fun z => (z.2.1.1.2.length : ℝ≥0∞))) ?_
+    calc _
+        = ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+              ((s.1.1.2.length : ℝ≥0∞) + (alc.1.2.length : ℝ≥0∞)) := by
+          refine tsum_congr fun alc => ?_
+          simp only [List.length_append]
+          push_cast
+          ring
+      _ = (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+              (s.1.1.2.length : ℝ≥0∞)) +
+          ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+              (alc.1.2.length : ℝ≥0∞) := by
+          rw [← ENNReal.tsum_add]; exact tsum_congr fun alc => by rw [mul_add]
+      _ ≤ (s.1.1.2.length : ℝ≥0∞) + ENNReal.ofReal (1 / (1 - p_abort)) := by
+          refine add_le_add ?_ ?_
+          · rw [ENNReal.tsum_mul_right, tsum_probOutput_eq_one' (by simp), one_mul]
+          · exact le_trans (tsum_probOutput_run_ghostSignDrawBody_mul_length_le ids M pk sk msg
+              hAbort maxAttempts s.1.1.1.1) (geomAttemptSum_le maxAttempts hp₀ hp)
+
+omit [SampleableType Stmt] in
+/-- **Run-level expected drawn-list length of the read-recording run.** By induction on `oa`, the
+expected final drawn-list length of the read-recording run from a start state `s` is at most
+`s.drawnlist.length + qSrem · (1/(1-p))`, where `qSrem` bounds the number of signing queries. The
+read-recording counterpart of `deferredDraw_run_expected_length_le`: the drawn list evolves
+identically (the recorded read-commit list never affects it), so the per-step charge
+`deferredDrawReadImpl_step_expected_drawnlist_length_le` telescopes against the signing-query budget
+exactly as before. -/
+theorem deferredDrawRead_run_expected_drawnlist_length_le {γ : Type} (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (qSrem : ℕ), oa.IsQueryBoundP (· matches Sum.inr _) qSrem →
+      ∀ (s : DeferredReadState M Commit Chal),
+        (∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s] *
+            (z.2.1.1.2.length : ℝ≥0∞))
+          ≤ (s.1.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+  classical
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qSrem _ s
+      simp only [simulateQ_pure, StateT.run_pure, tsum_probOutput_pure_mul]
+      exact le_self_add
+  | query_bind t ob ih =>
+      intro qSrem hQ s
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rw [simulateQ_query_bind, StateT.run_bind, tsum_probOutput_bind_mul]
+      set c : ℝ≥0∞ := ENNReal.ofReal (1 / (1 - p_abort)) with hc
+      have hmass : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+            (M →ₒ Option (Commit × Resp))).Range t) × DeferredReadState M Commit Chal,
+          Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s]) = 1 :=
+        tsum_probOutput_eq_one' (by
+          rcases t with (n | mc) | msg
+          · simp [deferredDrawReadImpl]
+          · simp only [deferredDrawReadImpl, StateT.run_mk]
+            rcases hg : s.1.1.1.1 mc with _ | v <;> simp [roStep, hg]
+          · simp [deferredDrawReadImpl])
+      have hfold : ∀ (b : ℕ) (extra : ℝ≥0∞),
+          (∀ x : (((unifSpec + (M × Commit →ₒ Chal)) +
+              (M →ₒ Option (Commit × Resp))).Range t) × DeferredReadState M Commit Chal,
+            (∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                  (ob x.1)).run x.2] * (z.2.1.1.2.length : ℝ≥0∞))
+              ≤ (x.2.1.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c) →
+          (∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+            (x.2.1.1.2.length : ℝ≥0∞)) ≤ (s.1.1.2.length : ℝ≥0∞) + extra →
+          extra + (b : ℝ≥0∞) * c ≤ (qSrem : ℝ≥0∞) * c →
+          (∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+              ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                    (ob x.1)).run x.2] * (z.2.1.1.2.length : ℝ≥0∞))
+            ≤ (s.1.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by
+        intro b extra hcont hstep hbudget
+        calc (∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                ∑' z : γ × DeferredReadState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                      (ob x.1)).run x.2] * (z.2.1.1.2.length : ℝ≥0∞))
+            ≤ ∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                ((x.2.1.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c) :=
+              ENNReal.tsum_le_tsum fun x => by gcongr; exact hcont x
+          _ = (∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                  (x.2.1.1.2.length : ℝ≥0∞)) + (b : ℝ≥0∞) * c := by
+              rw [show (∑' x, Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                    ((x.2.1.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c))
+                  = ∑' x, (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                      (x.2.1.1.2.length : ℝ≥0∞) +
+                    Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
+                      ((b : ℝ≥0∞) * c)) from tsum_congr fun x => by rw [mul_add]]
+              rw [ENNReal.tsum_add, ENNReal.tsum_mul_right, hmass, one_mul]
+          _ ≤ ((s.1.1.2.length : ℝ≥0∞) + extra) + (b : ℝ≥0∞) * c := by gcongr
+          _ ≤ (s.1.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by rw [add_assoc]; gcongr
+      rcases t with (n | mc) | msg
+      · refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawReadImpl_step_expected_drawnlist_length_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inl n)) s
+      · refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawReadImpl_step_expected_drawnlist_length_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inr mc)) s
+      · have hpos : 0 < qSrem := by
+          rcases hQ1 with hno | hpos
+          · exact absurd (by simp) hno
+          · exact hpos
+        refine hfold (qSrem - 1) c (fun x => ih x.1 (qSrem - 1) (by simpa using hQ2 x.1) x.2) ?_ ?_
+        · have hstep := deferredDrawReadImpl_step_expected_drawnlist_length_le ids M maxAttempts
+            pk sk hp₀ hp hAbort (.inr msg) s
+          rwa [if_pos (by rfl), ← hc] at hstep
+        · rw [add_comm, ← add_one_mul,
+            show ((qSrem - 1 : ℕ) : ℝ≥0∞) + 1 = (qSrem : ℝ≥0∞) by
+              have : qSrem - 1 + 1 = qSrem := by omega
+              rw [← this]; push_cast; ring]
+
+omit [SampleableType Stmt] in
+/-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
+pair count — the expected number of coinciding `(recorded read-commit, recorded drawn commit)`
+pairs, `E[Σ_{rc ∈ readlist} drawnlist.count rc]` — is at most `ε` times the expected
+`readlist.length · drawnlist.length`.
+
+This is the genuine probabilistic content, isolated to its cleanest form. It is the per-pair
+value-free independence: for every `(read slot, draw slot)` pair, `E[1[rc = d]] ≤ ε`, because
+* each recorded drawn commit `d` is a fresh i.i.d. raw `Prod.fst <$> ids.commit pk sk` draw of mass
+  `≤ ε` (`hGuess`), recorded write-only on rejected attempts (the accept branch records `[]`);
+* the recorded read-commit list is **value-free** — the reads answer from the real RO layer via
+  `roStep`, never the drawn values (`blindStepProj_map_ghostBlindImpl_indep` /
+  `ghostHybridImpl_proj_trans`), so the readlist is jointly independent of the drawn *values*.
+
+Summing the per-pair bound over the `readlist.length · drawnlist.length` pairs gives the claim. The
+genuine difficulty (confirmed multi-week, see the campaign record) is that the factoring
+`E[Σ_pairs 1[rc=d]] = Σ_pairs E[1[rc=d]]` with each factor `≤ ε` must be lifted through the opaque
+adversary `simulateQ (oa)` fold: a draw-before-read pair has its draw resolved before the later
+read, so the read-step increment is deterministic in the pre-state and is not `≤ ε` at that single
+step. Bounding it needs the global factoring of the readlist law from the drawn-value law — the
+fold-level value-free commute (`OracleComp.probEvent_bind_fire_eq_defer` lifted across all
+interleaved attempts). The surrounding reduction (`countP_mem_le_sum_count`, the deterministic
+readlist-length bound `deferredDrawReadImpl_run_readlist_length_le`, the expected drawn-list length
+fold `deferredDrawRead_run_expected_drawnlist_length_le`, and the final arithmetic) is fully proven
+and axiom-clean; this atom is the only remaining sorry. -/
+theorem readRecord_expected_pairs_le {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ)
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
+    (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+            ((((re, l), []), false), [])] *
+          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      ≤ ENNReal.ofReal ε *
+        ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+              ((((re, l), []), false), [])] *
+            ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞) := by
+  -- The value-free fold-lift: each fresh recorded draw is `⊥` the value-free readlist and has mass
+  -- `≤ ε`, so each of the `readlist.length · drawnlist.length` pairs contributes `≤ ε`. Lifting the
+  -- per-pair independence through the opaque adversary `simulateQ (oa)` fold is the genuine
+  -- multi-week PMF×PMF joint coupling (draw-before-read pairs do not factor per-step).
+  sorry
+
 omit [SampleableType Stmt] in
 /-- **The expected-coincidence-count bound (the numeric remaining obligation, first-moment route).**
 The read-recording run's expected coincidence count
@@ -3087,16 +3398,32 @@ output-conditioning, never in a SUM. Bounding `E[count]` decomposes over (read, 
   pairs (`(qH+1)` reads by `hQ`, `E[#attempts] ≤ qSrem/(1-p)` by `deferredDraw_attemptKn_mean_le`),
   giving `E[count] ≤ (qH+1) · ε · E[#attempts] ≤ qSrem · (qH+1) · ε / (1-p)`.
 
-**The sole open core (the value-free fold-lift).** The arithmetic after factoring the joint
-expectation `E[count] = Σ_{rc} E_readlist E_drawnlist[1[rc=d]]` is linear and trivial; the factoring
-itself — that each fresh draw is conditionally i.i.d. and `⊥` the recorded readlist *through the
-opaque adversary `simulateQ (oa)` fold* — is the genuine PMF×PMF joint independence. A direct
-threaded fold charges the *sign* steps cleanly (each fresh draw `⊥` the *current* readlist, value-
-free, additive: `≤ (qH+1)·ε·E[#draws this step]`), but a *draw-before-read* pair has its draw
-resolved before the later read, so the read-step increment `1[mc.2 ∈ drawnlist]` is deterministic in
-the pre-state and is not `≤ ε` at that single step; bounding it needs the global factoring of the
-readlist law from the drawn-value law, which is the same fold-level value-free commute as the atom
-`OracleComp.probEvent_bind_fire_eq_defer` lifted across all interleaved attempts. -/
+**The reduction (banked) and the sole open core.** The bound reduces by elementary arithmetic to a
+single value-free atom (see the scaffolding lemmas above):
+* the coincidence count is dominated pointwise by the pair count
+  `Σ_{rc ∈ readlist} drawnlist.count rc` (`countP_mem_le_sum_count`);
+* the recorded readlist has length `≤ qH` on the whole support — a *deterministic* bound from the
+  read-query budget (`deferredDrawReadImpl_run_readlist_length_le`, empty start readlist);
+* the expected drawn-list length is `≤ qSrem · (1/(1-p))` (`deferredDrawRead_run_expected_…`, empty
+  start drawnlist);
+* the genuine content is the **value-free per-pair atom** `readRecord_expected_pairs_le`:
+  `E[Σ_{rc ∈ readlist} drawnlist.count rc] ≤ ε · E[readlist.length · drawnlist.length]`.
+
+**The sole open core (the value-free fold-lift), isolated in `readRecord_expected_pairs_le`.** The
+arithmetic after factoring the joint expectation is linear and discharged here; the factoring itself
+— that each fresh draw is conditionally i.i.d. and `⊥` the recorded readlist *through the opaque
+adversary `simulateQ (oa)` fold* — is the genuine PMF×PMF joint independence. A direct threaded fold
+charges the *sign* steps cleanly (each fresh draw `⊥` the *current* readlist, value-free, additive),
+but a *draw-before-read* pair has its draw resolved before the later read, so the read-step
+increment `1[mc.2 ∈ drawnlist]` is deterministic in the pre-state and is not `≤ ε` at that single
+step; bounding it needs the global factoring of the readlist law from the drawn-value law, which is
+the same fold-level value-free commute as `OracleComp.probEvent_bind_fire_eq_defer` lifted across
+all interleaved attempts.
+
+The start drawn list is empty (`ws₀ = []`): the bound is sound only with no pre-existing draws,
+since the adversary's read points are value-free w.r.t. the run's fresh draws but can
+deterministically target a fixed pre-existing commitment. The headline instance uses the empty
+start. -/
 theorem readRecord_expected_coincidences_le {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -3105,17 +3432,92 @@ theorem readRecord_expected_coincidences_le {γ : Type}
     (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
     (qSrem : ℕ)
     (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
-    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
     (∑' z : γ × DeferredReadState M Commit Chal,
         Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
-            ((((re, l), ws₀), false), [])] *
+            ((((re, l), []), false), [])] *
           (z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) : ℝ≥0∞))
       ≤ ENNReal.ofReal ((qSrem : ℝ) * ((qH : ℝ) + 1) * ε / (1 - p_abort)) := by
-  -- The first-moment / value-free fold-lift: front-load the run's interleaved per-attempt draws
-  -- into an independent block so each is `⊥` the value-free recorded readlist. After the factoring
-  -- the arithmetic is the linear `(qH+1) · ε · E[#attempts]` bound chained with
-  -- `deferredDraw_attemptKn_mean_le`.
-  sorry
+  classical
+  obtain ⟨hQS, hQH⟩ := hQ
+  set run : ProbComp (γ × DeferredReadState M Commit Chal) :=
+    (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run ((((re, l), []), false), [])
+    with hrun
+  -- Step 1+2: dominate the coincidence count pointwise by the pair count.
+  have hstep12 :
+      (∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+          (z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) : ℝ≥0∞))
+        ≤ ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+            ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞) := by
+    refine ENNReal.tsum_le_tsum fun z => ?_
+    gcongr
+    exact_mod_cast countP_mem_le_sum_count z.2.2 z.2.1.1.2
+  -- Step 3 (the atom): the expected pair count is `≤ ε · E[readlist.length · drawnlist.length]`.
+  have hatom :
+      (∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+        ≤ ENNReal.ofReal ε *
+          ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+            ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞) := by
+    rw [hrun]
+    exact readRecord_expected_pairs_le ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+      hGuess hAbort oa qSrem ⟨hQS, hQH⟩ re l
+  -- Step 4: `readlist.length ≤ qH+1` deterministically ⇒ `E[rlen·dlen] ≤ (qH+1)·E[dlen]`.
+  have hread :
+      (∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+          ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+        ≤ ((qH : ℝ≥0∞) + 1) *
+          ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+            (z.2.1.1.2.length : ℝ≥0∞) := by
+    rw [← ENNReal.tsum_mul_left]
+    refine ENNReal.tsum_le_tsum fun z => ?_
+    by_cases hz : z ∈ support run
+    · have hlen : z.2.2.length ≤ qH := by
+        have := deferredDrawReadImpl_run_readlist_length_le ids M maxAttempts pk sk oa qH hQH
+          ((((re, l), []), false), []) z (by rwa [hrun] at hz)
+        simpa using this
+      rw [show ((qH : ℝ≥0∞) + 1) * (Pr[= z | run] * (z.2.1.1.2.length : ℝ≥0∞))
+            = Pr[= z | run] * (((qH : ℝ≥0∞) + 1) * (z.2.1.1.2.length : ℝ≥0∞)) by ring,
+          Nat.cast_mul]
+      gcongr
+      calc (z.2.2.length : ℝ≥0∞) ≤ (qH : ℝ≥0∞) := by exact_mod_cast hlen
+        _ ≤ (qH : ℝ≥0∞) + 1 := le_self_add
+    · simp [probOutput_eq_zero_of_not_mem_support hz]
+  -- Step 5: `E[dlen] ≤ qSrem · (1/(1-p))` (empty start drawnlist).
+  have hdraw :
+      (∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+          (z.2.1.1.2.length : ℝ≥0∞))
+        ≤ (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+    rw [hrun]
+    have := deferredDrawRead_run_expected_drawnlist_length_le ids M maxAttempts pk sk hp₀ hp hAbort
+      oa qSrem hQS ((((re, l), []), false), [])
+    simpa using this
+  -- Assemble the chain and convert to the target `ofReal` form.
+  refine le_trans hstep12 (le_trans hatom ?_)
+  have hchain : ENNReal.ofReal ε *
+        ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+          ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞)
+      ≤ ENNReal.ofReal ε * ((qH : ℝ≥0∞) + 1) * (qSrem : ℝ≥0∞) *
+        ENNReal.ofReal (1 / (1 - p_abort)) := by
+    calc ENNReal.ofReal ε *
+            ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+              ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞)
+        ≤ ENNReal.ofReal ε * (((qH : ℝ≥0∞) + 1) *
+            ∑' z : γ × DeferredReadState M Commit Chal, Pr[= z | run] *
+              (z.2.1.1.2.length : ℝ≥0∞)) := by gcongr
+      _ ≤ ENNReal.ofReal ε * (((qH : ℝ≥0∞) + 1) *
+            ((qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)))) := by gcongr
+      _ = ENNReal.ofReal ε * ((qH : ℝ≥0∞) + 1) * (qSrem : ℝ≥0∞) *
+            ENNReal.ofReal (1 / (1 - p_abort)) := by ring
+  refine le_trans hchain (le_of_eq ?_)
+  have h1p : (0 : ℝ) < 1 - p_abort := by linarith
+  rw [show ((qH : ℝ≥0∞) + 1) = ENNReal.ofReal ((qH : ℝ) + 1) by
+        rw [ENNReal.ofReal_add (by positivity) (by norm_num)]; simp,
+      show ((qSrem : ℝ≥0∞)) = ENNReal.ofReal (qSrem : ℝ) by simp]
+  rw [← ENNReal.ofReal_mul hε, ← ENNReal.ofReal_mul (by positivity),
+      ← ENNReal.ofReal_mul (by positivity)]
+  congr 1
+  field_simp
 
 omit [SampleableType Stmt] in
 /-- **Ghost-blind ghost-read bound** (the sound headline target). The ghost-blind run's
@@ -3154,7 +3556,7 @@ theorem probEvent_ghostBlindImpl_bad_le
   refine le_trans (readRecord_pred_le_expected_coincidences ids M maxAttempts pk sk (adv.main pk)
     (((((∅, []), []), false), []) : DeferredReadState M Commit Chal)) ?_
   exact readRecord_expected_coincidences_le ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-    hGuess hAbort (adv.main pk) qS (hQ pk) ∅ [] []
+    hGuess hAbort (adv.main pk) qS (hQ pk) ∅ []
 
 omit [SampleableType Stmt] in
 /-- **Ghost-read collision bound** for the Prog → Trans hop: the probability that the
