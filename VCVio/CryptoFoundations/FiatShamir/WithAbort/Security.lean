@@ -4431,23 +4431,33 @@ omit [SampleableType Stmt] in
 /-- **The constant-length body charge (the genuine per-attempt induction).** Over one signing body
 `ghostSignDrawBody n`, the expected continuation read-multiplicity of the body's *rejected* draws —
 `E[Σ_{w ∈ body-rejects} continuation.readlist.count w]` — is at most `ε · (rl.length + qH) ·
-E[#body-rejects]`, where `rl` is the continuation's start read list and `qH` the continuation's
+E[#body-rejects + 1]`, where `rl` is the continuation's start read list and `qH` the continuation's
 read-query budget (so the continuation's recorded read list has length `≤ rl.length + qH`
-deterministically).
+deterministically). The `+1` is the body's single unconditional signing query; it is *not* slack —
+it pays the reject-gate skew of the head charge (see below).
 
 Proved by induction on `n`:
-* **0** — the body rejects nothing, both sides are `0`.
-* **n+1** — the head draws `(w, st)`, samples a challenge, responds, and *accepts* (rejects nothing,
-  charge `0`) or *rejects* and recurses. On reject the recorded rejects are `w :: rec-rejects`; the
-  read-multiplicity splits as `continuation.readlist.count w` (the head's contribution) plus the
-  recursive body charge (the inductive hypothesis at the extended start drawn list). The head's
-  `continuation.readlist.count w` is averaged over `w`'s fresh `ids.commit pk sk` draw: `w` is
-  independent of the recursive body (which uses the cache `re`, not `w`) and of the value-free
-  continuation read list (`deferredDrawRead_run_sum_count_dl_invariant` moves `w` out of the drawn
-  list, and the reads answer via `roStep`), so the marginal `ε`-kernel
-  `tsum_probOutput_commit_mul_count_le` charges it `≤ ε · readlist.length ≤ ε · (rl.length + qH)`.
-  The reject indicator is dropped (`≤ 1`) on the value-substituted, hence fixed, read list. The head
-  charge `ε · (rl.length + qH)` matches the `+1` in `#rejects` from the head's rejected attempt. -/
+* **0** — the body rejects nothing, the read-multiplicity is `0 ≤ ε · (rl.length + qH) · 1`.
+* **n+1** — peel the head commit draw `ws` (kept *averaged*: the `ε`-kernel needs the full
+  `ids.commit` marginal — a per-`ws` bound is false, the adversary could target a fixed `ws.1`),
+  the challenge, the response, and case on the accept/reject branch. On *accept* the body records
+  nothing (`rej = []`, charge `0`). On *reject* the recorded rejects are `ws.1 :: rec-rejects`; the
+  read-multiplicity `Σ_{w ∈ ws.1 :: rec-rejects} z'.readlist.count w` splits as
+  `z'.readlist.count ws.1` (head) plus the recursive body charge (recurses to the inductive
+  hypothesis at the extended start drawn list `dr ++ [ws.1]`).
+
+  Crucially the two halves treat the reject gate `1[respond = none]` differently:
+  * the **head** charge `Σ_{ws} commit(ws) · 1[reject(ws.2)] · z'.readlist.count ws.1` drops the
+    gate (`1[reject] ≤ 1`) — necessary because `ws.1` and the reject decision `f(ws.2, c)` are
+    *correlated* (the prover state `ws.2` determines both the commit and the accept decision), so a
+    gated kernel would skew the `ws.1` marginal. After value-substitution
+    (`deferredDrawRead_run_sum_count_dl_invariant` moves `ws.1` out of the continuation's drawn
+    list) and the marginal `ε`-kernel `tsum_probOutput_commit_mul_count_le`, the ungated head is
+    `≤ ε · z'.readlist.length ≤ ε · (rl.length + qH)`, paid by the unconditional `+1`;
+  * the **recursive** charge `Σ_{ws} commit(ws) · 1[reject(ws.2)] · (rec body charge)` *keeps* the
+    gate, so it is `Pr[reject] · ε · (rl.length + qH) · E[#rec-rejects + 1]` (inductive hypothesis),
+    which the reject paths of `#body-rejects` in the right-hand side exactly cover. Dropping the
+    recursive gate would be unsound (it over-charges by the accept mass). -/
 theorem ghostSignDrawBody_continuation_charge {γ : Type}
     (qH : ℕ) (ε : ℝ) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -4478,8 +4488,20 @@ theorem ghostSignDrawBody_continuation_charge {γ : Type}
       exact zero_le'
   | succ n ih =>
       intro re dr
-      -- Abbreviate the per-attempt charge constant.
       set L₀ : ℝ≥0∞ := ENNReal.ofReal ε * ((rl.length + qH : ℕ) : ℝ≥0∞) with hL₀
+      -- Deterministic continuation-readlist bound: every continuation run started at read list `rl`
+      -- with read budget `qH` records `≤ rl.length + qH` reads.
+      have hlen : ∀ (u : ((unifSpec + (M × Commit →ₒ Chal)) +
+            (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg))
+          (cache : (M × Commit →ₒ Chal).QueryCache) (D : List Commit)
+          (z' : γ × DeferredReadState M Commit Chal),
+          z' ∈ support ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob u)).run
+              ((((cache, sgn), D), bad), rl)) →
+          (z'.2.2.length : ℝ≥0∞) ≤ ((rl.length + qH : ℕ) : ℝ≥0∞) := by
+        intro u cache D z' hz'
+        have := deferredDrawReadImpl_run_readlist_length_le ids M maxAttempts pk sk (ob u) qH
+          (hob u) ((((cache, sgn), D), bad), rl) z' hz'
+        exact_mod_cast this
       sorry
 
 omit [SampleableType Stmt] in
