@@ -3273,6 +3273,37 @@ private lemma countP_mem_le_sum_count {α : Type} [DecidableEq α] (l d : List �
       · simp only [decide_eq_true_eq, h, if_false]
         omega
 
+/-- Expressing a `List.count` as a sum of equality indicators over the list. -/
+private lemma count_eq_sum_map_ite {α : Type} [DecidableEq α] (d : List α) (a : α) :
+    (d.map (fun w => (if w = a then 1 else 0))).sum = d.count a := by
+  induction d with
+  | nil => simp
+  | cons x d ih =>
+      simp only [List.map_cons, List.sum_cons, ih, List.count_cons]
+      by_cases h : x = a
+      · simp [h]; ring
+      · simp [h]
+
+/-- **Symmetric double-count of two lists.** Summing `d.count rc` over `rc ∈ l` equals summing
+`l.count w` over `w ∈ d`; both count the coinciding `(read, draw)` pairs
+(`Σ_x l.count x · d.count x`). This re-index lets the per-pair charge be organised by the
+*draw* list (whose entries are fresh i.i.d. commitments) rather than the read list. -/
+private lemma sum_map_count_comm {α : Type} [DecidableEq α] (l d : List α) :
+    (l.map (fun rc => d.count rc)).sum = (d.map (fun w => l.count w)).sum := by
+  induction l with
+  | nil => simp
+  | cons a l ih =>
+      simp only [List.map_cons, List.sum_cons, ih]
+      have key : (d.map (fun w => (a :: l).count w)).sum
+          = (d.map (fun w => (if w = a then 1 else 0))).sum + (d.map (fun w => l.count w)).sum := by
+        rw [← List.sum_map_add]
+        refine congrArg _ (List.map_congr_left fun w _ => ?_)
+        rw [List.count_cons]
+        by_cases h : w = a
+        · subst h; simp [add_comm]
+        · simp [h, Ne.symm h]
+      rw [key, count_eq_sum_map_ite, add_comm]
+
 omit [SampleableType Stmt] in
 /-- **Deterministic readlist-length bound.** Every reachable final state of the read-recording run
 records at most `qH` new read-commits, where `qH` bounds the random-oracle (read) queries `oa` makes
