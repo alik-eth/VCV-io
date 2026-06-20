@@ -726,6 +726,25 @@ lemma geomAttemptSum_le {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 
   have hmul := geom_sum_mul p_abort maxAttempts
   nlinarith [pow_nonneg hp₀ maxAttempts]
 
+omit [SampleableType Stmt] in
+/-- **General geometric attempt-count fold.** For any number of terms `n`, the geometric sum
+`∑_{a<n} ofReal p^a` is bounded by `ofReal (1/(1-p))`. The general-`n` companion of
+`geomAttemptSum_le` (which fixes `n = maxAttempts`); needed at `n = maxAttempts + 1` for the
+attempt-count charge `∑_{a≤maxAttempts} p^a = (reject sum) + 1`. -/
+lemma geomSum_le {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (n : ℕ) :
+    (∑ a ∈ Finset.range n, ENNReal.ofReal p_abort ^ a)
+      ≤ ENNReal.ofReal (1 / (1 - p_abort)) := by
+  have h1p : (0 : ℝ) < 1 - p_abort := by linarith
+  have hg_eq : (∑ a ∈ Finset.range n, ENNReal.ofReal p_abort ^ a)
+      = ENNReal.ofReal (∑ a ∈ Finset.range n, p_abort ^ a) := by
+    rw [ENNReal.ofReal_sum_of_nonneg (fun a _ => pow_nonneg hp₀ a)]
+    exact Finset.sum_congr rfl fun a _ => by rw [← ENNReal.ofReal_pow hp₀]
+  rw [hg_eq]
+  refine ENNReal.ofReal_le_ofReal ?_
+  rw [le_div_iff₀ h1p]
+  have hmul := geom_sum_mul p_abort n
+  nlinarith [pow_nonneg hp₀ n]
+
 /-! ## Deferred-sampling eager↔lazy coupling (ghost-read leaf) -/
 
 omit [SampleableType Stmt] in
@@ -1688,6 +1707,133 @@ lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le (pk : Stmt) (sk : Wit)
             mul_le_mul_left (tsum_probOutput_commit_mul_abort_le ids pk sk hAbort) _
 
 omit [SampleableType Stmt] in
+/-- **Tight expected drawn-list length of the draw-collecting signing body.** Sharper companion to
+`tsum_probOutput_run_ghostSignDrawBody_mul_length_le`: the expected number of *recorded* (rejected)
+commitments of one `ghostSignDrawBody` run is at most the *reject-gated* geometric sum
+`∑_{a<n} ofReal p^(a+1)` (each summand starts at `p^1`, not `p^0`). The first attempt's commitment
+is recorded only on a *rejection* (probability `≤ p`); the accepting attempt records nothing. This
+is the tight reject-count bound — `∑_{a<n} p^(a+1) ≤ p/(1-p)` — that the attempt-count law of the
+redrafted residual needs: combined with the unconditional `+1` per signing query (the signed-message
+list always grows by one), it gives the clean per-query charge `∑_{a≤n} p^a ≤ 1/(1-p)`, whereas the
+loose bound `∑_{a<n} p^a` already saturates `1/(1-p)` for the rejects alone and cannot absorb the
+extra `+1`. -/
+lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight (pk : Stmt) (sk : Wit) (msg : M)
+    {p_abort : ℝ}
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
+    ∀ (n : ℕ) (re : (M × Commit →ₒ Chal).QueryCache),
+      ∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+        Pr[= z | (ghostSignDrawBody ids M pk sk msg n).run re] * (z.1.2.length : ℝ≥0∞)
+        ≤ ∑ a ∈ Finset.range n, ENNReal.ofReal p_abort ^ (a + 1) := by
+  intro n
+  induction n with
+  | zero =>
+      intro re
+      simp only [ghostSignDrawBody, StateT.run_pure, tsum_probOutput_pure_mul]
+      simp
+  | succ n ih =>
+      intro re
+      classical
+      set S : ℝ≥0∞ := ∑ a ∈ Finset.range n, ENNReal.ofReal p_abort ^ (a + 1) with hS
+      -- Target: the `(n+1)`-attempt reject-count expectation is `≤ ofReal p * (1 + S)`, which
+      -- equals `∑_{a<n+1} ofReal p^(a+1)`.
+      have hSucc : ∑ a ∈ Finset.range (n + 1), ENNReal.ofReal p_abort ^ (a + 1)
+          = ENNReal.ofReal p_abort * (1 + S) := by
+        rw [mul_add, mul_one, hS, Finset.mul_sum, Finset.sum_range_succ', pow_succ, pow_zero,
+          one_mul, add_comm]
+        congr 1
+        exact Finset.sum_congr rfl fun a _ => by rw [← pow_succ']
+      rw [hSucc, run_ghostSignDrawBody_succ, tsum_probOutput_bind_mul]
+      -- Per-commit-draw `ws`: the recorded list is empty on accept and `ws.1 :: recursive` on
+      -- reject; reject happens with probability `Pr[= none | uniformSample >>= respond]`.
+      have h_ws : ∀ ws : Commit × PrvState,
+          (∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= z | uniformSample Chal >>= fun ch =>
+              ids.respond pk sk ws.2 ch >>= fun oz =>
+                match oz with
+                | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
+                | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
+                    (ghostSignDrawBody ids M pk sk msg n).run re] * (z.1.2.length : ℝ≥0∞))
+          ≤ Pr[= none | uniformSample Chal >>= fun ch => ids.respond pk sk ws.2 ch] * (1 + S) := by
+        intro ws
+        rw [tsum_probOutput_bind_mul]
+        have h_ch : ∀ ch : Chal,
+            (∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+              Pr[= z | ids.respond pk sk ws.2 ch >>= fun oz =>
+                match oz with
+                | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
+                | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
+                    (ghostSignDrawBody ids M pk sk msg n).run re] * (z.1.2.length : ℝ≥0∞))
+            ≤ Pr[= none | ids.respond pk sk ws.2 ch] * (1 + S) := by
+          intro ch
+          rw [tsum_probOutput_bind_mul]
+          -- Per response `oz`: accept contributes `0`, reject contributes `1 + S`.
+          have h_oz : ∀ oz : Option Resp,
+              (∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+                Pr[= z | (match oz with
+                  | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
+                  | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
+                      (ghostSignDrawBody ids M pk sk msg n).run re :
+                  ProbComp ((Option (Commit × Resp) × List Commit) ×
+                    (M × Commit →ₒ Chal).QueryCache))] * (z.1.2.length : ℝ≥0∞))
+              ≤ (if oz = none then (1 : ℝ≥0∞) + S else 0) := by
+            intro oz
+            cases oz with
+            | some z =>
+                rw [if_neg (by simp), tsum_probOutput_pure_mul]
+                simp [List.length]
+            | none =>
+                rw [if_pos rfl, map_eq_bind_pure_comp, tsum_probOutput_bind_mul]
+                calc (∑' z : (Option (Commit × Resp) × List Commit) ×
+                      (M × Commit →ₒ Chal).QueryCache,
+                    Pr[= z | (ghostSignDrawBody ids M pk sk msg n).run re] *
+                      (∑' y : (Option (Commit × Resp) × List Commit) ×
+                          (M × Commit →ₒ Chal).QueryCache,
+                        Pr[= y | (pure ((fun rws : (Option (Commit × Resp) × List Commit) ×
+                            (M × Commit →ₒ Chal).QueryCache =>
+                          ((rws.1.1, ws.1 :: rws.1.2), rws.2)) z) :
+                          ProbComp ((Option (Commit × Resp) × List Commit) ×
+                            (M × Commit →ₒ Chal).QueryCache))] * (y.1.2.length : ℝ≥0∞)))
+                    = ∑' z : (Option (Commit × Resp) × List Commit) ×
+                        (M × Commit →ₒ Chal).QueryCache,
+                      Pr[= z | (ghostSignDrawBody ids M pk sk msg n).run re] *
+                        (1 + (z.1.2.length : ℝ≥0∞)) := by
+                      refine tsum_congr fun z => ?_
+                      rw [tsum_probOutput_pure_mul]
+                      simp only [List.length_cons]
+                      push_cast
+                      ring_nf
+                  _ = (∑' z : (Option (Commit × Resp) × List Commit) ×
+                        (M × Commit →ₒ Chal).QueryCache,
+                      Pr[= z | (ghostSignDrawBody ids M pk sk msg n).run re]) +
+                      ∑' z : (Option (Commit × Resp) × List Commit) ×
+                        (M × Commit →ₒ Chal).QueryCache,
+                      Pr[= z | (ghostSignDrawBody ids M pk sk msg n).run re] *
+                        (z.1.2.length : ℝ≥0∞) := by
+                      rw [← ENNReal.tsum_add]
+                      exact tsum_congr fun z => by rw [mul_add, mul_one]
+                  _ ≤ 1 + S := add_le_add tsum_probOutput_le_one (ih re)
+          refine le_trans (ENNReal.tsum_le_tsum fun oz =>
+            mul_le_mul_right (h_oz oz) _) ?_
+          rw [tsum_eq_single (none : Option Resp) fun oz hoz => by
+            rw [if_neg hoz, mul_zero]]
+          rw [if_pos rfl, mul_comm]
+        refine le_trans (ENNReal.tsum_le_tsum fun ch =>
+          mul_le_mul_right (h_ch ch) _) ?_
+        rw [probOutput_bind_eq_tsum, ← ENNReal.tsum_mul_right]
+        exact le_of_eq (tsum_congr fun ch => (mul_assoc _ _ _).symm)
+      refine le_trans (ENNReal.tsum_le_tsum fun ws => mul_le_mul_right (h_ws ws) _) ?_
+      calc ∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] *
+            (Pr[= none | uniformSample Chal >>= fun ch =>
+              ids.respond pk sk ws.2 ch] * (1 + S))
+          = (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] *
+              Pr[= none | uniformSample Chal >>= fun ch =>
+                ids.respond pk sk ws.2 ch]) * (1 + S) := by
+            rw [← ENNReal.tsum_mul_right]
+            exact tsum_congr fun ws => (mul_assoc _ _ _).symm
+        _ ≤ ENNReal.ofReal p_abort * (1 + S) :=
+            mul_le_mul_left (tsum_probOutput_commit_mul_abort_le ids pk sk hAbort) _
+
+omit [SampleableType Stmt] in
 /-- **Single-signing-body resampling over-count.** Testing the *drawn list* produced by one
 `ghostSignDrawBody` run (the rejected-attempt commitments, write-only side-data) against any *fixed*
 read strategy `σ` with `q` reads fires with probability at most testing `n` *fresh* i.i.d. raw
@@ -2197,6 +2343,44 @@ theorem deferredDraw_run_drawn_prefix {γ : Type} (pk : Stmt) (sk : Wit)
         obtain ⟨alc, _, rfl⟩ := hxs; exact List.prefix_append s.1.2 alc.1.2
 
 omit [SampleableType Stmt] in
+/-- **The signed-message list only grows in length.** Every reachable final state of the
+deferred-draw run from a start state `s` has signed-message list at least as long as the start's
+`s.1.1.2`: uniform and read steps leave it untouched, and a signing step prepends one message
+(`msg :: s.1.1.2`). Hence the number of *new* signing queries is `final.length - s.1.1.2.length`. -/
+theorem deferredDraw_run_signed_prefix {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s : DeferredState M Commit Chal)
+      (z : γ × DeferredState M Commit Chal),
+      z ∈ support ((simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s) →
+      s.1.1.2.length ≤ z.2.1.1.2.length := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact le_rfl
+  | query_bind t ob ih =>
+      intro s z hz
+      rw [simulateQ_query_bind, StateT.run_bind, mem_support_bind_iff] at hz
+      obtain ⟨x, hx, hzx⟩ := hz
+      refine le_trans ?_ (ih x.1 x.2 z hzx)
+      rcases t with (n | mc) | msg
+      · have hxs : x ∈ support ((fun u => (u, s)) <$>
+            (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hx
+        rw [support_map] at hxs
+        obtain ⟨u, _, rfl⟩ := hxs; exact le_rfl
+      · have hxs : x ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+            (cu.1, (((cu.2, s.1.1.2), s.1.2), s.2 || decide (mc.2 ∈ s.1.2)))) <$>
+              roStep M s.1.1.1 mc) := hx
+        rw [support_map] at hxs
+        obtain ⟨cu, _, rfl⟩ := hxs; exact le_rfl
+      · have hxs : x ∈ support ((fun alc : (Option (Commit × Resp) × List Commit) ×
+            (M × Commit →ₒ Chal).QueryCache =>
+            (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1) := hx
+        rw [support_map] at hxs
+        obtain ⟨alc, _, rfl⟩ := hxs; simp
+
+omit [SampleableType Stmt] in
 /-- **Run-level expected drawn-list length of the deferred-draw run.** By induction on the
 adversary computation `oa`, the expected final drawn-list length of the deferred-draw run from a
 start state `s` is at most `s.1.2.length + qSrem · (1/(1-p))`, where `qSrem` bounds the number of
@@ -2394,6 +2578,287 @@ theorem deferredDraw_kn_mean_le {γ : Type} (pk : Stmt) (sk : Wit)
   congr 1
   field_simp
 
+/-! ### Attempt-count law: the tight redraft of the deferral count
+
+The firing event tests reads against the *actual* (rejected) drawn list, whose draws are skewed by
+the rejection conditioning `commit | reject`. The `drawList`-game RHS, by contrast, draws *raw*
+`Prod.fst <$> ids.commit pk sk`. A reject-count `kn = drawnlist.length` is therefore *too small* to
+dominate the firing (the residual was false-as-stated with that `kn`). The sound count is the total
+*attempt* count, which over-counts each query's rejected draws by the accepting attempt's one fresh
+raw draw and whose mean is exactly `qSrem/(1-p)`.
+
+The attempt count is recovered *without a new state field* as `(drawn-list growth) + (signed-list
+growth)`: every signing query increments the signed-message list by exactly one (in
+`deferredDrawImpl`'s sign branch) and the drawn list by its rejected-attempt count. Their sum
+dominates the per-query attempt count and has the clean charge `∑_{a≤maxAttempts} p^a ≤ 1/(1-p)`,
+combining the tight reject bound (`tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight`, the
+`∑_{a<n} p^(a+1)` rejects) with the unconditional `+1` (signed list). -/
+
+omit [SampleableType Stmt] in
+/-- **Per-step expected attempt-count growth of the deferred-draw handler.** One step of
+`deferredDrawImpl` grows the expected combined size `drawnlist.length + signedlist.length` by at
+most `1/(1-p)` on a signing query and by `0` on uniform/read queries. On a signing query the drawn
+list grows by the rejected-attempt count (expected `≤ ∑_{a<maxAttempts} p^(a+1)`, the tight bound)
+and the signed list grows by exactly `1`; their sum is `∑_{a≤maxAttempts} p^a ≤ 1/(1-p)`. This is
+the per-step charge for the attempt-count law `kn`. -/
+lemma deferredDrawImpl_step_expected_attemptCount_le (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (s : DeferredState M Commit Chal) :
+    (∑' z : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t) ×
+        DeferredState M Commit Chal,
+      Pr[= z | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+        ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+      ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) +
+          (if (t matches Sum.inr _) then ENNReal.ofReal (1 / (1 - p_abort)) else 0) := by
+  classical
+  rcases t with (n | mc) | msg
+  · -- UNIFORM: state untouched.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ (by simp [deferredDrawImpl]))
+    intro z hz
+    have hzs : z ∈ support ((fun u => (u, s)) <$>
+        (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hz
+    rw [support_map] at hzs
+    obtain ⟨u, _, rfl⟩ := hzs; rfl
+  · -- READ: writes only the base cache / bad flag; both lists preserved.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ ?_)
+    · intro z hz
+      have hzs : z ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, (((cu.2, s.1.1.2), s.1.2), s.2 || decide (mc.2 ∈ s.1.2)))) <$>
+            roStep M s.1.1.1 mc) := hz
+      rw [support_map] at hzs
+      obtain ⟨cu, _, rfl⟩ := hzs; rfl
+    · simp only [deferredDrawImpl, StateT.run_mk]
+      rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
+  · -- SIGN: drawn list `s.1.2 ++ alc.1.2`, signed list `msg :: s.1.1.2` (one longer).
+    rw [if_pos (by simp)]
+    have hrun : (deferredDrawImpl ids M maxAttempts pk sk (.inr msg)).run s =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1 := rfl
+    rw [hrun]
+    refine le_of_eq_of_le (tsum_probOutput_map_mul'
+      ((ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1)
+      (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+        (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2)))
+      (fun z => ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))) ?_
+    calc _
+        = ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              (((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + (1 : ℝ≥0∞) +
+                (alc.1.2.length : ℝ≥0∞)) := by
+          refine tsum_congr fun alc => ?_
+          simp only [List.length_append, List.length_cons]
+          push_cast
+          ring
+      _ = ((∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              (((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + (1 : ℝ≥0∞))) +
+          ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              (alc.1.2.length : ℝ≥0∞)) := by
+          rw [← ENNReal.tsum_add]; exact tsum_congr fun alc => by rw [mul_add]
+      _ ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + ENNReal.ofReal (1 / (1 - p_abort)) := by
+          rw [ENNReal.tsum_mul_right, tsum_probOutput_eq_one' (by simp), one_mul]
+          rw [add_assoc]
+          gcongr
+          refine le_trans (add_le_add_right
+            (tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight ids M pk sk msg
+              hAbort maxAttempts s.1.1.1) _) ?_
+          rw [add_comm]
+          refine le_trans (le_of_eq ?_) (geomSum_le hp₀ hp (maxAttempts + 1))
+          rw [Finset.sum_range_succ']
+          simp only [pow_zero]
+
+omit [SampleableType Stmt] in
+/-- **Run-level expected attempt count of the deferred-draw run.** By induction on `oa`, the
+expected combined size `drawnlist.length + signedlist.length` of the deferred-draw run from a start
+state `s` is at most `(s.1.2.length + s.1.1.2.length) + qSrem · (1/(1-p))`, where `qSrem` bounds the
+number of signing queries. Each signing query grows the expected combined size by at most `1/(1-p)`
+(the per-step charge `deferredDrawImpl_step_expected_attemptCount_le`), and uniform/read queries
+leave it unchanged; the signing-query budget telescopes across the fold exactly as in
+`deferredDraw_run_expected_length_le`. The attempt-count law `kn` of the redrafted residual inherits
+this mean. -/
+theorem deferredDraw_run_expected_attemptCount_le {γ : Type} (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (qSrem : ℕ), oa.IsQueryBoundP (· matches Sum.inr _) qSrem →
+      ∀ (s : DeferredState M Commit Chal),
+        (∑' z : γ × DeferredState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s] *
+            ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+          ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) +
+              (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+  classical
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qSrem _ s
+      simp only [simulateQ_pure, StateT.run_pure, tsum_probOutput_pure_mul]
+      exact le_self_add
+  | query_bind t ob ih =>
+      intro qSrem hQ s
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rw [simulateQ_query_bind, StateT.run_bind, tsum_probOutput_bind_mul]
+      set c : ℝ≥0∞ := ENNReal.ofReal (1 / (1 - p_abort)) with hc
+      have hmass : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+            (M →ₒ Option (Commit × Resp))).Range t) × DeferredState M Commit Chal,
+          Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s]) = 1 :=
+        tsum_probOutput_eq_one' (by
+          rcases t with (n | mc) | msg
+          · simp [deferredDrawImpl]
+          · simp only [deferredDrawImpl, StateT.run_mk]
+            rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
+          · simp [deferredDrawImpl])
+      have hfold : ∀ (b : ℕ) (extra : ℝ≥0∞),
+          (∀ x : (((unifSpec + (M × Commit →ₒ Chal)) +
+              (M →ₒ Option (Commit × Resp))).Range t) × DeferredState M Commit Chal,
+            (∑' z : γ × DeferredState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+              ≤ ((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞) + (b : ℝ≥0∞) * c) →
+          (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+            ((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞))
+              ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + extra →
+          extra + (b : ℝ≥0∞) * c ≤ (qSrem : ℝ≥0∞) * c →
+          (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+              ∑' z : γ × DeferredState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                  ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+            ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by
+        intro b extra hcont hstep hbudget
+        calc (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                ∑' z : γ × DeferredState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk)
+                      (ob x.1)).run x.2] * ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞))
+            ≤ ∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                (((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞) + (b : ℝ≥0∞) * c) :=
+              ENNReal.tsum_le_tsum fun x => by gcongr; exact hcont x
+          _ = (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                  ((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞)) + (b : ℝ≥0∞) * c := by
+              rw [show (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                    (((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞) + (b : ℝ≥0∞) * c))
+                  = ∑' x, (Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                      ((x.2.1.2.length + x.2.1.1.2.length : ℕ) : ℝ≥0∞) +
+                    Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                      ((b : ℝ≥0∞) * c)) from tsum_congr fun x => by rw [mul_add]]
+              rw [ENNReal.tsum_add, ENNReal.tsum_mul_right, hmass, one_mul]
+          _ ≤ (((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + extra) + (b : ℝ≥0∞) * c := by gcongr
+          _ ≤ ((s.1.2.length + s.1.1.2.length : ℕ) : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by
+              rw [add_assoc]; gcongr
+      rcases t with (n | mc) | msg
+      · refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawImpl_step_expected_attemptCount_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inl n)) s
+      · refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawImpl_step_expected_attemptCount_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inr mc)) s
+      · have hpos : 0 < qSrem := by
+          rcases hQ1 with hno | hpos
+          · exact absurd (by simp) hno
+          · exact hpos
+        refine hfold (qSrem - 1) c (fun x => ih x.1 (qSrem - 1) (by simpa using hQ2 x.1) x.2) ?_ ?_
+        · have hstep := deferredDrawImpl_step_expected_attemptCount_le ids M maxAttempts pk sk
+            hp₀ hp hAbort (.inr msg) s
+          rwa [if_pos (by rfl), ← hc] at hstep
+        · rw [add_comm, ← add_one_mul,
+            show ((qSrem - 1 : ℕ) : ℝ≥0∞) + 1 = (qSrem : ℝ≥0∞) by
+              have : qSrem - 1 + 1 = qSrem := by omega
+              rw [← this]; push_cast; ring]
+
+omit [SampleableType Stmt] in
+/-- **The attempt-count law of the redrafted residual and its mean bound.** Mapping the
+deferred-draw run to its attempt count — the combined new growth of the drawn and signed lists,
+`(drawnlist.length - ws₀.length) + (signedlist.length - l.length)` — gives a count law whose mean is
+at most `qSrem/(1-p)`. The attempt count dominates the reject count (it adds the signed-list growth,
+one per signing query, covering each accepting attempt's fresh raw draw) yet keeps the same clean
+mean, because the per-query charge `(reject expectation) + 1 = ∑_{a≤maxAttempts} p^a ≤ 1/(1-p)` is
+identical to the loose reject charge — the `+1` is absorbed by tightening the reject bound from
+`∑_{a<n} p^a` to `∑_{a<n} p^(a+1)`. -/
+theorem deferredDraw_attemptKn_mean_le {γ : Type} (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ) (hQ : oa.IsQueryBoundP (· matches Sum.inr _) qSrem)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
+    (∑' n : ℕ, Pr[= n |
+        (fun z : γ × DeferredState M Commit Chal =>
+            (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
+          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)] *
+        (n : ℝ≥0∞))
+      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort)) := by
+  classical
+  have h1p : (0 : ℝ) < 1 - p_abort := by linarith
+  set run : ProbComp (γ × DeferredState M Commit Chal) :=
+    (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false) with hrun
+  have hmean : (∑' n : ℕ, Pr[= n |
+        (fun z : γ × DeferredState M Commit Chal =>
+            (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$> run] *
+        (n : ℝ≥0∞))
+      = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+          (((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞) :=
+    tsum_probOutput_map_mul' run
+      (fun z => (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length))
+      (fun n => (n : ℝ≥0∞))
+  rw [hmean]
+  -- Add back `ws₀.length + l.length` to recover the total combined size, bounded by the fold.
+  have hmass : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run]) = 1 := by
+    rw [hrun]
+    exact tsum_probOutput_eq_one'
+      (deferredDraw_run_neverFail ids M maxAttempts pk sk oa (((re, l), ws₀), false))
+  have hsplit : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+        (((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞)) +
+        ((ws₀.length + l.length : ℕ) : ℝ≥0∞)
+      ≤ ((ws₀.length + l.length : ℕ) : ℝ≥0∞) +
+          (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+    calc (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            (((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞)) +
+          ((ws₀.length + l.length : ℕ) : ℝ≥0∞)
+        = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            ((((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞) +
+              ((ws₀.length + l.length : ℕ) : ℝ≥0∞)) := by
+          rw [show (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+                ((((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞) +
+                  ((ws₀.length + l.length : ℕ) : ℝ≥0∞)))
+              = (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+                  (((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞)) +
+                ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+                  ((ws₀.length + l.length : ℕ) : ℝ≥0∞) from by
+              rw [← ENNReal.tsum_add]; exact tsum_congr fun z => by rw [mul_add]]
+          rw [ENNReal.tsum_mul_right, hmass, one_mul]
+      _ = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            ((z.2.1.2.length + z.2.1.1.2.length : ℕ) : ℝ≥0∞) := by
+          refine tsum_congr fun z => ?_
+          by_cases hz : z ∈ support run
+          · have hpre : ws₀.length ≤ z.2.1.2.length :=
+              (deferredDraw_run_drawn_prefix ids M maxAttempts pk sk oa _ z hz).length_le
+            have hpre2 : l.length ≤ z.2.1.1.2.length :=
+              deferredDraw_run_signed_prefix ids M maxAttempts pk sk oa _ z hz
+            congr 1
+            rw [← Nat.cast_add]
+            congr 1
+            omega
+          · rw [probOutput_eq_zero_of_not_mem_support hz, zero_mul, zero_mul]
+      _ ≤ ((ws₀.length + l.length : ℕ) : ℝ≥0∞) +
+            (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+          have := deferredDraw_run_expected_attemptCount_le ids M maxAttempts pk sk hp₀ hp hAbort
+            oa qSrem hQ (((re, l), ws₀), false)
+          rwa [← hrun] at this
+  have hcancel : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+        (((z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length) : ℕ) : ℝ≥0∞))
+      ≤ (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+    rw [add_comm] at hsplit
+    exact (ENNReal.add_le_add_iff_left (by simp : ((ws₀.length + l.length : ℕ) : ℝ≥0∞) ≠ ∞)).mp
+      hsplit
+  refine hcancel.trans (le_of_eq ?_)
+  rw [← ENNReal.ofReal_natCast qSrem, ← ENNReal.ofReal_mul (by positivity)]
+  congr 1
+  field_simp
+
 /-! ### Read-recording handler: bad as a final-state predicate
 
 The deferred-draw run's bad flag is set at *read time*: a read fires when its target commitment is
@@ -2569,40 +3034,40 @@ theorem deferredDraw_bad_le_readRecord {γ : Type}
     (fun _ _ hp hbad => hp.2 hbad)
 
 omit [SampleableType Stmt] in
-/-- **The isolated remaining obligation, in read-recording final-state form.** The read-recording
-run's *final-state* read-hit predicate (`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the
-front-loaded i.i.d. `drawList` game with the deferred run's new-draw count law `kn` and some
-all-miss strategy `σ`. The bad event is a function of the *final* state (the recorded read-commit
-list and the drawn list), so the read-time/final-state mismatch is gone — both the value-free read
-points and the i.i.d. draws are available together in the final state.
+/-- **The isolated remaining obligation, in read-recording final-state form (attempt-count
+redraft).** The read-recording run's *final-state* read-hit predicate
+(`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the front-loaded i.i.d. `drawList` game with the
+deferred run's *attempt-count* law `kn` and some all-miss strategy `σ`. The bad event is a function
+of the *final* state (the recorded read-commit list and the drawn list), so the
+read-time/final-state mismatch is gone — both the value-free read points and the i.i.d. draws are
+available together in the final state.
 
-**SOUNDNESS WARNING (coupling-e): this statement is FALSE as currently written** — the count law
-`kn = z.2.1.2.length - ws₀.length` is the **reject** count (the drawn list records rejected
-commitments only, Round D), but the firing event tests reads against those **skewed** rejected
-draws, each distributed as `commit | reject` rather than the raw `Prod.fst <$> ids.commit` of the
-`drawList`-game RHS. A read at a commit `c⋆` with `Pr[reject | c⋆] = 1` and
-`Pr[= c⋆ | commit] = ε` lands in the drawn list with probability `≈ ε` (the LHS), while the
-reject-count RHS draws `E[kn] ≈ ε`-many fresh raw commits, firing with probability only `≈ ε²`. The
-skew factor is `1 / Pr[reject]`. Concretely with `maxAttempts = 1`: LHS `= ε`,
-RHS `= Pr[reject]·ε < ε` (counterexample verified arithmetically in coupling-e).
+**Count law (the redraft):** `kn` is the total ATTEMPT count `(drawnlist.length - ws₀.length) +
+(signedlist.length - l.length)`, i.e. the rejected-attempt count plus the signing-query count,
+**not** the reject count alone. The reject count is too small to dominate the firing — the firing
+tests reads against the *actual* rejected draws, each distributed as `commit | reject`, whereas the
+`drawList`-game RHS draws raw `Prod.fst <$> ids.commit`; a read at `c⋆` with `Pr[reject | c⋆] = 1`,
+`Pr[= c⋆ | commit] = ε` fires with probability `≈ ε` on the LHS, while a reject-count RHS of mean
+`≈ ε` fires only with probability `≈ ε²`. The attempt count adds one raw draw per signing query,
+covering each accepting attempt's fresh output-irrelevant draw, which removes the
+rejection-conditioning skew: at `maxAttempts = 1` it gives RHS `= 1 - (1-ε)^(reject+1) ≥ ε = LHS`
+(verified). The attempt count keeps the clean mean `qSrem/(1-p)`
+(`deferredDraw_attemptKn_mean_le`): the per-query charge `(reject expectation) + 1 =
+∑_{a≤maxAttempts} p^a ≤ 1/(1-p)` absorbs the extra `+1` by the tight reject bound
+`tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight` (`∑_{a<n} p^(a+1)`). The drawn list
+stays rejected-only, so the eager-bad ⟹ deferred-bad coupling
+(`deferredDraw_bad_le_readRecord` / `signBody_couple`) is untouched.
 
-The TIGHT sound count is the **total ATTEMPT count** (`reject count + accept count`), whose mean is
-`E[#attempts] = ∑_{a<n} p^a ≤ 1/(1-p)` per query, i.e. `qS/(1-p)` total — exactly the headline
-`cmaToNmaLoss` factor. The single-signing-body resampling over-count
-`ghostSignDrawBody_readManyList_le_drawList` proves the SOUND but loose
-`test (body rejects) ≤ drawList maxAttempts` (RHS draws `maxAttempts` fresh raw per query); the
-headline needs `drawList (attempt count)`. The genuine obstruction is structural and matches the
-multi-week PMF×PMF coupling: the drawn list must contain the *actual* rejected commits (so the
-eager-bad ⟹ deferred-bad coupling `deferredDraw_bad_le_readRecord` / `signBody_couple` holds), but
-those are *skewed*, while the headline mean demands an *unskewed* attempt-count comparison —
-Round D's rejected-only choice (needed to drop the unsound accepted-VALUE read) is in direct tension
-with the attempt-count requirement. The fix is to thread `kn` as a *separate* attempt counter in the
-deferred state (not the drawn-list length), keeping the drawn list rejected-only for the coupling,
-and prove `test rejected-list ≤ drawList (attempt count)` via the body-level resampling primitive
-generalized to draw one fresh raw commit per *attempt* (the accept branch contributing one fresh,
-output-irrelevant draw). The recorded read-commits are value-free (`roStep` answers from the real
-layer), so the read points are a fixed all-miss strategy `σ`; the atom is
-`OracleComp.probEvent_bind_fire_eq_defer`. NEXT ACTION = redraft (`kn` ↦ attempt count). -/
+**Remaining content (the genuine open core):** the fold-level deferral commute. The drawn list and
+the recorded read-commit list are correlated through the run, but the recorded read-commits are
+value-free (`roStep` answers from the real layer; the drawn values never feed the read points,
+`blindStepProj_map_ghostBlindImpl_indep`), so front-loading the run's interleaved per-attempt draws
+to the independent block `drawList … n` — with `σ` reading off the value-free read points as a fixed
+all-miss strategy — is the multi-week PMF×PMF joint coupling
+(`OracleComp.probEvent_bind_fire_eq_defer` lifted across the opaque adversary `simulateQ` fold).
+The single-body resampling over-count `ghostSignDrawBody_readManyList_le_drawList` is the sound but
+loose (`drawList maxAttempts`) per-query atom; the fold-lift tightens `maxAttempts` to the attempt
+count and extracts `σ`. -/
 theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -2617,14 +3082,17 @@ theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
           (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
             ((((re, l), ws₀), false), [])]
         ≤ Pr[(fun b : Bool => b = true) |
-            ((fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+            ((fun z : γ × DeferredState M Commit Chal =>
+                (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
               (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
                 (((re, l), ws₀), false)) >>= fun n =>
               OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
                 pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
   -- The deferral commute on the read-recording final state: front-load the run's interleaved
   -- per-attempt draws into the `drawList` block, leaving the value-free recorded read-commits as
-  -- the all-miss strategy `σ`. The bad event is now a final-state membership predicate.
+  -- the all-miss strategy `σ`. The bad event is now a final-state membership predicate, and the
+  -- count law is the total attempt count (rejects + signing queries), which removes the
+  -- rejection-conditioning skew.
   sorry
 
 omit [SampleableType Stmt] in
@@ -2652,7 +3120,8 @@ theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
       Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
           (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
         ≤ Pr[(fun b : Bool => b = true) |
-            ((fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+            ((fun z : γ × DeferredState M Commit Chal =>
+                (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
               (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
                 (((re, l), ws₀), false)) >>= fun n =>
               OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
@@ -2668,13 +3137,14 @@ theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
 
 omit [SampleableType Stmt] in
 /-- **Piece B: the deferred → drawList deferral commute.** Assembles the constructed count law's
-mean bound (`deferredDraw_kn_mean_le`) with the probabilistic over-count
+mean bound (`deferredDraw_attemptKn_mean_le`) with the probabilistic over-count
 (`deferredDraw_bad_le_drawList_fold_prob`). The deferred-draw run's bad marginal — starting with
 drawn prefix `ws₀` — is at most a front-loaded
 i.i.d. `drawList` game with *some* adaptive all-miss read strategy `σ` and *some* count law `kn`
 whose mean is `≤ qSrem/(1-p)`. The strategy `σ` and the count law `kn` are **constructed from the
 run itself** (they are existentially bound here, exactly as in the headline residual): `kn` is the
-deferred run's total-draw count law and `σ` is the all-miss read strategy. Stating `kn`/`σ`
+deferred run's total *attempt*-count law (rejected-attempt count plus signing-query count) and `σ`
+is the all-miss read strategy. Stating `kn`/`σ`
 existentially — rather than as inputs with only a mean bound — is what makes this statement *sound*:
 for an arbitrary `kn` with only a mean bound the inequality is false (e.g. `kn = δ₀`); the bound
 holds only for the `kn` that genuinely dominates the run's draw count. The query bound `hQ` (≤ qSrem
@@ -2692,7 +3162,8 @@ front block `drawList … n`, leaving the pre-first-hit reads as the fixed all-m
 single-draw deferral atom is `OracleComp.probEvent_bind_fire_eq_defer` (value-freeness from
 `blindStepProj_map_ghostBlindImpl_indep`, packaged in `ghostBlind_singleDraw_fire_le`); lifting it
 across the opaque adversary fold so all attempts' draws commute to the front is the joint coupling.
-The mean `≤ qSrem/(1-p)` is `geomAttemptSum_le` / `tsum_probOutput_commit_mul_abort_le`. -/
+The mean `≤ qSrem/(1-p)` is `deferredDraw_attemptKn_mean_le` (the tight reject bound
+`tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight` folded with `geomSum_le`). -/
 theorem deferredDraw_bad_le_drawList_fold {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -2712,15 +3183,17 @@ theorem deferredDraw_bad_le_drawList_fold {γ : Type}
             kn >>= fun n =>
               OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
                 pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Construct `kn` as the run's new-draw count law; `σ` from the probabilistic over-count.
-  -- The mean bound is fully discharged (`deferredDraw_kn_mean_le`); only the over-count remains.
+  -- Construct `kn` as the run's total attempt-count law (rejects + signing queries); `σ` from the
+  -- probabilistic over-count. The mean bound is fully discharged
+  -- (`deferredDraw_attemptKn_mean_le`); only the over-count remains.
   obtain ⟨σ, hbound⟩ :=
     deferredDraw_bad_le_drawList_fold_prob ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
       hGuess hAbort oa qSrem hQ re l ws₀
   exact ⟨σ,
-    (fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+    (fun z : γ × DeferredState M Commit Chal =>
+        (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
       (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false),
-    deferredDraw_kn_mean_le ids M maxAttempts pk sk hp₀ hp hAbort oa qSrem hQ.1 re l ws₀,
+    deferredDraw_attemptKn_mean_le ids M maxAttempts pk sk hp₀ hp hAbort oa qSrem hQ.1 re l ws₀,
     hbound⟩
 
 /-! ### Stage 3 linchpin: the `simulateQ`-fold deferral
