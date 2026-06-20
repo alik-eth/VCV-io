@@ -4215,7 +4215,25 @@ sound restatement and keeps the public `euf_cma` bound byte-identical (the consu
 This is strictly better-isolated than the pre-transport atom: the tape is an explicit front variable
 (no longer hidden inside the opaque `simulateQ (oa)` fold), so the tape⊥read-list independence is a
 property of an explicit `bind` rather than the genuine multi-week joint coupling the fold-level
-factorization (now banked) resolved. -/
+factorization (now banked) resolved.
+
+**The sole remaining structural crux (sharpened: it is FUNCTIONAL, not distributional).** The
+per-position charge reduces to one independence over `tapeDrawReadImpl`: the recorded read list is
+independent of a *rejected* tape position's `Commit` value. The sharp form is a *support-level
+value-substitution* fact, not a distributional conditional independence: the accept/reject decision
+of `tapeSignBody` on the head `(w, st)` is `ids.respond pk sk st c = none`, which depends on the
+`PrvState` part `st` and the challenge `c` but **not on the `Commit` part `w`**. Hence, for any
+fixed state and challenge randomness, on a position the body *rejects*, replacing `tape[k].1 = w` by
+any other `w'` leaves the output, the real cache, and (therefore, through the value-free `roStep`
+read channel) the entire recorded read list unchanged — only the recorded drawn list changes (`w'`
+instead of `w`). The accept branch returns `(some (w, z), [])` (so `w` enters the output/signature
+there — the reason the reject indicator must be kept to exclude accepted positions); the reject
+branch records `w` write-only into the drawn list. So the crux is a property of the explicit-tape
+run's *support / dependence structure*, provable by a value-substitution argument rather than a
+joint PMF×PMF coupling. Formalizing it still requires an inductive lemma over the `simulateQ (oa)`
+fold carrying the invariant "the recorded read list does not depend on the `Commit` part of any
+already-consumed-and-rejected tape position". This is the only sorry on the
+`MLDSA.euf_cma_security_of_nma` path. -/
 theorem readRecord_expected_pairs_tape_le {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -4241,11 +4259,25 @@ theorem readRecord_expected_pairs_tape_le {γ : Type}
                   (((((re, l), []), false), []), tape)] *
             ((z.2.2.length * (z.2.1.1.2.length + (z.2.1.1.1.2.length - l.length)) : ℕ) :
               ℝ≥0∞) := by
-  -- The remaining content (drop-reject per-position charge): the recorded read list is value-free
-  -- (`roStep`); `drawnlist.count rc ≤ #consumed tape positions k with tape[k].1 = rc`, and each
-  -- `tape[k]` is a fresh raw `Prod.fst <$> ids.commit` draw of mass `≤ ε`, independent of the
-  -- value-free `rc` and of `k`'s reachability. Summing over (read slot, consumed position) pairs
-  -- and dominating `#consumed ≤ #attempts` gives the bound.
+  -- The remaining content is the per-position value-free charge over the explicit front tape. Two
+  -- equivalent routes, both reducing to the SAME crux structural lemma (see the docstring):
+  -- * drop-reject per-position: `Σ_{rc∈readlist} drawnlist.count rc =
+  --   Σ_k 1[reached k]·1[rejects k]·readlist.count tape[k].1`; expand `tape[k]` by its i.i.d. `w`
+  --   (`Pr[tape[k]=w] = commit w`); factor `reached-k ⊥ tape[k]` (reach depends only on `tape[<k]`)
+  --   and `readlist ⊥ tape[k].1` GIVEN `k` rejects (THE CRUX — a rejected position's value is
+  --   write-only, never enters a signature/read target); drop `1[w rejects] ≤ 1` AFTER factoring on
+  --   the i.i.d. value `w`; then `Σ_w commit(w)·readlist.count w = Σ_{rc∈readlist} commit(rc) ≤
+  --   |readlist|·ε`; finally `Σ_k E[1[reached k]·|readlist|·ε] = ε·E[|readlist|·#consumed] ≤
+  --   ε·E[|readlist|·#attempts]`.
+  -- * resampling equality: `(readlist, drawnlist) =d (readlist, fresh i.i.d. draws ⊥ readlist of
+  --   the same length)`, after which the pair expectation is `Σ_pairs E[1[rc=d']] ≤
+  --   ε·|readlist|·#rejects ≤ ε·|readlist|·#attempts` by independence + `hGuess`.
+  -- Both routes need the crux independence `readlist ⊥ (rejected tape position's VALUE)` over
+  -- `tapeDrawReadImpl`: the tape→readlist channel is ONLY via signatures (= ACCEPTED entries), so a
+  -- rejected position's `Commit` value never enters any read target or query answer (reads answer
+  -- via `roStep` on the real layer). This is the genuine independence the campaign isolated; it is
+  -- NOT resolved by the (banked) fold-level tape factorization
+  -- `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`, which only front-loaded the draws.
   sorry
 
 omit [SampleableType Stmt] in
