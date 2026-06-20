@@ -1583,12 +1583,12 @@ theorem signBody_couple (pk : Stmt) (sk : Wit) (msg : M) :
               | none => (ghostSignBody ids M pk sk msg n).run
                   (re, gh.cacheQuery (msg, wst.1) c)) := by
         simp only [ghostSignBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
-          map_bind, pure_bind, StateT.run_modify]
+          pure_bind]
         refine congrArg (ids.commit pk sk >>= ·) (funext fun wst => ?_)
         refine congrArg (uniformSample Chal >>= ·) (funext fun c => ?_)
         refine congrArg (ids.respond pk sk wst.2 c >>= ·) (funext fun oz => ?_)
         cases oz with
-        | some z => simp [StateT.run_bind, StateT.run_modify, StateT.run_pure]
+        | some z => simp [StateT.run_modify]
         | none => simp [StateT.run_bind, StateT.run_modify]
       have hrun₂ : (ghostSignDrawBody ids M pk sk msg (n+1)).run re =
           (ids.commit pk sk >>= fun wst => uniformSample Chal >>= fun c =>
@@ -1598,12 +1598,12 @@ theorem signBody_couple (pk : Stmt) (sk : Wit) (msg : M) :
               | none => (fun rws => ((rws.1.1, wst.1 :: rws.1.2), rws.2)) <$>
                   (ghostSignDrawBody ids M pk sk msg n).run re) := by
         simp only [ghostSignDrawBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
-          map_bind, pure_bind, StateT.run_modify]
+          pure_bind]
         refine congrArg (ids.commit pk sk >>= ·) (funext fun wst => ?_)
         refine congrArg (uniformSample Chal >>= ·) (funext fun c => ?_)
         refine congrArg (ids.respond pk sk wst.2 c >>= ·) (funext fun oz => ?_)
         cases oz with
-        | some z => simp [StateT.run_bind, StateT.run_modify, StateT.run_pure]
+        | some z => simp [StateT.run_modify]
         | none => simp [StateT.run_bind, StateT.run_pure, map_eq_bind_pure_comp, Function.comp]
       rw [hrun₁, hrun₂]
       refine OracleComp.ProgramLogic.Relational.relTriple_bind
@@ -1779,9 +1779,9 @@ theorem deferredCouple_step (pk : Stmt) (sk : Wit)
 
 omit [SampleableType Stmt] in
 /-- **The ghost-blind → deferred run coupling.** By induction on the adversary computation `oa`,
-the eager ghost-blind run and the deferred-draw run are coupled with the invariant `deferredCoupleInv`
-preserved at every leaf, using `deferredCouple_step` at each query and the inductive hypothesis for
-the continuation. -/
+the eager ghost-blind run and the deferred-draw run are coupled with the invariant
+`deferredCoupleInv` preserved at every leaf, using `deferredCouple_step` at each query and the
+inductive hypothesis for the continuation. -/
 theorem deferredCouple_run {γ : Type} (pk : Stmt) (sk : Wit)
     (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
     ∀ (s₁ : GhostState M Commit Chal) (s₂ : DeferredState M Commit Chal),
@@ -1822,14 +1822,58 @@ theorem ghostBlind_bad_le_deferredDraw {γ : Type}
           (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s₂] :=
   OracleComp.ProgramLogic.Relational.probEvent_le_of_relTriple_imp
     (deferredCouple_run ids M maxAttempts pk sk oa s₁ s₂ hinv)
-    (fun p₁ p₂ hp => hp.2.2.2)
+    (fun _ _ hp => hp.2.2.2)
+
+omit [SampleableType Stmt] in
+/-- **Piece B: the deferred → drawList deferral commute (the precise remaining obligation).**
+The deferred-draw run's bad marginal — starting with drawn prefix `ws₀` — is at most the
+front-loaded i.i.d. `drawList` game with the adaptive all-miss read strategy `σ` and a count law
+`kn` bounding the run's total-draw distribution.
+
+This is the single genuinely-open probabilistic content of the linchpin. Both sides are now
+concrete and value-free (the eager ghost-value irrelevance is already discharged into Piece A, which
+reduced the eager run to this deferred run): the deferred handler draws one i.i.d. raw
+`Prod.fst <$> ids.commit pk sk` commitment per signing attempt and only ever *records* the growing
+list, while a read fires the bad flag iff its commitment is already in the drawn list. The remaining
+work is the *deferral commute*: pull the run's interleaved per-attempt draws out to the independent
+front block `drawList … n`, leaving the pre-first-hit reads as the fixed all-miss strategy `σ`
+(over-count: a read that hits a commitment drawn *so far* certainly hits one drawn in the full block
+`ws₀ ++ ws`, so the direction is `≤` and no rejection-conditioning skew is formed). The per-attempt
+single-draw deferral atom is `OracleComp.probEvent_bind_fire_eq_defer` (value-freeness from
+`blindStepProj_map_ghostBlindImpl_indep`, packaged in `ghostBlind_singleDraw_fire_le`); lifting it
+across the opaque adversary fold so all attempts' draws commute to the front is the joint coupling.
+
+The count law `kn` must dominate the deferred run's total-draw count; at the headline its mean is
+`≤ qSrem/(1-p)` via `geomAttemptSum_le` / `tsum_probOutput_commit_mul_abort_le`. -/
+theorem deferredDraw_bad_le_drawList_fold {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (σ : List Bool → Commit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M)
+    (ws₀ : List Commit) (kn : ProbComp ℕ)
+    (qSrem : ℕ)
+    (hmean : ∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) :
+    Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
+        (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
+      ≤ Pr[(fun b : Bool => b = true) |
+          kn >>= fun n =>
+            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+              pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+  -- The deferral commute: front-load the deferred run's per-attempt draws into the `drawList`
+  -- block, leaving the pre-first-hit reads as the fixed strategy `σ`. Multi-week joint coupling.
+  sorry
 
 /-! ### Stage 3 linchpin: the `simulateQ`-fold deferral (pinned target)
 
 `ghostBlind_bad_le_drawList_fold` is the pinned, well-typed target, generalized so the induction on
 the adversary computation `oa` goes through. The residual `ghostBlind_bad_le_bind_drawList` is its
-`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance. It chains Piece A (the
-ghost-blind→deferred coupling) and Piece B (the deferred→drawList deferral commute) above.
+`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance. It chains Piece A
+(`ghostBlind_bad_le_deferredDraw`, proven) and Piece B
+(`deferredDraw_bad_le_drawList_fold`, the precise remaining obligation).
 
 **Mean side.** `hmean` bounds the future-draw count expectation by `qSrem/(1-p)`; at the headline
 this is the aggregate of `tsum_probOutput_commit_mul_abort_le` over the `qSrem` remaining signing
@@ -1854,10 +1898,15 @@ theorem ghostBlind_bad_le_drawList_fold {γ : Type}
           kn >>= fun n =>
             OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
               pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Pinned target: chain Piece A (the ghost-blind→deferred coupling) and Piece B (the
-  -- deferred→drawList deferral commute). Piece A is discharged; Piece B is the precise isolated
-  -- remaining obligation.
-  sorry
+  -- Chain Piece A (proven) and Piece B (isolated): the eager start state
+  -- `(((re, gh), l), false)` couples to the deferred start `(((re, l), ws₀), false)` because
+  -- `hPrefix` is exactly the domain-coverage component of `deferredCoupleInv` (real cache and
+  -- signed list agree by `rfl`, the bad flags are both `false`).
+  refine le_trans
+    (ghostBlind_bad_le_deferredDraw ids M maxAttempts pk sk oa (((re, gh), l), false)
+      (((re, l), ws₀), false) ⟨rfl, rfl, hPrefix, by simp⟩) ?_
+  exact deferredDraw_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+    hGuess hAbort σ oa re l ws₀ kn qSrem hmean
 
 omit [SampleableType Stmt] in
 /-- **The sole remaining residual of the sound #228 ghost-read bound** (M2, explicit-list form).
