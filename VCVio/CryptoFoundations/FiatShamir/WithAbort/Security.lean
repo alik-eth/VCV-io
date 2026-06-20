@@ -3498,6 +3498,42 @@ theorem deferredDrawRead_run_expected_drawnlist_length_le {γ : Type} (pk : Stmt
               have : qSrem - 1 + 1 = qSrem := by omega
               rw [← this]; push_cast; ring]
 
+omit [SampleableType Stmt] [SampleableType Chal] [DecidableEq Commit] in
+/-- **Splitting an i.i.d. front draw block.** Drawing `n + m` independent commitment draws into a
+list is the same computation as drawing the first `n` and then the last `m` and concatenating: the
+front block factors into independent sub-blocks. This is the structural identity that, with the
+i.i.d. resampling commute, lets the per-query draw blocks accumulate into one front tape. -/
+lemma drawList_commit_add (pk : Stmt) (sk : Wit) (n m : ℕ) :
+    OracleComp.drawList (ids.commit pk sk) (n + m) =
+      OracleComp.drawList (ids.commit pk sk) n >>= fun a =>
+        OracleComp.drawList (ids.commit pk sk) m >>= fun b => pure (a ++ b) := by
+  classical
+  induction n with
+  | zero => simp [OracleComp.drawList]
+  | succ n ih =>
+      rw [Nat.succ_add, OracleComp.drawList, OracleComp.drawList, ih]
+      simp only [bind_assoc, pure_bind, List.cons_append]
+
+omit [SampleableType Stmt] [SampleableType Chal] [DecidableEq Commit] in
+/-- **Front draw blocks have a deterministic length.** Every list in the support of
+`drawList (ids.commit pk sk) n` has length exactly `n`: the block always draws `n` keys. This lets
+the `take`/`drop` split of an over-provisioned tape resolve to the per-query block and its
+remainder. -/
+lemma length_mem_support_drawList_commit (pk : Stmt) (sk : Wit) (n : ℕ)
+    (ws : List (Commit × PrvState))
+    (hws : ws ∈ support (OracleComp.drawList (ids.commit pk sk) n)) :
+    ws.length = n := by
+  classical
+  induction n generalizing ws with
+  | zero =>
+      simp only [OracleComp.drawList, support_pure, Set.mem_singleton_iff] at hws
+      subst hws; rfl
+  | succ n ih =>
+      rw [OracleComp.drawList] at hws
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hws
+      obtain ⟨w, hw, ws', hws', rfl⟩ := hws
+      simp [ih ws' hws']
+
 /-! ### Fold-level tape factorization (the framework infrastructure)
 
 The body-level half of the tape factorization
