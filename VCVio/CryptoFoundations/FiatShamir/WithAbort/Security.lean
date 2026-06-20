@@ -2169,7 +2169,7 @@ theorem deferredDraw_run_expected_length_le {γ : Type} (pk : Stmt) (sk : Wit)
                       (ob x.1)).run x.2] * (z.2.1.2.length : ℝ≥0∞))
             ≤ ∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
                 ((x.2.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c) :=
-              ENNReal.tsum_le_tsum fun x => mul_le_mul_left' (hcont x) _
+              ENNReal.tsum_le_tsum fun x => by gcongr; exact hcont x
           _ = (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
                   (x.2.1.2.length : ℝ≥0∞)) + (b : ℝ≥0∞) * c := by
               rw [show (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
@@ -2221,7 +2221,7 @@ theorem deferredDraw_run_neverFail {γ : Type} (pk : Stmt) (sk : Wit)
       refine ⟨?_, fun x _ => ih x.1 x.2⟩
       rcases t with (n | mc) | msg
       · simp [deferredDrawImpl]
-      · simp only [deferredDrawImpl, StateT.run_mk]
+      · simp only [deferredDrawImpl]
         rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
       · simp [deferredDrawImpl]
 
@@ -2313,9 +2313,9 @@ this deferred run): the deferred handler draws one i.i.d. raw `Prod.fst <$> ids.
 commitment per signing attempt and only records the growing list, while a read fires the bad flag
 iff its commitment is already in the drawn list. The remaining work is the *deferral commute*: pull
 the run's interleaved per-attempt draws out to the independent front block `drawList … n`, leaving
-the pre-first-hit reads as the fixed all-miss strategy `σ` (over-count: a read that hits a commitment
-drawn *so far* certainly hits one drawn in the full block `ws₀ ++ ws`, so the direction is `≤` and no
-rejection-conditioning skew is formed). The per-attempt single-draw deferral atom is
+the pre-first-hit reads as the fixed all-miss strategy `σ` (over-count: a read that hits a
+commitment drawn *so far* certainly hits one drawn in the full block `ws₀ ++ ws`, so the direction
+is `≤` and no rejection-conditioning skew is formed). The per-attempt single-draw deferral atom is
 `OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold so all
 attempts' draws commute to the front is the joint PMF×PMF coupling. -/
 theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
