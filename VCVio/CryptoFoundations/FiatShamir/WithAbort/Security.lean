@@ -4857,9 +4857,6 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
 
 omit [SampleableType Stmt] in
 /-- **The constant-length body charge (the genuine per-attempt induction).** Over one signing body
-
-omit [SampleableType Stmt] in
-/-- **The constant-length body charge (the genuine per-attempt induction).** Over one signing body
 `ghostSignDrawBody n`, the expected continuation read-multiplicity of the body's *rejected* draws —
 `E[Σ_{w ∈ body-rejects} continuation.readlist.count w]` — is at most `ε · (rl.length + qH) ·
 E[#body-rejects + 1]`, where `rl` is the continuation's start read list and `qH` the continuation's
