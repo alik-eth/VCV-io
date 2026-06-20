@@ -3894,6 +3894,52 @@ theorem evalDist_deferredDrawRead_eq_drawList_tapeDrawRead {γ : Type} (pk : Stm
           (fun a s' => ih a (qSrem - 1) (hQ2 a) s')
 
 omit [SampleableType Stmt] in
+/-- **The per-pair charge in the tape-factored representation (the isolated remaining core).** After
+the fold-level tape factorization `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`, the
+read-recording run is `drawList (ids.commit pk sk) (maxAttempts·qSrem) >>= fun tape => …`, with the
+draw tape sampled *upfront* as one independent block. In this representation the recorded drawn list
+is a function of the tape (its rejected entries) while the recorded read list is **value-free** (the
+reads answer from `roStep` on the real layer, never the tape values), so the read list is manifestly
+independent of the tape values. The per-pair charge follows: for each `(read slot rc, draw slot)`
+pair, the draw slot is a tape entry `= Prod.fst <$> ids.commit pk sk` of mass `≤ ε` (`hGuess`),
+independent of `rc`, so `E[1[rc = d]] ≤ ε`, and summing over the
+`readlist.length · drawnlist.length` pairs gives the bound.
+
+This is strictly better-isolated than the pre-transport atom: the tape is an explicit front variable
+(no longer hidden inside the opaque `simulateQ (oa)` fold), so the tape⊥read-list independence is a
+property of an explicit `bind` rather than the genuine multi-week joint coupling the fold-level
+factorization (now banked) resolved. -/
+theorem readRecord_expected_pairs_tape_le {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ)
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
+    (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | OracleComp.drawList (ids.commit pk sk) (maxAttempts * qSrem) >>= fun tape =>
+            (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) oa).run
+                (((((re, l), []), false), []), tape)] *
+          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      ≤ ENNReal.ofReal ε *
+        ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | OracleComp.drawList (ids.commit pk sk) (maxAttempts * qSrem) >>= fun tape =>
+              (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                  (p.1, p.2.1)) <$>
+                (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) oa).run
+                  (((((re, l), []), false), []), tape)] *
+            ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞) := by
+  -- The remaining content: in the tape-factored run the recorded read list is value-free (`roStep`)
+  -- and the recorded drawn list consists of tape entries (`= Prod.fst <$> ids.commit pk sk`, mass
+  -- `≤ ε`), with the read list independent of the tape values. Each `(read, draw)` pair charges
+  -- at most `ε`.
+  sorry
+
+omit [SampleableType Stmt] in
 /-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
 pair count — the expected number of coinciding `(recorded read-commit, recorded drawn commit)`
 pairs, `E[Σ_{rc ∈ readlist} drawnlist.count rc]` — is at most `ε` times the expected
@@ -3951,11 +3997,28 @@ theorem readRecord_expected_pairs_le {γ : Type}
           Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
               ((((re, l), []), false), [])] *
             ((z.2.2.length * z.2.1.1.2.length : ℕ) : ℝ≥0∞) := by
-  -- The value-free fold-lift: each fresh recorded draw is `⊥` the value-free readlist and has mass
-  -- `≤ ε`, so each of the `readlist.length · drawnlist.length` pairs contributes `≤ ε`. Lifting the
-  -- per-pair independence through the opaque adversary `simulateQ (oa)` fold is the genuine
-  -- multi-week PMF×PMF joint coupling (draw-before-read pairs do not factor per-step).
-  sorry
+  classical
+  -- STEP C: transport both expectations through the fold-level tape factorization, so the recorded
+  -- draws become a function of the front tape and the value-free read list becomes independent of
+  -- the tape values.
+  have hfold := evalDist_deferredDrawRead_eq_drawList_tapeDrawRead ids M maxAttempts pk sk oa qSrem
+    hQ.1 ((((re, l), []), false), [])
+  have hpr : ∀ z : γ × DeferredReadState M Commit Chal,
+      Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+          ((((re, l), []), false), [])] =
+        Pr[= z | OracleComp.drawList (ids.commit pk sk) (maxAttempts * qSrem) >>= fun tape =>
+            (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) oa).run
+                (((((re, l), []), false), []), tape)] :=
+    fun z => by rw [probOutput_def, probOutput_def, hfold]
+  simp only [hpr]
+  -- The per-pair charge in the tape-factored representation: with `drawnlist = f(tape)` (recorded
+  -- rejected tape entries) and `readlist` value-free (`roStep`), each `(read slot, draw slot)` pair
+  -- charges at most `ε` by `hGuess` (each tape entry is a fresh raw `Prod.fst <$> ids.commit` draw
+  -- of mass `≤ ε`, independent of the value-free read points).
+  exact readRecord_expected_pairs_tape_le ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+    hGuess hAbort oa qSrem hQ re l
 
 omit [SampleableType Stmt] in
 /-- **The expected-coincidence-count bound (the numeric remaining obligation, first-moment route).**
