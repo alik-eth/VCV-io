@@ -4517,7 +4517,73 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
         ((alc.1.2.length : ℕ) : ℝ≥0∞) with hR
   -- The per-`ws` head bound, summed over `ws` (gate dropped, value-substituted, `ε`-kernel).
   have hHead : (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] * H ws) ≤ L₀ := by
-    sorry
+    rw [hH]
+    -- Per `(rws, z)` the inner `ws`-marginal of `z.count ws.1` is `≤ L₀`; the body and continuation
+    -- have full mass, so the whole head expectation is `≤ L₀`.
+    have hinner : ∀ (rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache)
+        (z : γ × DeferredReadState M Commit Chal),
+        z ∈ support ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob rws.1.1)).run
+            ((((rws.2, sgn), dr), bad), rl)) →
+        (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] * ((z.2.2.count ws.1 : ℕ) : ℝ≥0∞))
+          ≤ L₀ := by
+      intro rws z hz
+      calc (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] *
+            ((z.2.2.count ws.1 : ℕ) : ℝ≥0∞))
+          ≤ ENNReal.ofReal ε * ((z.2.2.length : ℕ) : ℝ≥0∞) :=
+            tsum_probOutput_commit_mul_count_le (ids.commit pk sk) z.2.2 ε (fun cm => hGuess cm)
+        _ ≤ L₀ := by rw [hL₀]; gcongr; exact_mod_cast hlen rws.1.1 rws.2 dr z hz
+    -- Rewrite the head as a single average over `(ws, rws, z)`, reorder, bound, and recombine.
+    calc (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] *
+            ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+              Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
+                ∑' z : γ × DeferredReadState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                      (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] *
+                    ((z.2.2.count ws.1 : ℕ) : ℝ≥0∞))
+        = ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
+              ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                    (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] *
+                  (∑' ws : Commit × PrvState, Pr[= ws | ids.commit pk sk] *
+                    ((z.2.2.count ws.1 : ℕ) : ℝ≥0∞)) := by
+          -- Fully distribute the probability weights, reorder `ws` innermost, recombine.
+          simp_rw [← ENNReal.tsum_mul_left]
+          rw [ENNReal.tsum_comm]
+          refine tsum_congr fun rws => ?_
+          rw [ENNReal.tsum_comm]
+          refine tsum_congr fun z => ?_
+          refine tsum_congr fun ws => by ring
+      _ ≤ ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
+              ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                    (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] * L₀ := by
+          refine ENNReal.tsum_le_tsum fun rws => ?_
+          refine mul_le_mul_left' (ENNReal.tsum_le_tsum fun z => ?_) _
+          rcases eq_or_ne Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+              (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] 0 with hz | hz
+          · rw [hz]; simp
+          · gcongr
+            exact hinner rws z ((mem_support_iff _ _).mpr hz)
+      _ = L₀ * ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
+              ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                    (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] := by
+          rw [← ENNReal.tsum_mul_left]
+          refine tsum_congr fun rws => ?_
+          rw [ENNReal.tsum_mul_right, ← mul_assoc, mul_comm _ L₀, mul_assoc]
+      _ = L₀ := by
+          have hone : (∑' rws : (Option (Commit × Resp) × List Commit) ×
+              (M × Commit →ₒ Chal).QueryCache,
+              Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
+                ∑' z : γ × DeferredReadState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                      (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)]) = 1 := by
+            rw [← hbodyMass re]
+            exact tsum_congr fun rws => by rw [hcontMass rws.1.1 rws.2 dr, mul_one]
+          rw [hone, mul_one]
   -- The per-`ws` LHS inner bound: head + recursive (the inductive hypothesis).
   have h_ws : ∀ ws : Commit × PrvState,
       (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
