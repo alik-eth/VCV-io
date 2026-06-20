@@ -4993,32 +4993,18 @@ fixed, read list — no rejection-conditioning skew). The body's single uncondit
 (`+1`) pays the full-marginal head charge, and the read list `⊥` the attempt count factors
 `E[readlist.length · #attempts] = E[readlist.length] · E[#attempts]`.
 
-**Remaining work (the sole sorry on the `MLDSA.euf_cma_security_of_nma` path).** With the read-list
-*length* kept variable, a naive per-attempt induction over `ghostSignDrawBody` does *not* close: the
-continuation's expected read-list length depends on the body *output* (the adversary `ob out` reads
-adaptively on the returned signature `out`), so the accept-branch and reject-branch continuations
-have unrelated read lengths, and the head's full-marginal charge `ε · E[length]` (paid by the body's
-single unconditional `+1` query) cannot be matched against the per-branch length (machine-analysed).
-
-**The closing route (concrete, verified by hand):** replace the variable read-list length factor by
-its *deterministic* bound `readlist.length ≤ start.readlist.length + qH`
-(`deferredDrawReadImpl_run_readlist_length_le`, banked, needs the read-query budget `qH`). With the
-length factor a *constant* `L₀`, the per-attempt induction *does* close: the head charges
-`ε · L₀ · 1` at the full marginal (drop the reject indicator on the value-substituted, fixed read
-list — `deferredDrawRead_run_count_dl_invariant`), the recursion charges `ε · L₀ · #rejects` (the
-inductive hypothesis), and `Pr[accept] · L₀ + Pr[reject] · L₀ = L₀` pays the full-mass head from the
-*unconditional* `+1` (the signing query is made on every branch). The accept/reject length mismatch
-vanishes because `L₀` is branch-independent. Executing this requires threading the read-query budget
-`oa.IsQueryBoundP (· matches .inl (.inr _)) qH` through `readRecord_expected_pairs_nontape_general`
-and this lemma, restating their read-list-length factor as the constant `qH+1`; the downstream
-consumer `readRecord_expected_coincidences_le` already applies exactly this `readlist.length ≤ qH+1`
-domination (its Step 4), so the headline bound `qS·(qH+1)·ε/(1-p)` stays byte-identical. The
-value-substitution lemma (`deferredDrawRead_run_count_dl_invariant`), the atomic `ε`-kernel
-(`tsum_probOutput_commit_mul_count_le`), the inline-run induction (pure / read / uniform cases,
-`readRecord_expected_pairs_nontape_general`), the deterministic read-length bound
-(`deferredDrawReadImpl_run_readlist_length_le`), and the transport from the tape representation
-(`readRecord_expected_pairs_tape_le`) are all proven; what remains is the budget-threaded
-per-attempt body induction above. -/
+**Proof.** Unfold the sign step (`deferredDrawReadImpl … (Sum.inr msg)`), which maps each
+signing-body output `alc` to the post-state with drawn list `s.drawn ++ alc.1.2` and signed list
+`msg :: s.signed`. The continuation charge from the post-body state is bounded per `alc` by the
+inductive hypothesis `ih`; its pre-existing drawn count splits via `List.count_append` into the start
+drawn count (matched against the right-hand side) and the *body coincidence*
+`E[Σ_{rc ∈ readlist} alc.1.2.count rc]`, which the bilinear count swap `sum_map_count_comm` recasts
+as `E[Σ_{w ∈ alc.1.2} readlist.count w]` and `ghostSignDrawBody_continuation_charge` bounds by
+`ε · (rl.length + qH) · E[#attempts + 1]`. The slack length factor recombines via the deterministic
+prefix monotonicities `deferredDrawRead_run_drawn_prefix` / `deferredDrawRead_run_signed_prefix`:
+the gap between the start slack and the post-body slack is exactly `alc.1.2.length + 1` (the body's
+rejected draws plus the single signing query), which the body's `+1` term covers. The continuation
+run's full mass (`deferredDrawRead_run_neverFail`) makes the constant-length factor `L₀` exact. -/
 theorem nontape_signStep_charge {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -5456,8 +5442,7 @@ branch records `w` write-only into the drawn list. So the crux is a property of 
 run's *support / dependence structure*, provable by a value-substitution argument rather than a
 joint PMF×PMF coupling. Formalizing it still requires an inductive lemma over the `simulateQ (oa)`
 fold carrying the invariant "the recorded read list does not depend on the `Commit` part of any
-already-consumed-and-rejected tape position". This is the only sorry on the
-`MLDSA.euf_cma_security_of_nma` path. -/
+already-consumed-and-rejected tape position". -/
 theorem readRecord_expected_pairs_tape_le {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -5560,7 +5545,7 @@ joint coupling; the front-loaded game is not the image of `oa` under any handler
 The surrounding reduction (`countP_mem_le_sum_count`, the deterministic readlist-length bound
 `deferredDrawReadImpl_run_readlist_length_le`, the expected drawn-list length fold
 `deferredDrawRead_run_expected_drawnlist_length_le`, and the final arithmetic) is fully proven and
-axiom-clean; this atom is the only remaining sorry. -/
+axiom-clean. -/
 theorem readRecord_expected_pairs_le {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
