@@ -3672,6 +3672,7 @@ theorem drawList_combine_take_drop {δ : Type} (pk : Stmt) (sk : Wit) (q' : ℕ)
   refine evalDist_bind_congr_left _ _ _ (fun rest => ?_)
   rw [pure_bind, List.take_left' hlen, List.drop_left' hlen]
 
+omit [SampleableType Stmt] in
 theorem evalDist_defSignStep_splice {δ : Type} (pk : Stmt) (sk : Wit) (msg : M)
     (s : DeferredReadState M Commit Chal)
     (k : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache →
@@ -3686,6 +3687,83 @@ theorem evalDist_defSignStep_splice {δ : Type} (pk : Stmt) (sk : Wit) (msg : M)
   rw [evalDist_bind,
     evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody ids M pk sk msg maxAttempts s.1.1.1.1,
     ← evalDist_bind]
+
+omit [SampleableType Stmt] in
+/-- **Sign-step cross-step commute (the crux inductive step).** The deferred-draw sign step,
+composed with the deferred continuation, factors as a single front draw block of
+`maxAttempts·(q'+1)` commitments followed by the tape-consuming sign step + tape continuation. The
+genuine framework content: the body's `maxAttempts` draw block splices to the front via the per-body
+factorization (`evalDist_defSignStep_splice`); the continuation's `maxAttempts·q'` block (supplied
+by the inductive hypothesis `hcont`) commutes past the body via the i.i.d. resampling commute
+(`evalDist_bind_comm_probComp`); the two blocks combine into one `maxAttempts·(q'+1)` block split by
+`take`/`drop` (`drawList_combine_take_drop`), exactly the tape the tape-consuming sign step
+consumes. -/
+theorem evalDist_signStep_commute {γ : Type} (pk : Stmt) (sk : Wit) (msg : M)
+    (s : DeferredReadState M Commit Chal) (q' : ℕ)
+    (ob : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range
+        (Sum.inr msg) →
+      OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (hcont : ∀ (a : ((unifSpec + (M × Commit →ₒ Chal)) +
+          (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg))
+        (s' : DeferredReadState M Commit Chal),
+      𝒟[(simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob a)).run s'] =
+        𝒟[OracleComp.drawList (ids.commit pk sk) (maxAttempts * q') >>= fun tape =>
+            (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob a)).run (s', tape)]) :
+    𝒟[(deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s >>= fun p =>
+        (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2] =
+      𝒟[OracleComp.drawList (ids.commit pk sk) (maxAttempts * (q' + 1)) >>= fun tape =>
+          (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+              (p.1, p.2.1)) <$>
+            ((tapeDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run (s, tape) >>= fun p =>
+              (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2)] := by
+  classical
+  -- LHS: fold the deferred sign step's map into the body bind, then splice the front block.
+  rw [show (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s >>= (fun p =>
+        (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2)
+      = (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1 >>= fun alc =>
+          (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+            (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)
+      from by
+        rw [show (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s
+              = (fun alc : (Option (Commit × Resp) × List Commit) ×
+                  (M × Commit →ₒ Chal).QueryCache =>
+                  (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))) <$>
+                (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1 from rfl]
+        simp [bind_map_left]]
+  rw [evalDist_defSignStep_splice ids M maxAttempts pk sk msg s
+    (fun alc => (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+      (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))]
+  -- Rewrite the continuation by `hcont`, under the leading `drawList maxAttempts` and body binds.
+  rw [evalDist_bind_congr (mx := OracleComp.drawList (ids.commit pk sk) maxAttempts)
+    (fun blk _ => evalDist_bind_congr (mx := (tapeSignBody ids M pk sk msg blk).run s.1.1.1.1)
+      (fun alc _ => hcont alc.1.1 ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)))]
+  -- Commute the continuation's `maxAttempts·q'` block to the front past the body.
+  rw [evalDist_bind_congr (mx := OracleComp.drawList (ids.commit pk sk) maxAttempts)
+    (fun blk _ => evalDist_bind_comm_probComp ((tapeSignBody ids M pk sk msg blk).run s.1.1.1.1)
+      (OracleComp.drawList (ids.commit pk sk) (maxAttempts * q'))
+      (fun alc tape => (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+          (p.1, p.2.1)) <$>
+        (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk)
+          (ob alc.1.1)).run
+            (((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2), tape)))]
+  -- Combine the two front blocks into one `maxAttempts·(q'+1)` block split by `take`/`drop`.
+  rw [drawList_combine_take_drop ids maxAttempts pk sk q'
+    (fun blk rest => (tapeSignBody ids M pk sk msg blk).run s.1.1.1.1 >>= fun alc =>
+      (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+          (p.1, p.2.1)) <$>
+        (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk)
+          (ob alc.1.1)).run
+            (((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2), rest))]
+  -- Match the RHS: the tape sign step consumes `take maxAttempts` and threads `drop maxAttempts`.
+  refine evalDist_bind_congr_left _ _ _ (fun tape => ?_)
+  rw [show (tapeDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run (s, tape)
+        = (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+            (alc.1.1, (((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2),
+              tape.drop maxAttempts))) <$>
+          (tapeSignBody ids M pk sk msg (tape.take maxAttempts)).run s.1.1.1.1 from rfl]
+  simp [bind_map_left, map_bind]
 
 omit [SampleableType Stmt] in
 /-- **The fold-level tape factorization (the framework lemma).** By induction on the adversary
@@ -3800,14 +3878,20 @@ theorem evalDist_deferredDrawRead_eq_drawList_tapeDrawRead {γ : Type} (pk : Stm
           (fun a st => (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob a)).run st)
           pk sk (fun a s' => ih a qSrem (hQ2 a) s')
       · -- SIGN: the crux. Splice the per-body draw block to the front past the continuation.
-        have hpos : 0 < qSrem := by rcases hQ1 with h | h; · exact absurd rfl h; · exact h
+        have hpos : 0 < qSrem := by
+          rcases hQ1 with h | h
+          · exact absurd rfl h
+          · exact h
+        clear hQ1
         have hqs : (if (match (Sum.inr msg :
               ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain) with
             | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem - 1 := rfl
         rw [hqs] at hQ2
         simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
           id_map, StateT.run_bind]
-        sorry
+        rw [show qSrem = (qSrem - 1) + 1 from by omega]
+        exact evalDist_signStep_commute ids M maxAttempts pk sk msg s (qSrem - 1) ob
+          (fun a s' => ih a (qSrem - 1) (hQ2 a) s')
 
 omit [SampleableType Stmt] in
 /-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
