@@ -4422,26 +4422,32 @@ fixed, read list — no rejection-conditioning skew). The body's single uncondit
 (`+1`) pays the full-marginal head charge, and the read list `⊥` the attempt count factors
 `E[readlist.length · #attempts] = E[readlist.length] · E[#attempts]`.
 
-**Remaining work (the sole sorry on the `MLDSA.euf_cma_security_of_nma` path).** The reduction to
-the sound per-position bound is not a naive per-attempt induction over `ghostSignDrawBody`: the
-continuation's expected read-list *length* depends on the body *output* (the adversary `ob out`
-reads adaptively on the returned signature `out`), so the accept-branch and reject-branch
-continuations have unrelated read lengths, and a per-attempt split mismatches them (a real
-obstruction, machine-checked: the abstract per-body charge with the
-`(#rejects + 1)·E[length(body-output)]` form is *not* provable by attempt induction — the head's
-full-marginal charge needs the whole-body output-averaged length, which the per-branch `+1` cannot
-supply). The sound route charges *all* body draws against the *same* final continuation via the
-body tape factorization (`evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody`, banked): the `n`
-draws are pre-drawn (`⊥` reach), the read list is value-substituted (`⊥` each rejected draw's
-value), and the
-per-position charge `Σ_k Pr[reach k] · ε · E[readlist.length]` telescopes to
-`ε · E[#attempts] · E[readlist.length]`.
-The value-substitution lemma (`deferredDrawRead_run_count_dl_invariant`), the atomic `ε`-kernel
+**Remaining work (the sole sorry on the `MLDSA.euf_cma_security_of_nma` path).** With the read-list
+*length* kept variable, a naive per-attempt induction over `ghostSignDrawBody` does *not* close: the
+continuation's expected read-list length depends on the body *output* (the adversary `ob out` reads
+adaptively on the returned signature `out`), so the accept-branch and reject-branch continuations
+have unrelated read lengths, and the head's full-marginal charge `ε · E[length]` (paid by the body's
+single unconditional `+1` query) cannot be matched against the per-branch length (machine-analysed).
+
+**The closing route (concrete, verified by hand):** replace the variable read-list length factor by
+its *deterministic* bound `readlist.length ≤ start.readlist.length + qH`
+(`deferredDrawReadImpl_run_readlist_length_le`, banked, needs the read-query budget `qH`). With the
+length factor a *constant* `L₀`, the per-attempt induction *does* close: the head charges
+`ε · L₀ · 1` at the full marginal (drop the reject indicator on the value-substituted, fixed read
+list — `deferredDrawRead_run_count_dl_invariant`), the recursion charges `ε · L₀ · #rejects` (the
+inductive hypothesis), and `Pr[accept] · L₀ + Pr[reject] · L₀ = L₀` pays the full-mass head from the
+*unconditional* `+1` (the signing query is made on every branch). The accept/reject length mismatch
+vanishes because `L₀` is branch-independent. Executing this requires threading the read-query budget
+`oa.IsQueryBoundP (· matches .inl (.inr _)) qH` through `readRecord_expected_pairs_nontape_general`
+and this lemma, restating their read-list-length factor as the constant `qH+1`; the downstream
+consumer `readRecord_expected_coincidences_le` already applies exactly this `readlist.length ≤ qH+1`
+domination (its Step 4), so the headline bound `qS·(qH+1)·ε/(1-p)` stays byte-identical. The
+value-substitution lemma (`deferredDrawRead_run_count_dl_invariant`), the atomic `ε`-kernel
 (`tsum_probOutput_commit_mul_count_le`), the inline-run induction (pure / read / uniform cases,
-`readRecord_expected_pairs_nontape_general`), the body tape factorization, and the transport from
-the tape representation (`readRecord_expected_pairs_tape_le`) are all proven; what remains is the
-per-position assembly composing the body tape factorization with the value substitution and the
-draws-`⊥`-reach per-position kernel. -/
+`readRecord_expected_pairs_nontape_general`), the deterministic read-length bound
+(`deferredDrawReadImpl_run_readlist_length_le`), and the transport from the tape representation
+(`readRecord_expected_pairs_tape_le`) are all proven; what remains is the budget-threaded
+per-attempt body induction above. -/
 theorem nontape_signStep_charge {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
