@@ -1582,6 +1582,178 @@ lemma run_ghostSignDrawBody_succ (pk : Stmt) (sk : Wit) (msg : M) (n : ℕ)
   | some z => simp [StateT.run_modify]
   | none => simp [StateT.run_bind, StateT.run_pure, map_eq_bind_pure_comp, Function.comp]
 
+/-! ### Body-level tape resampling (the per-body half of the tape factorization)
+
+The draw-collecting signing body `ghostSignDrawBody` draws each attempt's commitment *inline*. The
+genuine fold-lift content of the ghost-read bound is to front-load every interleaved per-attempt
+draw into one independent block, so the drawn *values* factor away from the value-free adversarial
+read points. The body-level half of that program — recasting one signing body's inline draws as
+consumption from a *pre-drawn* tape — is proved here as a distributional equality
+`evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody`:
+
+`𝒟[(ghostSignDrawBody … n).run re] = 𝒟[drawList (ids.commit pk sk) n >>= tapeSignBody … tape]`.
+
+Pre-drawing the `n`-block of full `(Commit × PrvState)` commitment draws and consuming them
+head-first (`tapeSignBody`) is distributionally identical to drawing them inline: the control flow
+(accept/reject, via the inline `uniformSample`/`respond`) reads the *same* tape values, and the
+unused suffix on an early accept is discarded. The proof is a structural induction on `n` that, at
+each attempt, commutes the recursive front block `drawList n` past the inline
+`uniformSample`/`respond` draws (`evalDist_bind_comm_probComp`, the i.i.d. resampling step) and
+matches the reject-branch recursion to the inductive hypothesis.
+
+This is the local, tractable `bind`-commutation; the remaining open content of
+`readRecord_expected_pairs_le` is to lift it across the *opaque adversary* `simulateQ (oa)` fold:
+the interleaved per-query draw blocks all commuting to the front, past the adaptive read points. -/
+
+/-- **i.i.d. bind-commutation at the distribution level for `ProbComp`.** Two independent draws
+`oa`, `ob` feeding a common continuation `k` may be drawn in either order without changing the
+output distribution. The `OracleComp` monad is *not* commutative as a free monad (its `bind` is
+syntactic), but its `evalDist` image into `SPMF` is: the two iterated sums over the independent
+draws exchange by `ENNReal.tsum_comm`. This is the local resampling step that front-loads an
+output-irrelevant draw past its continuation. -/
+theorem evalDist_bind_comm_probComp {α β γ : Type} (oa : ProbComp α) (ob : ProbComp β)
+    (k : α → β → ProbComp γ) :
+    𝒟[oa >>= fun a => ob >>= fun b => k a b] = 𝒟[ob >>= fun b => oa >>= fun a => k a b] := by
+  refine SPMF.ext fun x => ?_
+  rw [show 𝒟[oa >>= fun a => ob >>= fun b => k a b] x
+        = Pr[= x | oa >>= fun a => ob >>= fun b => k a b] from (probOutput_def _ _).symm,
+    show 𝒟[ob >>= fun b => oa >>= fun a => k a b] x
+        = Pr[= x | ob >>= fun b => oa >>= fun a => k a b] from (probOutput_def _ _).symm]
+  rw [probOutput_bind_eq_tsum]
+  rw [show (∑' a : α, Pr[= a | oa] * Pr[= x | ob >>= fun b => k a b])
+      = ∑' (a : α) (b : β), Pr[= a | oa] * (Pr[= b | ob] * Pr[= x | k a b]) from
+    tsum_congr fun a => by rw [probOutput_bind_eq_tsum, ENNReal.tsum_mul_left]]
+  rw [probOutput_bind_eq_tsum]
+  rw [show (∑' b : β, Pr[= b | ob] * Pr[= x | oa >>= fun a => k a b])
+      = ∑' (b : β) (a : α), Pr[= b | ob] * (Pr[= a | oa] * Pr[= x | k a b]) from
+    tsum_congr fun b => by rw [probOutput_bind_eq_tsum, ENNReal.tsum_mul_left]]
+  rw [ENNReal.tsum_comm]
+  exact tsum_congr fun a => tsum_congr fun b => by ring
+
+/-- **Dropping a never-failing prefix at the distribution level.** A leading draw `od` whose
+continuation ignores its value contributes only its total mass; when `od` never fails (mass `1`,
+e.g. a `drawList` front block) it can be discarded from the output distribution. -/
+theorem evalDist_bind_const_neverFails {α γ : Type} (od : ProbComp α) (hmass : Pr[⊥ | od] = 0)
+    (k : ProbComp γ) : 𝒟[od >>= fun _ => k] = 𝒟[k] := by
+  refine SPMF.ext fun x => ?_
+  rw [show 𝒟[od >>= fun _ => k] x = Pr[= x | od >>= fun _ => k] from (probOutput_def _ _).symm,
+    show 𝒟[k] x = Pr[= x | k] from (probOutput_def _ _).symm]
+  rw [probOutput_bind_const, hmass]; simp
+
+/-- **Distribution-level congruence under a leading bind.** If two continuations agree as
+distributions pointwise then the bound computations agree as distributions. -/
+theorem evalDist_bind_congr_left {α β : Type} (oa : ProbComp α) (f g : α → ProbComp β)
+    (h : ∀ a, 𝒟[f a] = 𝒟[g a]) : 𝒟[oa >>= f] = 𝒟[oa >>= g] := by
+  rw [evalDist_bind, evalDist_bind]; exact congrArg _ (funext h)
+
+/-- **Tape-consuming signing body.** Identical to `ghostSignDrawBody` except that each attempt's
+commitment draw `(Commit × PrvState)` is *consumed* from a pre-drawn tape (head-first) instead of
+drawn inline. The challenge sampling and response stay inline. On accept the remaining tape suffix
+is discarded; an empty tape ends the loop (mirroring budget exhaustion). The recorded
+rejected-commit list is built exactly as in `ghostSignDrawBody`. -/
+noncomputable def tapeSignBody (pk : Stmt) (sk : Wit) (msg : M) :
+    List (Commit × PrvState) → StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp
+      (Option (Commit × Resp) × List Commit)
+  | [] => pure (none, [])
+  | (w, st) :: rest => do
+    let c ← (liftM (uniformSample Chal) :
+      StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp Chal)
+    let oz ← liftM (ids.respond pk sk st c)
+    match oz with
+    | some z =>
+        modify fun cache => cache.cacheQuery (msg, w) c
+        pure (some (w, z), [])
+    | none =>
+        let (res, ws) ← tapeSignBody pk sk msg rest
+        pure (res, w :: ws)
+
+omit [SampleableType Stmt] in
+/-- One-step unfolding of the tape-consuming signing body on a non-empty tape, mirroring
+`run_ghostSignDrawBody_succ`: the head `(w, st)` is consumed, a challenge sampled and a response
+computed; on accept the body records no commitment, on reject it prepends `w` to the recursively
+collected list and continues on the tape tail. -/
+lemma run_tapeSignBody_cons (pk : Stmt) (sk : Wit) (msg : M) (w : Commit) (st : PrvState)
+    (rest : List (Commit × PrvState)) (re : (M × Commit →ₒ Chal).QueryCache) :
+    (tapeSignBody ids M pk sk msg ((w, st) :: rest)).run re =
+      uniformSample Chal >>= fun ch =>
+        ids.respond pk sk st ch >>= fun oz =>
+          match oz with
+          | some z => pure ((some (w, z), []), re.cacheQuery (msg, w) ch)
+          | none => (fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+              (tapeSignBody ids M pk sk msg rest).run re := by
+  simp only [tapeSignBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT, pure_bind]
+  refine congrArg (uniformSample Chal >>= ·) (funext fun ch => ?_)
+  refine congrArg (ids.respond pk sk st ch >>= ·) (funext fun oz => ?_)
+  cases oz with
+  | some z => simp [StateT.run_modify]
+  | none => simp [StateT.run_bind, StateT.run_pure, map_eq_bind_pure_comp, Function.comp]
+
+omit [SampleableType Stmt] in
+/-- **The body-level tape resampling equality.** Drawing one signing body's `n` attempt
+commitments inline (`ghostSignDrawBody`) is distributionally identical to pre-drawing the `n`-block
+of full commitment draws into a tape and consuming it head-first (`tapeSignBody`):
+
+`𝒟[(ghostSignDrawBody … n).run re] = 𝒟[drawList (ids.commit pk sk) n >>= tapeSignBody … tape]`.
+
+The proof inducts on `n`: at each attempt, the recursive front block `drawList n` is commuted past
+the inline `uniformSample`/`respond` draws (the i.i.d. resampling step
+`evalDist_bind_comm_probComp`), the accepting branch discards the unused suffix
+(`evalDist_bind_const_neverFails`, `drawList` never
+fails), and the rejecting branch matches the inductive hypothesis. This is the per-body half of the
+tape factorization; lifting it across the opaque adversary fold is the remaining content of
+`readRecord_expected_pairs_le`. -/
+theorem evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody (pk : Stmt) (sk : Wit) (msg : M)
+    (n : ℕ) (re : (M × Commit →ₒ Chal).QueryCache) :
+    𝒟[(ghostSignDrawBody ids M pk sk msg n).run re] =
+      𝒟[OracleComp.drawList (ids.commit pk sk) n >>= fun tape =>
+          (tapeSignBody ids M pk sk msg tape).run re] := by
+  induction n generalizing re with
+  | zero => simp [ghostSignDrawBody, tapeSignBody, OracleComp.drawList]
+  | succ n ih =>
+      rw [run_ghostSignDrawBody_succ, OracleComp.drawList]
+      simp only [bind_assoc, pure_bind]
+      rw [evalDist_bind, evalDist_bind]
+      refine congrArg (𝒟[ids.commit pk sk] >>= ·) (funext fun ws => ?_)
+      obtain ⟨w, st⟩ := ws
+      simp only [run_tapeSignBody_cons]
+      set dl := OracleComp.drawList (ids.commit pk sk) n with hdl
+      have hdlmass : Pr[⊥ | dl] = 0 := by rw [hdl]; exact OracleComp.probFailure_drawList _ _
+      rw [show (𝒟[dl >>= fun rest => uniformSample Chal >>= fun ch =>
+            ids.respond pk sk st ch >>= fun oz =>
+              (match oz with
+              | some z => pure ((some (w, z), []), re.cacheQuery (msg, w) ch)
+              | none => (fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+                  (tapeSignBody ids M pk sk msg rest).run re : ProbComp _)])
+          = 𝒟[uniformSample Chal >>= fun ch => dl >>= fun rest =>
+              ids.respond pk sk st ch >>= fun oz =>
+                (match oz with
+                | some z => pure ((some (w, z), []), re.cacheQuery (msg, w) ch)
+                | none => (fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+                    (tapeSignBody ids M pk sk msg rest).run re : ProbComp _)] from
+        evalDist_bind_comm_probComp dl (uniformSample Chal) _]
+      refine evalDist_bind_congr_left (uniformSample Chal) _ _ (fun ch => ?_)
+      rw [show (𝒟[dl >>= fun rest => ids.respond pk sk st ch >>= fun oz =>
+            (match oz with
+            | some z => pure ((some (w, z), []), re.cacheQuery (msg, w) ch)
+            | none => (fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+                (tapeSignBody ids M pk sk msg rest).run re : ProbComp _)])
+          = 𝒟[ids.respond pk sk st ch >>= fun oz => dl >>= fun rest =>
+              (match oz with
+              | some z => pure ((some (w, z), []), re.cacheQuery (msg, w) ch)
+              | none => (fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+                  (tapeSignBody ids M pk sk msg rest).run re : ProbComp _)] from
+        evalDist_bind_comm_probComp dl (ids.respond pk sk st ch) _]
+      refine evalDist_bind_congr_left (ids.respond pk sk st ch) _ _ (fun oz => ?_)
+      cases oz with
+      | some z => rw [evalDist_bind_const_neverFails dl hdlmass]
+      | none =>
+          change 𝒟[(fun rws => ((rws.1.1, w :: rws.1.2), rws.2)) <$>
+            (ghostSignDrawBody ids M pk sk msg n).run re] = _
+          rw [evalDist_map_eq_of_evalDist_eq (ih re)]
+          rw [map_eq_bind_pure_comp, bind_assoc]
+          refine evalDist_bind_congr_left dl _ _ (fun rest => ?_)
+          rw [map_eq_bind_pure_comp]
+
 omit [SampleableType Stmt] in
 /-- **Expected drawn-list length of the draw-collecting signing body.** Each attempt of
 `ghostSignDrawBody` records exactly one i.i.d. raw `Prod.fst <$> ids.commit pk sk` commitment;
@@ -3347,10 +3519,25 @@ adversary `simulateQ (oa)` fold: a draw-before-read pair has its draw resolved b
 read, so the read-step increment is deterministic in the pre-state and is not `≤ ε` at that single
 step. Bounding it needs the global factoring of the readlist law from the drawn-value law — the
 fold-level value-free commute (`OracleComp.probEvent_bind_fire_eq_defer` lifted across all
-interleaved attempts). The surrounding reduction (`countP_mem_le_sum_count`, the deterministic
-readlist-length bound `deferredDrawReadImpl_run_readlist_length_le`, the expected drawn-list length
-fold `deferredDrawRead_run_expected_drawnlist_length_le`, and the final arithmetic) is fully proven
-and axiom-clean; this atom is the only remaining sorry. -/
+interleaved attempts).
+
+**Tape factorization (the banked per-body half).** The *body-level* half of that fold-lift is now
+proved and axiom-clean: `evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody` recasts one signing
+body's inline attempt draws as consumption from a pre-drawn tape
+(`𝒟[(ghostSignDrawBody … n).run re] = 𝒟[drawList (ids.commit pk sk) n >>= tapeSignBody … tape]`),
+front-loading that body's commitment block as one independent `drawList` draw via the local i.i.d.
+resampling commute `evalDist_bind_comm_probComp`. The remaining open content is to lift this
+*across* the `simulateQ (oa)` fold: the per-query tape blocks of every interleaved signing query
+must commute to the very front (a single independent draw block of `≤ maxAttempts · qSrem`
+commitments) past the adaptive read points, so that the front draw block is independent of the
+value-free recorded readlist. That fold-level `bind`-commutation is the genuine multi-week PMF×PMF
+joint coupling; the front-loaded game is not the image of `oa` under any handler, so no inductive
+(per-step) coupling produces it.
+
+The surrounding reduction (`countP_mem_le_sum_count`, the deterministic readlist-length bound
+`deferredDrawReadImpl_run_readlist_length_le`, the expected drawn-list length fold
+`deferredDrawRead_run_expected_drawnlist_length_le`, and the final arithmetic) is fully proven and
+axiom-clean; this atom is the only remaining sorry. -/
 theorem readRecord_expected_pairs_le {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
