@@ -3698,8 +3698,69 @@ theorem evalDist_deferredDrawRead_eq_drawList_tapeDrawRead {γ : Type} (pk : Stm
         rw [hqs] at hQ2
         simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
           id_map, StateT.run_bind]
-        sorry
-      · sorry
+        rw [show (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inl n))).run s
+              = (fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n
+            from rfl]
+        -- The tape uniform step is the deferred step with the tape inserted (`Functor.map_map`).
+        rw [show (fun tape => (fun p :
+                γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              ((tapeDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inl n))).run (s, tape)
+                >>= fun p =>
+                  (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              (((fun p : (((unifSpec + (M × Commit →ₒ Chal)) +
+                  (M →ₒ Option (Commit × Resp))).Range (Sum.inl (Sum.inl n))) ×
+                    DeferredReadState M Commit Chal => (p.1, (p.2, tape))) <$>
+                  ((fun u => (u, s)) <$>
+                    (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n))
+                >>= fun p =>
+                  (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2))
+            from by funext tape; rw [tapeDrawReadImpl_run_unif, Functor.map_map]; rfl]
+        exact evalDist_tapePreserving_step_commute ids M
+          ((fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n)
+          (maxAttempts * qSrem)
+          (fun a s' => (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob a)).run s')
+          (fun a st => (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob a)).run st)
+          pk sk (fun a s' => ih a qSrem (hQ2 a) s')
+      · -- READ: the answer is `roStep` (real layer), independent of the tape; same commute.
+        have hqs : (if (match (Sum.inl (Sum.inr mc) :
+              ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+          id_map, StateT.run_bind]
+        rw [show (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inr mc))).run s
+              = (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+                  (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                    mc.2 :: s.2))) <$> roStep M s.1.1.1.1 mc
+            from rfl]
+        rw [show (fun tape => (fun p :
+                γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              ((tapeDrawReadImpl ids M maxAttempts pk sk (Sum.inl (Sum.inr mc))).run (s, tape)
+                >>= fun p =>
+                  (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+                (p.1, p.2.1)) <$>
+              (((fun p : Chal × DeferredReadState M Commit Chal => (p.1, (p.2, tape))) <$>
+                  ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+                    (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                      mc.2 :: s.2))) <$> roStep M s.1.1.1.1 mc))
+                >>= fun p =>
+                  (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob p.1)).run p.2))
+            from by funext tape; rw [tapeDrawReadImpl_run_read, Functor.map_map]; rfl]
+        exact evalDist_tapePreserving_step_commute ids M
+          ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                mc.2 :: s.2))) <$> roStep M s.1.1.1.1 mc)
+          (maxAttempts * qSrem)
+          (fun a s' => (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob a)).run s')
+          (fun a st => (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) (ob a)).run st)
+          pk sk (fun a s' => ih a qSrem (hQ2 a) s')
       · sorry
 
 omit [SampleableType Stmt] in
