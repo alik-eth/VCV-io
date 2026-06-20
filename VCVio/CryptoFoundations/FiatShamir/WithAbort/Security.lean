@@ -1441,7 +1441,17 @@ because the skew lives in the output-conditioning, not the state. The sound clos
 non-per-output joint-law / aggregate-threading engine — lifting the ghost-value
 output-irrelevance (`ghostHybridImpl_proj_trans`) through the full fold so that the
 per-rejected-attempt commitment draws commute to the independent front block independently of
-the intervening adversary computation. This is the multi-week PMF×PMF joint coupling work. -/
+the intervening adversary computation. This is the multi-week PMF×PMF joint coupling work.
+
+The first-moment / Markov core of the sound route is banked separately and assumption-free
+(`probEvent_le_tsum_probOutput_mul_cost` / `…_of_mem_support` in `EvalDist/Defs/Basic.lean`):
+it bounds `Pr[bad]` by the expectation of any unit cost that fires on the bad event. Applying
+it to the ghost-blind run does **not** dissolve this residual, however: the bad flag's
+hit point is a *read-time* property of the ghost cache (a hit can be later `uncacheQuery`-ed by
+an accepting attempt), so it is not recoverable from the final state, and a faithful unit cost
+requires re-instrumenting the run with a `ℕ` read-hit counter whose expectation bound is again
+the same opaque-fold commutation. The peel is genuine (the union-over-reads layer is now an
+elementary lemma) but the per-read marginal through `simulateQ (adv.main pk)` remains the core. -/
 theorem ghostBlind_bad_le_bind_drawList
     (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (hQ : ∀ pk, FiatShamir.signHashQueryBound M
