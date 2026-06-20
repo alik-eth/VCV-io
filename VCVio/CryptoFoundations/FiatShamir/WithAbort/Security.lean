@@ -1699,6 +1699,99 @@ noncomputable def deferredDrawImpl (pk : Stmt) (sk : Wit) :
       (fun alc => (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
         (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1
 
+/-- Tonelli-style rearrangement under a `map`: the expectation of a nonnegative functional under a
+mapped computation reindexes along the map. -/
+private lemma tsum_probOutput_map_mul' {α β : Type} (oa : ProbComp α)
+    (f : α → β) (g : β → ℝ≥0∞) :
+    ∑' z, Pr[= z | f <$> oa] * g z = ∑' x, Pr[= x | oa] * g (f x) := by
+  rw [map_eq_bind_pure_comp, tsum_probOutput_bind_mul]
+  refine tsum_congr fun x => ?_
+  simp only [Function.comp_apply]
+  rw [tsum_probOutput_pure_mul]
+
+/-- The expectation of a nonnegative functional `F` that is constant (equal to `c`) on the support
+of a (sub)probability computation `run` equals `c`. -/
+private lemma tsum_probOutput_mul_of_const_on_support {β : Type} (run : ProbComp β) {c : ℝ≥0∞}
+    {F : β → ℝ≥0∞} (hconst : ∀ z ∈ support run, F z = c) (hone : Pr[⊥ | run] = 0) :
+    ∑' z, Pr[= z | run] * F z = c := by
+  have hsum : (∑' z, Pr[= z | run] * F z) = ∑' z, Pr[= z | run] * c := by
+    refine tsum_congr fun z => ?_
+    by_cases hz : z ∈ support run
+    · rw [hconst z hz]
+    · rw [probOutput_eq_zero_of_not_mem_support hz, zero_mul, zero_mul]
+  rw [hsum, ENNReal.tsum_mul_right, tsum_probOutput_eq_one' hone, one_mul]
+
+omit [SampleableType Stmt] in
+/-- **Per-step expected drawn-list length growth of the deferred-draw handler.** One step of
+`deferredDrawImpl` grows the expected drawn-list length by at most `1/(1-p)` on a signing query and
+by `0` on a uniform or random-oracle-read query (which leave the drawn list untouched). The
+signing-step bound is the per-query draw count `tsum_probOutput_run_ghostSignDrawBody_mul_length_le`
+folded with `geomAttemptSum_le`. This is the per-step charge that the run-level mean fold
+`deferredDraw_run_expected_length_le` telescopes against `signHashQueryBound`. -/
+lemma deferredDrawImpl_step_expected_length_le (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (s : DeferredState M Commit Chal) :
+    (∑' z : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t) ×
+        DeferredState M Commit Chal,
+      Pr[= z | (deferredDrawImpl ids M maxAttempts pk sk t).run s] * (z.2.1.2.length : ℝ≥0∞))
+      ≤ (s.1.2.length : ℝ≥0∞) +
+          (if (t matches Sum.inr _) then ENNReal.ofReal (1 / (1 - p_abort)) else 0) := by
+  classical
+  rcases t with (n | mc) | msg
+  · -- UNIFORM: state untouched, drawn list `s.1.2` preserved.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ (by simp [deferredDrawImpl]))
+    intro z hz
+    have hzs : z ∈ support ((fun u => (u, s)) <$>
+        (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hz
+    rw [support_map] at hzs
+    obtain ⟨u, _, rfl⟩ := hzs; rfl
+  · -- READ: writes only the base cache / bad flag; drawn list `s.1.2` preserved.
+    rw [if_neg (by simp), add_zero]
+    refine le_of_eq (tsum_probOutput_mul_of_const_on_support _ ?_ ?_)
+    · intro z hz
+      have hzs : z ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, (((cu.2, s.1.1.2), s.1.2), s.2 || decide (mc.2 ∈ s.1.2)))) <$>
+            roStep M s.1.1.1 mc) := hz
+      rw [support_map] at hzs
+      obtain ⟨cu, _, rfl⟩ := hzs; rfl
+    · simp only [deferredDrawImpl, StateT.run_mk]
+      rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
+  · -- SIGN: drawn list becomes `s.1.2 ++ alc.1.2`; expected new length ≤ 1/(1-p).
+    rw [if_pos (by simp)]
+    have hrun : (deferredDrawImpl ids M maxAttempts pk sk (.inr msg)).run s =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1 := rfl
+    rw [hrun]
+    refine le_of_eq_of_le (tsum_probOutput_map_mul'
+      ((ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1)
+      (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+        (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2)))
+      (fun z => (z.2.1.2.length : ℝ≥0∞))) ?_
+    calc _
+        = ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              ((s.1.2.length : ℝ≥0∞) + (alc.1.2.length : ℝ≥0∞)) := by
+          refine tsum_congr fun alc => ?_
+          simp only [List.length_append]
+          push_cast
+          ring
+      _ = (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              (s.1.2.length : ℝ≥0∞)) +
+          ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1] *
+              (alc.1.2.length : ℝ≥0∞) := by
+          rw [← ENNReal.tsum_add]; exact tsum_congr fun alc => by rw [mul_add]
+      _ ≤ (s.1.2.length : ℝ≥0∞) + ENNReal.ofReal (1 / (1 - p_abort)) := by
+          refine add_le_add ?_ ?_
+          · rw [ENNReal.tsum_mul_right, tsum_probOutput_eq_one' (by simp), one_mul]
+          · exact le_trans (tsum_probOutput_run_ghostSignDrawBody_mul_length_le ids M pk sk msg
+              hAbort maxAttempts s.1.1.1) (geomAttemptSum_le maxAttempts hp₀ hp)
+
 omit [SampleableType Stmt] in
 /-- **Sign-step coupling.** The eager ghost signing body `ghostSignBody` and the deferred draw-
 collecting body `ghostSignDrawBody` are coupled, with their `ids.commit`/`uniformSample`/`respond`
