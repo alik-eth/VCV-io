@@ -4285,27 +4285,45 @@ private lemma tsum_probOutput_commit_mul_count_le {C P : Type} [DecidableEq C]
         rw [ENNReal.tsum_mul_right, mul_comm, tsum_count_eq_length]
 
 omit [SampleableType Stmt] in
-/-- **Per-step inner charge of the inline read-recording induction.** Given a query `t`, a
-continuation `ob`, a pre-state `s`, a step output `x` *in the step's support*, and the general
-inductive hypothesis for `ob`, the continuation's pair count from the post-step state `x.2` is
-bounded by the `s`-based pre-existing term plus `ε` times the `s`-based new-attempt count. The
-uniform and read steps leave the drawn and signed lists unchanged (`x.2.drawnlist = s.drawnlist`,
-`x.2.signed = s.signed`), so the inductive hypothesis matches the goal directly; the sign step
-extends them by the body's rejected draws and one query, whose extra pre-existing contribution is
-the body charge bounded by the value-free `ε`-charge (`nontape_signStep_body_charge`). -/
-theorem nontape_step_inner_charge {γ : Type}
+/-- **The sign-step value-free charge (the isolated remaining core of the #228 ghost-read bound).**
+This is the single-query step of the inline-run induction
+`readRecord_expected_pairs_nontape_general` at a *signing* query `Sum.inr msg`. The signing body
+`ghostSignDrawBody` draws `maxAttempts` fresh commitments inline, records the *rejected* ones into
+the drawn list, and runs the continuation `ob` from the post-body state; the goal bounds the
+resulting expected pair count by the `s`-based pre-existing term plus `ε` times the `s`-based
+new-attempt count.
+
+The genuine content is concentrated here. Expanding the inductive hypothesis at the post-body state,
+the only term not covered by the `s`-based pre-existing term and the slack of the `#attempt` count
+is the **body charge** `E[Σ_{rc ∈ readlist} body-rejects.count rc]`, which must be bounded by
+`ε · E[readlist.length · #body-rejects]`. Crucially the body's draws must remain **averaged** (the
+sum over body outputs is retained, not factored): for a *fixed* body output the recorded rejected
+commitment is a determined value, and a continuation adversary could read the random oracle at
+exactly that value, so the per-output charge is not `≤ ε`. The `ε` arises only by averaging each
+rejected commitment over the fresh `ids.commit pk sk` draw (`tsum_probOutput_commit_mul_count_le`),
+which requires the body's rejected values to be **independent of the (value-free) final read
+list**: the rejected commitments are never cached (only accepted commitments are, via `cacheQuery`)
+and the continuation's reads answer from `roStep` on the real layer, so the recorded read list is
+independent of the rejected draws. Formalizing this value-substitution — that `ghostSignDrawBody`'s
+recorded rejected commitments are jointly independent of its accept output, the resulting cache, and
+hence the whole continuation's read list — is the precise remaining structural fact (a body-level
+dependence property, not the multi-week PMF×PMF fold coupling, which the fold-level factorization
+`evalDist_deferredDrawRead_eq_drawList_tapeDrawRead` already resolved). The atomic `ε`-kernel
+(`tsum_probOutput_commit_mul_count_le`), the inline-run induction (pure / read / uniform cases,
+`readRecord_expected_pairs_nontape_general`), and the transport from the tape representation
+(`readRecord_expected_pairs_tape_le`) are all proven; this is the only sorry on the
+`MLDSA.euf_cma_security_of_nma` path. -/
+theorem nontape_signStep_charge {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
     (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    {t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain}
-    (ob : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t →
+    (msg : M)
+    (ob : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg) →
       OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
     (s : DeferredReadState M Commit Chal)
-    (x : (((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t) ×
-      DeferredReadState M Commit Chal)
-    (hx : x ∈ support ((deferredDrawReadImpl ids M maxAttempts pk sk t).run s))
-    (ih : ∀ (u : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range t)
+    (ih : ∀ (u : ((unifSpec + (M × Commit →ₒ Chal)) +
+          (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg))
         (s' : DeferredReadState M Commit Chal),
         (∑' z : γ × DeferredReadState M Commit Chal,
             Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob u)).run s'] *
@@ -4318,17 +4336,26 @@ theorem nontape_step_inner_charge {γ : Type}
                 Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob u)).run s'] *
                   ((z.2.2.length * ((z.2.1.1.2.length - s'.1.1.2.length)
                     + (z.2.1.1.1.2.length - s'.1.1.1.2.length)) : ℕ) : ℝ≥0∞)) :
-    (∑' z : γ × DeferredReadState M Commit Chal,
-        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
-          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
-      ≤ (∑' z : γ × DeferredReadState M Commit Chal,
-          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
-            ((z.2.2.map (fun rc => s.1.1.2.count rc)).sum : ℝ≥0∞))
-        + ENNReal.ofReal ε *
+    (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+          (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
           ∑' z : γ × DeferredReadState M Commit Chal,
             Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
-              ((z.2.2.length * ((z.2.1.1.2.length - s.1.1.2.length)
-                + (z.2.1.1.1.2.length - s.1.1.1.2.length)) : ℕ) : ℝ≥0∞) := by
+              ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      ≤ ∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+          (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        ((Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z |
+                  (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                ((z.2.2.map (fun rc => s.1.1.2.count rc)).sum : ℝ≥0∞))
+          + ENNReal.ofReal ε *
+            (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+              ∑' z : γ × DeferredReadState M Commit Chal,
+                Pr[= z |
+                    (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                  ((z.2.2.length * ((z.2.1.1.2.length - s.1.1.2.length)
+                    + (z.2.1.1.1.2.length - s.1.1.1.2.length)) : ℕ) : ℝ≥0∞))) := by
   sorry
 
 omit [SampleableType Stmt] in
@@ -4380,30 +4407,43 @@ theorem readRecord_expected_pairs_nontape_general {γ : Type}
         id_map, StateT.run_bind]
       rw [tsum_probOutput_bind_mul, tsum_probOutput_bind_mul, tsum_probOutput_bind_mul,
         ← ENNReal.tsum_mul_left, ← ENNReal.tsum_add]
-      refine ENNReal.tsum_le_tsum fun x => ?_
-      rw [show ENNReal.ofReal ε *
-            (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
-              ∑' z : γ × DeferredReadState M Commit Chal,
-                Pr[= z |
-                    (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2]
-                  * ((z.2.2.length * ((z.2.1.1.2.length - s.1.1.2.length)
-                    + (z.2.1.1.1.2.length - s.1.1.1.2.length)) : ℕ) : ℝ≥0∞))
-          = Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk t).run s] *
-              (ENNReal.ofReal ε *
-                ∑' z : γ × DeferredReadState M Commit Chal,
-                  Pr[= z |
-                      (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2]
-                    * ((z.2.2.length * ((z.2.1.1.2.length - s.1.1.2.length)
-                        + (z.2.1.1.1.2.length - s.1.1.1.2.length)) : ℕ) : ℝ≥0∞)) by ring,
-        ← mul_add]
-      -- Off the step's support the factor `Pr[= x]` is zero; on support, the per-step body charge
-      -- (`nontape_signStep_body_charge` for sign; the inductive hypothesis directly for the
-      -- tape-preserving uniform/read steps) gives the inner bound.
-      by_cases hx : x ∈ support ((deferredDrawReadImpl ids M maxAttempts pk sk t).run s)
-      · gcongr
-        exact nontape_step_inner_charge ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk hGuess
-          hAbort ob s x hx (fun u s' => ih u s')
-      · rw [probOutput_eq_zero_of_not_mem_support hx, zero_mul, zero_mul]
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: the step is deterministic in the state (`x.2 = s`); factor per step output and
+        -- apply the inductive hypothesis directly (drawn / signed lists unchanged).
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support ((deferredDrawReadImpl ids M maxAttempts pk sk
+            (Sum.inl (Sum.inl n))).run s)
+        · have hxs : x ∈ support ((fun u => (u, s)) <$>
+              (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hx
+          rw [support_map] at hxs
+          obtain ⟨u, _, rfl⟩ := hxs
+          beta_reduce
+          rw [mul_left_comm (ENNReal.ofReal ε), ← mul_add]
+          gcongr
+          exact ih u s
+        · rw [probOutput_eq_zero_of_not_mem_support hx]; simp
+      · -- READ: the post-state drawn / signed lists are unchanged; factor per step output and apply
+        -- the inductive hypothesis directly.
+        refine ENNReal.tsum_le_tsum fun x => ?_
+        by_cases hx : x ∈ support ((deferredDrawReadImpl ids M maxAttempts pk sk
+            (Sum.inl (Sum.inr mc))).run s)
+        · have hxs : x ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+                  mc.2 :: s.2))) <$> roStep M s.1.1.1.1 mc) := hx
+          rw [support_map] at hxs
+          obtain ⟨cu, _, rfl⟩ := hxs
+          beta_reduce
+          rw [mul_left_comm (ENNReal.ofReal ε), ← mul_add]
+          gcongr
+          exact ih cu.1 ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+            mc.2 :: s.2)
+        · rw [probOutput_eq_zero_of_not_mem_support hx]; simp
+      · -- SIGN: the body's fresh rejected draws extend the drawn list; the body charge must keep
+        -- the body draws *averaged* (a fixed body output lets the adversary target the recorded
+        -- value), so the sum over body outputs is retained. This is the value-free sign-step
+        -- charge, the precise remaining structural core.
+        exact nontape_signStep_charge ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk hGuess
+          hAbort msg ob s (fun u s' => ih u s')
 
 omit [SampleableType Stmt] in
 /-- **The per-pair charge over the *inline* (non-tape) read-recording run.** Transporting the tape
@@ -4425,8 +4465,6 @@ theorem readRecord_expected_pairs_nontape_le {γ : Type}
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
     (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
     (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (qSrem : ℕ)
-    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
     (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
     (∑' z : γ × DeferredReadState M Commit Chal,
         Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
@@ -4551,7 +4589,7 @@ theorem readRecord_expected_pairs_tape_le {γ : Type}
     fun z => by rw [probOutput_def, probOutput_def, ← hfold]
   simp only [hpr]
   exact readRecord_expected_pairs_nontape_le ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-    hGuess hAbort oa qSrem hQ re l
+    hGuess hAbort oa re l
 
 omit [SampleableType Stmt] in
 /-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
