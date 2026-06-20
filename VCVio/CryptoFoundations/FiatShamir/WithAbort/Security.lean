@@ -2064,6 +2064,109 @@ theorem ghostBlind_bad_le_deferredDraw {γ : Type}
     (fun _ _ hp => hp.2.2.2)
 
 omit [SampleableType Stmt] in
+/-- **Run-level expected drawn-list length of the deferred-draw run.** By induction on the
+adversary computation `oa`, the expected final drawn-list length of the deferred-draw run from a
+start state `s` is at most `s.1.2.length + qSrem · (1/(1-p))`, where `qSrem` bounds the number of
+signing queries `oa` makes (the `(· matches .inr _)` component of `signHashQueryBound`). Each
+signing query grows the expected drawn length by at most `1/(1-p)` (the per-step charge
+`deferredDrawImpl_step_expected_length_le`), and uniform/read queries leave it unchanged; the
+signing-query budget `qSrem` telescopes across the fold exactly as in
+`IsQueryBoundP.simulateQ_run_StateT_of_step`. This is the mean bound that the constructed count law
+`kn` of Piece B inherits. -/
+theorem deferredDraw_run_expected_length_le {γ : Type} (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (qSrem : ℕ), oa.IsQueryBoundP (· matches Sum.inr _) qSrem →
+      ∀ (s : DeferredState M Commit Chal),
+        (∑' z : γ × DeferredState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s] *
+            (z.2.1.2.length : ℝ≥0∞))
+          ≤ (s.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+  classical
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qSrem _ s
+      simp only [simulateQ_pure, StateT.run_pure, tsum_probOutput_pure_mul]
+      exact le_self_add
+  | query_bind t ob ih =>
+      intro qSrem hQ s
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rw [simulateQ_query_bind, StateT.run_bind, tsum_probOutput_bind_mul]
+      set c : ℝ≥0∞ := ENNReal.ofReal (1 / (1 - p_abort)) with hc
+      -- Total mass of one deferred step is `1` (no failure).
+      have hmass : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+            (M →ₒ Option (Commit × Resp))).Range t) × DeferredState M Commit Chal,
+          Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s]) = 1 :=
+        tsum_probOutput_eq_one' (by
+          rcases t with (n | mc) | msg
+          · simp [deferredDrawImpl]
+          · simp only [deferredDrawImpl, StateT.run_mk]
+            rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
+          · simp [deferredDrawImpl])
+      -- Abstract the continuation's carried budget `b` and the per-step abort charge.
+      -- Generic combiner: with continuation bound `≤ x.length + b·c`, step charge `extra`,
+      -- and `extra + b·c ≤ qSrem·c`, the fold gives the run bound.
+      have hfold : ∀ (b : ℕ) (extra : ℝ≥0∞),
+          (∀ x : (((unifSpec + (M × Commit →ₒ Chal)) +
+              (M →ₒ Option (Commit × Resp))).Range t) × DeferredState M Commit Chal,
+            (∑' z : γ × DeferredState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                (z.2.1.2.length : ℝ≥0∞))
+              ≤ (x.2.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c) →
+          (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+            (x.2.1.2.length : ℝ≥0∞)) ≤ (s.1.2.length : ℝ≥0∞) + extra →
+          extra + (b : ℝ≥0∞) * c ≤ (qSrem : ℝ≥0∞) * c →
+          (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+              ∑' z : γ × DeferredState M Commit Chal,
+                Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                  (z.2.1.2.length : ℝ≥0∞))
+            ≤ (s.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by
+        intro b extra hcont hstep hbudget
+        calc (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                ∑' z : γ × DeferredState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk)
+                      (ob x.1)).run x.2] * (z.2.1.2.length : ℝ≥0∞))
+            ≤ ∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                ((x.2.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c) :=
+              ENNReal.tsum_le_tsum fun x => mul_le_mul_left' (hcont x) _
+          _ = (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                  (x.2.1.2.length : ℝ≥0∞)) + (b : ℝ≥0∞) * c := by
+              rw [show (∑' x, Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                    ((x.2.1.2.length : ℝ≥0∞) + (b : ℝ≥0∞) * c))
+                  = ∑' x, (Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                      (x.2.1.2.length : ℝ≥0∞) +
+                    Pr[= x | (deferredDrawImpl ids M maxAttempts pk sk t).run s] *
+                      ((b : ℝ≥0∞) * c)) from tsum_congr fun x => by rw [mul_add]]
+              rw [ENNReal.tsum_add, ENNReal.tsum_mul_right, hmass, one_mul]
+          _ ≤ ((s.1.2.length : ℝ≥0∞) + extra) + (b : ℝ≥0∞) * c := by gcongr
+          _ ≤ (s.1.2.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * c := by rw [add_assoc]; gcongr
+      -- Case on the query head so the `if p t` budget/charge reduce concretely.
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: budget unchanged, no charge.
+        refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawImpl_step_expected_length_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inl n)) s
+      · -- READ: budget unchanged, no charge.
+        refine hfold qSrem 0 (fun x => ih x.1 qSrem (by simpa using hQ2 x.1) x.2) ?_ (by simp)
+        simpa using deferredDrawImpl_step_expected_length_le ids M maxAttempts pk sk
+          hp₀ hp hAbort (.inl (.inr mc)) s
+      · -- SIGN: budget decrements; `0 < qSrem`, charge `c`, recombine `c + (qSrem-1)·c = qSrem·c`.
+        have hpos : 0 < qSrem := by
+          rcases hQ1 with hno | hpos
+          · exact absurd (by simp) hno
+          · exact hpos
+        refine hfold (qSrem - 1) c (fun x => ih x.1 (qSrem - 1) (by simpa using hQ2 x.1) x.2) ?_ ?_
+        · have hstep := deferredDrawImpl_step_expected_length_le ids M maxAttempts pk sk
+            hp₀ hp hAbort (.inr msg) s
+          rwa [if_pos (by rfl), ← hc] at hstep
+        · rw [add_comm, ← add_one_mul,
+            show ((qSrem - 1 : ℕ) : ℝ≥0∞) + 1 = (qSrem : ℝ≥0∞) by
+              have : qSrem - 1 + 1 = qSrem := by omega
+              rw [← this]; push_cast; ring]
+
+omit [SampleableType Stmt] in
 /-- **Piece B: the deferred → drawList deferral commute (the precise remaining obligation).**
 The deferred-draw run's bad marginal — starting with drawn prefix `ws₀` — is at most a front-loaded
 i.i.d. `drawList` game with *some* adaptive all-miss read strategy `σ` and *some* count law `kn`
