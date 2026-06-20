@@ -4285,6 +4285,41 @@ private lemma tsum_probOutput_commit_mul_count_le {C P : Type} [DecidableEq C]
         rw [ENNReal.tsum_mul_right, mul_comm, tsum_count_eq_length]
 
 omit [SampleableType Stmt] in
+/-- **The per-pair charge over the *inline* (non-tape) read-recording run.** Transporting the tape
+target back through the fold equality `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead` recasts
+the expectation over the `deferredDrawReadImpl` run, where each rejected commitment is drawn
+*inline* at its signing step rather than read from a front tape. In this representation each fresh
+rejected
+draw sits in the independent-of-the-readlist position required by the atomic value-free charge
+`tsum_probOutput_commit_mul_count_le`: the recorded reads answer from `roStep` on the real layer and
+never the drawn (rejected) values, so the final read list is independent of every rejected draw.
+
+The charge is against `#attempts := drawnlist.length + (signedlist.length − l.length)`
+(= #rejects + #signing-queries), whose mean is `qSrem/(1-p)`; the `drawnlist.length`-only form is
+unsound (it omits the accepting attempts' fresh draws). The start drawn list is empty
+(no pre-existing draws the adversary could target deterministically). -/
+theorem readRecord_expected_pairs_nontape_le {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ)
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
+    (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+            ((((re, l), []), false), [])] *
+          ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      ≤ ENNReal.ofReal ε *
+        ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+              ((((re, l), []), false), [])] *
+            ((z.2.2.length * (z.2.1.1.2.length + (z.2.1.1.1.2.length - l.length)) : ℕ) :
+              ℝ≥0∞) := by
+  sorry
+
+omit [SampleableType Stmt] in
 /-- **The per-position charge in the tape-factored representation (the isolated remaining core).**
 After the fold-level tape factorization `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`, the
 read-recording run is `drawList (ids.commit pk sk) (maxAttempts·qSrem) >>= fun tape => …`, with the
@@ -4372,7 +4407,24 @@ theorem readRecord_expected_pairs_tape_le {γ : Type}
   -- via `roStep` on the real layer). This is the genuine independence the campaign isolated; it is
   -- NOT resolved by the (banked) fold-level tape factorization
   -- `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`, which only front-loaded the draws.
-  sorry
+  -- Transport BACK to the non-tape run via the STEP B fold equality: every tape probability equals
+  -- the corresponding non-tape `deferredDrawReadImpl` run probability. This makes the recorded
+  -- draws *inline-fresh* (drawn at each sign step) rather than front-loaded, which is the position
+  -- in which each rejected draw is independent of the (value-free) final read list.
+  have hfold := evalDist_deferredDrawRead_eq_drawList_tapeDrawRead ids M maxAttempts pk sk oa qSrem
+    hQ.1 ((((re, l), []), false), [])
+  have hpr : ∀ z : γ × DeferredReadState M Commit Chal,
+      Pr[= z | OracleComp.drawList (ids.commit pk sk) (maxAttempts * qSrem) >>= fun tape =>
+          (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
+              (p.1, p.2.1)) <$>
+            (simulateQ (tapeDrawReadImpl ids M maxAttempts pk sk) oa).run
+              (((((re, l), []), false), []), tape)] =
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+            ((((re, l), []), false), [])] :=
+    fun z => by rw [probOutput_def, probOutput_def, ← hfold]
+  simp only [hpr]
+  exact readRecord_expected_pairs_nontape_le ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+    hGuess hAbort oa qSrem hQ re l
 
 omit [SampleableType Stmt] in
 /-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
