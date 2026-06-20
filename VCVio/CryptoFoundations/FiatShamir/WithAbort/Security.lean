@@ -5026,6 +5026,80 @@ theorem nontape_signStep_charge {γ : Type}
                     (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
                   (((z.2.1.1.2.length - s.1.1.2.length)
                     + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞))) := by
+  classical
+  set L₀ : ℝ≥0∞ := ENNReal.ofReal ε * ((s.2.length + qH : ℕ) : ℝ≥0∞) with hL₀
+  -- Unfold the sign step: it maps each signing-body output `alc` to the post-state with drawn list
+  -- `s.drawn ++ alc.1.2` and signed list `msg :: s.signed`. Convert all three sign-step averages to
+  -- averages over the signing-body output `alc`.
+  have hLHS : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+        (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+          ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞))
+      = ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                  (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2),
+                    s.2)] *
+                ((z.2.2.map (fun rc => z.2.1.1.2.count rc)).sum : ℝ≥0∞) :=
+    tsum_probOutput_map_mul' _ _ _
+  have hRHS1 : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+        (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+          ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              ((z.2.2.map (fun rc => s.1.1.2.count rc)).sum : ℝ≥0∞))
+      = ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                  (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2),
+                    s.2)] *
+                ((z.2.2.map (fun rc => s.1.1.2.count rc)).sum : ℝ≥0∞) :=
+    tsum_probOutput_map_mul' _ _ _
+  have hRHS2 : (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+        (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        L₀ * (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+          ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              (((z.2.1.1.2.length - s.1.1.2.length)
+                + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞)))
+      = L₀ * ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
+                  (ob alc.1.1)).run ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2),
+                    s.2)] *
+                (((z.2.1.1.2.length - s.1.1.2.length)
+                  + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞) := by
+    rw [ENNReal.tsum_mul_left]; exact congrArg (L₀ * ·) (tsum_probOutput_map_mul' _ _ _)
+  -- Rewrite all three sums to body averages; the RHS is `(pre-existing) + L₀ · (slack)`.
+  rw [hLHS]
+  rw [ENNReal.tsum_add]
+  conv_rhs => rw [show (∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+        (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        ENNReal.ofReal ε * ((s.2.length + qH : ℕ) : ℝ≥0∞) *
+          (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z |
+                  (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+                (((z.2.1.1.2.length - s.1.1.2.length)
+                  + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞)))
+      = ∑' x : (((unifSpec + (M × Commit →ₒ Chal)) +
+          (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg)) × DeferredReadState M Commit Chal,
+        L₀ * (Pr[= x | (deferredDrawReadImpl ids M maxAttempts pk sk (Sum.inr msg)).run s] *
+          ∑' z : γ × DeferredReadState M Commit Chal,
+            Pr[= z |
+                (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob x.1)).run x.2] *
+              (((z.2.1.1.2.length - s.1.1.2.length)
+                + (z.2.1.1.1.2.length - s.1.1.1.2.length) : ℕ) : ℝ≥0∞)) from
+    tsum_congr fun x => by rw [hL₀]]
+  rw [hRHS1, hRHS2]
+  -- Both sides are now body averages; bound the LHS per `alc` by the inductive hypothesis at the
+  -- post-body state, splitting the pre-existing drawn count and applying induction (1) to the body
+  -- coincidence and the slack length identities.
   sorry
 
 omit [SampleableType Stmt] in
