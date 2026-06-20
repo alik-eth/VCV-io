@@ -4476,7 +4476,7 @@ the value-substituted, gate-dropped marginal `ε`-kernel) and the recursive body
 inductive hypothesis `ih` at the extended start drawn list `dr ++ [ws.1]`). The body never fails, so
 the full-mass identities make the head `≤ L₀` match the RHS `+1`. -/
 theorem ghostSignDrawBody_succ_charge {γ : Type}
-    (qH : ℕ) (ε : ℝ) (hε : 0 ≤ ε)
+    (qH : ℕ) (ε : ℝ) (_hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
     (msg : M)
@@ -4598,7 +4598,8 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
                 Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
                     (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] * L₀ := by
           refine ENNReal.tsum_le_tsum fun rws => ?_
-          refine mul_le_mul_left' (ENNReal.tsum_le_tsum fun z => ?_) _
+          gcongr
+          refine ENNReal.tsum_le_tsum fun z => ?_
           rcases eq_or_ne Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
               (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] 0 with hz | hz
           · rw [hz]; simp
@@ -4637,8 +4638,9 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
               ((alc.1.2.map (fun w => z.2.2.count w)).sum : ℝ≥0∞))
         ≤ H ws + L₀ * R ws := by
     intro ws
-    -- Body-`n` expected `length + 1` (the reject-branch length factor; the `+1` is the head commit).
-    set Rr : ℝ≥0∞ := ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+    -- Body-`n` expected `length + 1` (the reject-branch length factor; `+1` is the head commit).
+    set Rr : ℝ≥0∞ :=
+      ∑' rws : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
       Pr[= rws | (ghostSignDrawBody ids M pk sk msg n).run re] *
         ((rws.1.2.length + 1 : ℕ) : ℝ≥0∞) with hRr
     -- `R ws = Pr[reject ws] · Rr` (accept records length `0`; reject records `ws.1 :: rws`).
@@ -4689,7 +4691,7 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
           ≤ Pr[= none | ids.respond pk sk ws.2 ch] * (H ws + L₀ * Rr) := by
       intro ch
       rw [tsum_probOutput_bind_mul]
-      -- Per response `oz`: accept records nothing (charge `0`); reject splits into head + recursion.
+      -- Per response `oz`: accept records nothing (charge `0`); reject = head + recursion.
       have h_oz : ∀ oz : Option Resp,
           (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
             Pr[= alc | (match oz with
@@ -4996,8 +4998,8 @@ fixed, read list — no rejection-conditioning skew). The body's single uncondit
 **Proof.** Unfold the sign step (`deferredDrawReadImpl … (Sum.inr msg)`), which maps each
 signing-body output `alc` to the post-state with drawn list `s.drawn ++ alc.1.2` and signed list
 `msg :: s.signed`. The continuation charge from the post-body state is bounded per `alc` by the
-inductive hypothesis `ih`; its pre-existing drawn count splits via `List.count_append` into the start
-drawn count (matched against the right-hand side) and the *body coincidence*
+inductive hypothesis `ih`; its pre-existing drawn count splits via `List.count_append` into the
+start drawn count (matched against the right-hand side) and the *body coincidence*
 `E[Σ_{rc ∈ readlist} alc.1.2.count rc]`, which the bilinear count swap `sum_map_count_comm` recasts
 as `E[Σ_{w ∈ alc.1.2} readlist.count w]` and `ghostSignDrawBody_continuation_charge` bounds by
 `ε · (rl.length + qH) · E[#attempts + 1]`. The slack length factor recombines via the deterministic
@@ -5006,10 +5008,10 @@ the gap between the start slack and the post-body slack is exactly `alc.1.2.leng
 rejected draws plus the single signing query), which the body's `+1` term covers. The continuation
 run's full mass (`deferredDrawRead_run_neverFail`) makes the constant-length factor `L₀` exact. -/
 theorem nontape_signStep_charge {γ : Type}
-    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (qH : ℕ) (ε p_abort : ℝ) (_hp₀ : 0 ≤ p_abort) (_hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
     (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (_hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
     (msg : M)
     (ob : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg) →
       OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
@@ -5139,13 +5141,13 @@ theorem nontape_signStep_charge {γ : Type}
     exact ghostSignDrawBody_continuation_charge ids M maxAttempts qH ε hε pk sk hGuess msg ob
       (fun u => hob u) (msg :: s.1.1.1.2) s.2 s.1.2 maxAttempts s.1.1.1.1 s.1.1.2
   -- The continuation runs never fail, so their mass is `1`.
-  have hcontMass : ∀ (alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache),
+  have hcontMass : ∀ alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
       (∑' z : γ × DeferredReadState M Commit Chal,
         Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
             ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)]) = 1 := fun alc =>
     tsum_probOutput_eq_one' (deferredDrawRead_run_neverFail ids M maxAttempts pk sk (ob alc.1.1) _)
   -- Per `alc`: split the pre-existing drawn count and rewrite the slack via the prefix lemmas.
-  -- The slack inner sum decomposes as the post-body inductive slack plus the body's `#attempts + 1`.
+  -- The slack inner sum splits as the post-body inductive slack plus the body's `#attempts + 1`.
   have hslack : ∀ (alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache),
       (∑' z : γ × DeferredReadState M Commit Chal,
         Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
@@ -5201,7 +5203,8 @@ theorem nontape_signStep_charge {γ : Type}
                 (((z.2.1.1.2.length - (s.1.1.2 ++ alc.1.2).length)
                   + (z.2.1.1.1.2.length - (msg :: s.1.1.1.2).length) : ℕ) : ℝ≥0∞) := by
     intro alc
-    have hih := ih alc.1.1 ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2) (hob alc.1.1)
+    have hih := ih alc.1.1 ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2)
+      (hob alc.1.1)
     -- The post-state read list is `s.2`, so the read-length factor is `L₀`.
     simp only [hL₀.symm] at hih ⊢
     refine le_trans hih (le_of_eq ?_)
@@ -5220,7 +5223,7 @@ theorem nontape_signStep_charge {γ : Type}
     rw [List.sum_map_add, sum_map_count_comm alc.1.2 z.2.2]
   -- Assemble: sum the per-`alc` bound, split into pre-existing + body-coincidence + ih-slack, then
   -- recombine the slack via `hslack` (the `#attempts + 1` gap) and the coincidence via `hbody`.
-  refine le_trans (ENNReal.tsum_le_tsum fun alc => mul_le_mul_left' (h_alc alc) _) ?_
+  refine le_trans (ENNReal.tsum_le_tsum fun alc => by gcongr; exact h_alc alc) ?_
   simp_rw [mul_add]
   rw [ENNReal.tsum_add, ENNReal.tsum_add, add_assoc]
   refine add_le_add le_rfl ?_
