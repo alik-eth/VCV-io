@@ -3498,6 +3498,80 @@ theorem deferredDrawRead_run_expected_drawnlist_length_le {γ : Type} (pk : Stmt
               have : qSrem - 1 + 1 = qSrem := by omega
               rw [← this]; push_cast; ring]
 
+/-! ### Fold-level tape factorization (the framework infrastructure)
+
+The body-level half of the tape factorization
+(`evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody`)
+recasts *one* signing body's inline attempt draws as consumption from a pre-drawn tape. The
+*fold-level* half — built here — lifts that across the opaque adversary `simulateQ (oa)` fold: every
+interleaved signing query's draw block commutes to the very front, so the whole run distributes as
+
+  `drawList (ids.commit pk sk) L >>= fun tape => (simulateQ tapeDrawReadImpl oa).run (s, tape)`,
+
+a single independent front draw block of `L := maxAttempts · #signing-queries` commitments followed
+by a tape-*consuming* run. This is the genuine framework content the campaign reduced to: once the
+draws are front-loaded, the recorded drawn list is a function of the tape and the value-free read
+list is a function of the non-tape randomness, so the read list is independent of the tape.
+
+The tape-consuming handler `tapeDrawReadImpl` carries a draw tape in its state; a signing query
+consumes the first `maxAttempts` tape entries (running `tapeSignBody` on them and dropping them)
+instead of drawing inline, while reads/uniform behave exactly as `deferredDrawReadImpl`. The
+fold equality is proved by `inductionOn oa`: at a read/uniform step the answer is independent of the
+tape so the front draw block commutes trivially; at a signing step the banked per-body factorization
+splices in the body's `drawList maxAttempts` block, which then commutes to the front of the
+remaining tape via the i.i.d. resampling commute `evalDist_bind_comm_probComp`. -/
+
+/-- The tape-consuming read-recording handler. Its state extends `DeferredReadState` with a *draw
+tape* `List (Commit × PrvState)`: a signing query consumes the first `maxAttempts` entries of the
+tape (running the tape-consuming body `tapeSignBody` on them and dropping them from the tape)
+instead of drawing each attempt's commitment inline; uniform and random-oracle-read queries behave
+exactly as `deferredDrawReadImpl` and leave the tape untouched. Over-provisioning the tape (length
+`maxAttempts · #signing-queries`) makes the front-loaded draw block independent of the value-free
+read list. -/
+noncomputable def tapeDrawReadImpl (pk : Stmt) (sk : Wit) :
+    QueryImpl ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp)))
+      (StateT (DeferredReadState M Commit Chal × List (Commit × PrvState)) ProbComp) :=
+  fun t => match t with
+  | .inl (.inl n) => StateT.mk fun s =>
+      (fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n
+  | .inl (.inr mc) => StateT.mk fun s =>
+      (fun cu => (cu.1, (((((cu.2, s.1.1.1.1.2), s.1.1.1.2), s.1.1.2 || decide (mc.2 ∈ s.1.1.1.2)),
+          mc.2 :: s.1.2), s.2))) <$>
+        roStep M s.1.1.1.1.1 mc
+  | .inr msg => StateT.mk fun s =>
+      (fun alc => (alc.1.1, (((((alc.2, msg :: s.1.1.1.1.2), s.1.1.1.2 ++ alc.1.2), s.1.1.2),
+          s.1.2), s.2.drop maxAttempts))) <$>
+        (tapeSignBody ids M pk sk msg (s.2.take maxAttempts)).run s.1.1.1.1.1
+
+omit [SampleableType Stmt] in
+/-- **One-step unfolding of `tapeDrawReadImpl` on a uniform query.** -/
+lemma tapeDrawReadImpl_run_unif (pk : Stmt) (sk : Wit) (n : unifSpec.Domain)
+    (s : DeferredReadState M Commit Chal × List (Commit × PrvState)) :
+    (tapeDrawReadImpl ids M maxAttempts pk sk (.inl (.inl n))).run s =
+      (fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+
+omit [SampleableType Stmt] in
+/-- **One-step unfolding of `tapeDrawReadImpl` on a random-oracle read query.** -/
+lemma tapeDrawReadImpl_run_read (pk : Stmt) (sk : Wit) (mc : M × Commit)
+    (s : DeferredReadState M Commit Chal × List (Commit × PrvState)) :
+    (tapeDrawReadImpl ids M maxAttempts pk sk (.inl (.inr mc))).run s =
+      (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+        (cu.1, (((((cu.2, s.1.1.1.1.2), s.1.1.1.2), s.1.1.2 || decide (mc.2 ∈ s.1.1.1.2)),
+            mc.2 :: s.1.2), s.2))) <$>
+        roStep M s.1.1.1.1.1 mc := rfl
+
+omit [SampleableType Stmt] in
+/-- **One-step unfolding of `tapeDrawReadImpl` on a signing query.** The body consumes the first
+`maxAttempts` tape entries (via `tapeSignBody`), the drawn list is extended by the recorded rejected
+commitments, and the tape advances by `maxAttempts`. -/
+lemma tapeDrawReadImpl_run_sign (pk : Stmt) (sk : Wit) (msg : M)
+    (s : DeferredReadState M Commit Chal × List (Commit × PrvState)) :
+    (tapeDrawReadImpl ids M maxAttempts pk sk (.inr msg)).run s =
+      (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+        (alc.1.1, (((((alc.2, msg :: s.1.1.1.1.2), s.1.1.1.2 ++ alc.1.2), s.1.1.2),
+            s.1.2), s.2.drop maxAttempts))) <$>
+        (tapeSignBody ids M pk sk msg (s.2.take maxAttempts)).run s.1.1.1.1.1 := rfl
+
 omit [SampleableType Stmt] in
 /-- **The value-free per-pair atom (the sole open core of the #228 ghost-read bound).** The expected
 pair count — the expected number of coinciding `(recorded read-commit, recorded drawn commit)`
