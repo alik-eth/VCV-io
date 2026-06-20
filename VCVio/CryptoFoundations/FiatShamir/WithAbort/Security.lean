@@ -1477,6 +1477,82 @@ adversary computation.
 
 This factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost
 value into the run, so the draws are genuinely deferrable. -/
+
+/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral (pinned target)
+
+The single piece of genuinely new probabilistic content. Stages 1–2 establish that each rejected
+attempt's commitment value is *output-irrelevant* (it influences neither the run's outputs nor its
+read points, only the bad flag's membership test). The linchpin lifts this through the *entire*
+`simulateQ (ghostBlindImpl …) oa` fold so that all `qS` signing queries' rejected draws commute to
+one independent front `drawList` block, leaving the adversary's interleaved computation value-free.
+
+`ghostBlind_bad_le_drawList_fold` is the pinned, well-typed target, generalized so the induction on
+the adversary computation `oa` goes through. The residual `ghostBlind_bad_le_bind_drawList` is its
+`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance.
+
+**Induction.** On the adversary free-monad term `oa : OracleComp specAdv γ`, via
+`OracleComp.inductionOn`, generalizing over the starting state `(((re, gh), l), false)` and the
+deferred draw block `(ws₀, kn)`. The fold skeleton is
+`ProgramLogic.Relational.SimulateQ.probEvent_dist_simulateQ_mono`: its *distribution-level*
+stochastic dominance is exactly the shape needed here, because the eager handler has already
+committed sampled ghost keys into its state while the deferred game carries only a pending *count*,
+so no *pointwise* state relation links the two successor states — only a joint-law coupling over the
+deferred draw does (the lemma's own docstring calls out this eager-vs-deferred case). We instantiate
+`impl₁ := ghostBlindImpl …` (eager ghost-write handler over `GhostState`) and `impl₂` := the
+deferred handler whose state is `(real cache, signed list, rejected-draw count)`; `Rrun` is the
+coupling below; `bad₁` is the ghost-blind bad flag; `bad₂` is "some read hit a drawn commitment".
+
+**Carried invariant `Rrun`** (the design content to discharge per query type):
+* *count/prefix link.* The eager ghost cache's key domain is covered by the deferred draw list
+  `ws₀ ++ (the `kn`-sampled future draws)`: every key currently in `gh` already appears in `ws₀`
+  (hypothesis `hPrefix`), and every *future* rejected attempt adds one i.i.d. draw to the `kn` block
+  (`run_ghostSignBody_fst` / the rejected-attempt = i.i.d. raw `Prod.fst <$> ids.commit` draw).
+* *value-freeness recoupling.* At a **read** step, the eager bad-flag fire (membership in `gh`) is
+  dominated by a read-hit against `ws₀ ++ ws` — `ghostBlindImpl_read_singletonGhost_bad` is the
+  single-key atom, `blindStepProj_map_ghostBlindImpl_indep` (Stage 1) supplies that the read answer
+  and the continuation are independent of the drawn values, so the post-read continuation re-couples
+  with the *same* deferred block. At a **sign** step, the eager handler's rejected draws append to
+  `gh` (count `+= #rejections`) while the deferred game appends the matching number of i.i.d. draws
+  to the front block (`ghostBlind_singleDraw_fire_le` charges each, deferred via
+  `probEvent_bind_fire_eq_defer`); the visible output is value-free (`run_ghostSignBody_fst`). At a
+  **uniform** step both are identical.
+* *monotonicity.* The eager bad flag is monotone (`ghostBlindImpl_bad_mono`), matching the deferred
+  game's "once some read has hit, it stays hit" — discharging `h_mono`/`h_bad` of the skeleton.
+
+**Mean side.** `hmean` bounds the future-draw count expectation by `qSrem/(1-p)`; at the headline
+this is the aggregate of `tsum_probOutput_commit_mul_abort_le` over the `qSrem` remaining signing
+queries, folded by `geomAttemptSum_le` (each rejected attempt reached with geometric probability).
+
+Discharging the read-step and sign-step cases of `Rrun` is the multi-week PMF×PMF joint-coupling
+work flagged on the residual: the over-count framing (test *all* draws, including the accepted one)
+makes the direction `≤` and avoids the rejection-conditioning skew, but the per-query commutation of
+interleaved draws past the opaque adversary continuation remains to be built on the
+`probEvent_dist_simulateQ_mono` skeleton. -/
+omit [SampleableType Stmt] in
+theorem ghostBlind_bad_le_drawList_fold {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (σ : List Bool → Commit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (re gh : (M × Commit →ₒ Chal).QueryCache) (l : List M)
+    (ws₀ : List Commit) (kn : ProbComp ℕ)
+    (hPrefix : ∀ mc : M × Commit, gh mc ≠ none → mc.2 ∈ ws₀)
+    (qSrem : ℕ)
+    (hmean : ∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
+      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) :
+    Pr[fun z : γ × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run (((re, gh), l), false)]
+      ≤ Pr[(fun b : Bool => b = true) |
+          kn >>= fun n =>
+            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+              pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+  -- Pinned target: induct on `oa` via `probEvent_dist_simulateQ_mono` carrying the count/prefix
+  -- coupling `Rrun` described above. Discharging the read-step and sign-step cases is the
+  -- multi-week joint-coupling work; banked as the precise next-stage objective.
+  sorry
+
 omit [SampleableType Stmt] in
 /-- **The sole remaining residual of the sound #228 ghost-read bound** (M2, explicit-list form).
 
