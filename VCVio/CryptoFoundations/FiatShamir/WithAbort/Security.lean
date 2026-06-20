@@ -2576,23 +2576,33 @@ all-miss strategy `σ`. The bad event is a function of the *final* state (the re
 list and the drawn list), so the read-time/final-state mismatch is gone — both the value-free read
 points and the i.i.d. draws are available together in the final state.
 
-This statement is *sound* precisely because the drawn list records only the **rejected**-attempt
-commitments (`ghostSignDrawBody`'s accept branch records nothing; see its docstring): the rejected
-draws are write-only side-data that never feed back into the run's outputs or read points, so a read
-point can match a fixed drawn value with probability `≤ ε`. (Recording the *accepted* commitment
-here would be unsound: it is returned to the adversary, who could then read at it deterministically,
-forcing the read-recording predicate to fire with probability `≈ 1` while this `drawList`-game RHS
-stays `≈ ε`.)
+**SOUNDNESS WARNING (coupling-e): this statement is FALSE as currently written** — the count law
+`kn = z.2.1.2.length - ws₀.length` is the **reject** count (the drawn list records rejected
+commitments only, Round D), but the firing event tests reads against those **skewed** rejected
+draws, each distributed as `commit | reject` rather than the raw `Prod.fst <$> ids.commit` of the
+`drawList`-game RHS. A read at a commit `c⋆` with `Pr[reject | c⋆] = 1` and
+`Pr[= c⋆ | commit] = ε` lands in the drawn list with probability `≈ ε` (the LHS), while the
+reject-count RHS draws `E[kn] ≈ ε`-many fresh raw commits, firing with probability only `≈ ε²`. The
+skew factor is `1 / Pr[reject]`. Concretely with `maxAttempts = 1`: LHS `= ε`,
+RHS `= Pr[reject]·ε < ε` (counterexample verified arithmetically in coupling-e).
 
-What remains is the genuine deferral commute: the recorded read-commits are value-free (`roStep`
-answers from the real layer, never the drawn values), so the joint final distribution of
-(read-commit list, drawn list) front-loads to the independent block `drawList … n` with `σ` reading
-off the value-free read points. Over-count: a recorded read-commit in the drawn list certainly hits
-the full block `ws₀ ++ ws`. The mean of `kn` is discharged (`deferredDraw_kn_mean_le`). The atom is
-`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold (the
-per-query commutation of the run's interleaved write-only draws to the independent front block,
-justified per step by the ghost-value independence `blindStepProj_map_ghostBlindImpl_indep` /
-`ghostHybridImpl_proj_trans`) is the remaining joint PMF×PMF coupling. -/
+The TIGHT sound count is the **total ATTEMPT count** (`reject count + accept count`), whose mean is
+`E[#attempts] = ∑_{a<n} p^a ≤ 1/(1-p)` per query, i.e. `qS/(1-p)` total — exactly the headline
+`cmaToNmaLoss` factor. The single-signing-body resampling over-count
+`ghostSignDrawBody_readManyList_le_drawList` proves the SOUND but loose
+`test (body rejects) ≤ drawList maxAttempts` (RHS draws `maxAttempts` fresh raw per query); the
+headline needs `drawList (attempt count)`. The genuine obstruction is structural and matches the
+multi-week PMF×PMF coupling: the drawn list must contain the *actual* rejected commits (so the
+eager-bad ⟹ deferred-bad coupling `deferredDraw_bad_le_readRecord` / `signBody_couple` holds), but
+those are *skewed*, while the headline mean demands an *unskewed* attempt-count comparison —
+Round D's rejected-only choice (needed to drop the unsound accepted-VALUE read) is in direct tension
+with the attempt-count requirement. The fix is to thread `kn` as a *separate* attempt counter in the
+deferred state (not the drawn-list length), keeping the drawn list rejected-only for the coupling,
+and prove `test rejected-list ≤ drawList (attempt count)` via the body-level resampling primitive
+generalized to draw one fresh raw commit per *attempt* (the accept branch contributing one fresh,
+output-irrelevant draw). The recorded read-commits are value-free (`roStep` answers from the real
+layer), so the read points are a fixed all-miss strategy `σ`; the atom is
+`OracleComp.probEvent_bind_fire_eq_defer`. NEXT ACTION = redraft (`kn` ↦ attempt count). -/
 theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
