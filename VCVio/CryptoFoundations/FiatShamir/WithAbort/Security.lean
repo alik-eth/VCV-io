@@ -1478,56 +1478,362 @@ adversary computation.
 This factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost
 value into the run, so the draws are genuinely deferrable. -/
 
-/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral (pinned target)
+/-! ### Stage 3a: deferred-handler ingredients for the `simulateQ`-fold mono skeleton
 
-The single piece of genuinely new probabilistic content. Stages 1–2 establish that each rejected
-attempt's commitment value is *output-irrelevant* (it influences neither the run's outputs nor its
-read points, only the bad flag's membership test). The linchpin lifts this through the *entire*
-`simulateQ (ghostBlindImpl …) oa` fold so that all `qS` signing queries' rejected draws commute to
-one independent front `drawList` block, leaving the adversary's interleaved computation value-free.
+The pinned linchpin `ghostBlind_bad_le_drawList_fold` is driven on the distribution-level mono
+skeleton `ProgramLogic.Relational.SimulateQ.probEvent_dist_simulateQ_mono`. That skeleton needs a
+*deferred* handler `impl₂` (a genuine `QueryImpl`), a coupling relation `Rrun` on the two run
+distributions, and the two bad predicates `bad₁ / bad₂`. This block constructs those ingredients.
+
+The deferred handler `deferredDrawImpl` carries, instead of eager-committed ghost keys, the
+*accumulated list of drawn rejected-attempt commitments* (the front block, grown lazily as sign
+steps draw) together with the real cache, the signed list, and the "some recorded read hit a drawn
+commitment" flag. Its state is
+
+  `DeferredState M Commit Chal :=
+    (((M × Commit →ₒ Chal).QueryCache × List M) × List Commit) × Bool`.
+
+Branch behaviour, designed so that the *observable* component (output, real cache, signed list)
+coincides with the ghost-blind handler value-free (Stage 1):
+* a **uniform** query forwards exactly as `ghostBlindImpl` does, touching neither the drawn list nor
+  the bad flag;
+* a **random-oracle read** answers from the real layer via `roStep` (identical read point and answer
+  to `ghostBlindImpl`'s value-free hit/miss branches) and sets the bad flag iff the read point's
+  commitment `mc.2` is among the accumulated drawn list — the deferred counterpart of the eager
+  membership test against the ghost domain;
+* a **signing** query runs the value-free signing body (`run_ghostSignBody_fst` recovers
+  `transSignBody`, the accepted-only loop) for the output and real cache, and appends to the drawn
+  list one i.i.d. raw `Prod.fst <$> ids.commit pk sk` draw per rejected attempt, mirroring the eager
+  ghost writes. -/
+
+/-- State of the deferred-draw handler: real cache, signed-message list, the accumulated list of
+drawn rejected-attempt commitments (the deferral front block), and the monotone "some recorded read
+hit a drawn commitment" flag. The drawn list replaces the eager ghost cache: where `ghostBlindImpl`
+commits sampled keys into its ghost layer, `deferredDrawImpl` only records the *list* of drawn
+commitments, which is later read off as the front `drawList` block. -/
+abbrev DeferredState (M Commit Chal : Type) : Type :=
+  (((M × Commit →ₒ Chal).QueryCache × List M) × List Commit) × Bool
+
+/-- Draw-collecting signing body: mirrors `ghostSignBody` but threads only the *real* cache and
+accumulates the list of drawn rejected-attempt commitments instead of writing them to a ghost
+layer. Returns `(output, drawn commits this query)`. The accepted-attempt commitment, if any, is
+appended last; rejected-attempt commitments are appended in attempt order. Forgetting the drawn
+list recovers `transSignBody` (the value-free output and real cache), and the drawn list is exactly
+the list of i.i.d. raw `Prod.fst <$> ids.commit pk sk` samples taken across the attempt loop. -/
+noncomputable def ghostSignDrawBody (pk : Stmt) (sk : Wit) (msg : M) :
+    ℕ → StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp
+      (Option (Commit × Resp) × List Commit)
+  | 0 => pure (none, [])
+  | n + 1 => do
+    let (w, st) ← liftM (ids.commit pk sk)
+    let c ← (liftM (uniformSample Chal) :
+      StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp Chal)
+    let oz ← liftM (ids.respond pk sk st c)
+    match oz with
+    | some z =>
+        modify fun cache => cache.cacheQuery (msg, w) c
+        pure (some (w, z), [w])
+    | none =>
+        let (res, ws) ← ghostSignDrawBody pk sk msg n
+        pure (res, w :: ws)
+
+/-- The deferred-draw handler for the adversary's oracles, driving the distribution-level mono
+skeleton against `ghostBlindImpl`. Carries the accumulated drawn-commitment list and a monotone
+read-hit flag in place of the eager ghost cache (see `DeferredState`). -/
+noncomputable def deferredDrawImpl (pk : Stmt) (sk : Wit) :
+    QueryImpl ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp)))
+      (StateT (DeferredState M Commit Chal) ProbComp) :=
+  fun t => match t with
+  | .inl (.inl n) => StateT.mk fun s =>
+      (fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n
+  | .inl (.inr mc) => StateT.mk fun s =>
+      (fun cu => (cu.1, (((cu.2, s.1.1.2), s.1.2), s.2 || decide (mc.2 ∈ s.1.2)))) <$>
+        roStep M s.1.1.1 mc
+  | .inr msg => StateT.mk fun s =>
+      (fun alc => (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
+        (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1
+
+omit [SampleableType Stmt] in
+/-- **Sign-step coupling.** The eager ghost signing body `ghostSignBody` and the deferred draw-
+collecting body `ghostSignDrawBody` are coupled, with their `ids.commit`/`uniformSample`/`respond`
+draws matched, so that the outputs and real caches agree and the eager ghost layer's key domain is
+covered by the front drawn list `drawn` extended with the body's collected commitments. Proved by
+induction on the attempt budget: the accept branch writes the accepted commitment to both real
+caches and leaves the ghost layer covered by `drawn`; the reject branch records the commitment in
+the ghost layer and prepends it to the deferred collected list, recursing with a wider cover. -/
+theorem signBody_couple (pk : Stmt) (sk : Wit) (msg : M) :
+    ∀ (n : ℕ) (re gh : (M × Commit →ₒ Chal).QueryCache) (drawn : List Commit),
+      (∀ mc : M × Commit, gh mc ≠ none → mc.2 ∈ drawn) →
+      OracleComp.ProgramLogic.Relational.RelTriple
+        ((ghostSignBody ids M pk sk msg n).run (re, gh))
+        ((ghostSignDrawBody ids M pk sk msg n).run re)
+        (fun p₁ p₂ => p₁.1 = p₂.1.1 ∧ p₁.2.1 = p₂.2 ∧
+          (∀ mc : M × Commit, p₁.2.2 mc ≠ none → mc.2 ∈ drawn ++ p₂.1.2))
+  | 0, re, gh, drawn, hcov => by
+      simp only [ghostSignBody, ghostSignDrawBody, StateT.run_pure]
+      exact OracleComp.ProgramLogic.Relational.relTriple_pure_pure
+        ⟨rfl, rfl, fun mc hmc => List.mem_append.2 (Or.inl (hcov mc hmc))⟩
+  | (n+1), re, gh, drawn, hcov => by
+      have hrun₁ : (ghostSignBody ids M pk sk msg (n+1)).run (re, gh) =
+          (ids.commit pk sk >>= fun wst => uniformSample Chal >>= fun c =>
+            ids.respond pk sk wst.2 c >>= fun oz =>
+              match oz with
+              | some z => pure (some (wst.1, z),
+                  (re.cacheQuery (msg, wst.1) c, uncacheQuery M gh (msg, wst.1)))
+              | none => (ghostSignBody ids M pk sk msg n).run
+                  (re, gh.cacheQuery (msg, wst.1) c)) := by
+        simp only [ghostSignBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
+          map_bind, pure_bind, StateT.run_modify]
+        refine congrArg (ids.commit pk sk >>= ·) (funext fun wst => ?_)
+        refine congrArg (uniformSample Chal >>= ·) (funext fun c => ?_)
+        refine congrArg (ids.respond pk sk wst.2 c >>= ·) (funext fun oz => ?_)
+        cases oz with
+        | some z => simp [StateT.run_bind, StateT.run_modify, StateT.run_pure]
+        | none => simp [StateT.run_bind, StateT.run_modify]
+      have hrun₂ : (ghostSignDrawBody ids M pk sk msg (n+1)).run re =
+          (ids.commit pk sk >>= fun wst => uniformSample Chal >>= fun c =>
+            ids.respond pk sk wst.2 c >>= fun oz =>
+              match oz with
+              | some z => pure ((some (wst.1, z), [wst.1]), re.cacheQuery (msg, wst.1) c)
+              | none => (fun rws => ((rws.1.1, wst.1 :: rws.1.2), rws.2)) <$>
+                  (ghostSignDrawBody ids M pk sk msg n).run re) := by
+        simp only [ghostSignDrawBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
+          map_bind, pure_bind, StateT.run_modify]
+        refine congrArg (ids.commit pk sk >>= ·) (funext fun wst => ?_)
+        refine congrArg (uniformSample Chal >>= ·) (funext fun c => ?_)
+        refine congrArg (ids.respond pk sk wst.2 c >>= ·) (funext fun oz => ?_)
+        cases oz with
+        | some z => simp [StateT.run_bind, StateT.run_modify, StateT.run_pure]
+        | none => simp [StateT.run_bind, StateT.run_pure, map_eq_bind_pure_comp, Function.comp]
+      rw [hrun₁, hrun₂]
+      refine OracleComp.ProgramLogic.Relational.relTriple_bind
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_
+      rintro wst _ (rfl : wst = _)
+      refine OracleComp.ProgramLogic.Relational.relTriple_bind
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_
+      rintro c _ (rfl : c = _)
+      refine OracleComp.ProgramLogic.Relational.relTriple_bind
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_
+      rintro oz _ (rfl : oz = _)
+      cases oz with
+      | some z =>
+          refine OracleComp.ProgramLogic.Relational.relTriple_pure_pure ⟨rfl, rfl, ?_⟩
+          intro mc hmc
+          -- accept branch: ghost layer is `uncacheQuery M gh (msg, wst.1)`, whose domain ⊆ dom gh
+          refine List.mem_append.2 (Or.inl (hcov mc ?_))
+          by_cases hmceq : mc = (msg, wst.1)
+          · exact absurd (by simp [uncacheQuery, hmceq]) hmc
+          · simpa [uncacheQuery, hmceq] using hmc
+      | none =>
+          have hcov' : ∀ mc : M × Commit, (gh.cacheQuery (msg, wst.1) c) mc ≠ none →
+              mc.2 ∈ drawn ++ [wst.1] := by
+            intro mc hmc
+            by_cases hmceq : mc = (msg, wst.1)
+            · subst hmceq; exact List.mem_append.2 (Or.inr (by simp))
+            · rw [QueryCache.cacheQuery_of_ne _ _ hmceq] at hmc
+              exact List.mem_append.2 (Or.inl (hcov mc hmc))
+          have hih := signBody_couple pk sk msg n re (gh.cacheQuery (msg, wst.1) c)
+            (drawn ++ [wst.1]) hcov'
+          rw [show ((fun rws : (Option (Commit × Resp) × List Commit) ×
+                (M × Commit →ₒ Chal).QueryCache => ((rws.1.1, wst.1 :: rws.1.2), rws.2)) <$>
+              (ghostSignDrawBody ids M pk sk msg n).run re)
+              = ((ghostSignDrawBody ids M pk sk msg n).run re >>= fun rws =>
+                pure ((rws.1.1, wst.1 :: rws.1.2), rws.2)) from by rw [map_eq_bind_pure_comp]; rfl]
+          rw [show ((ghostSignBody ids M pk sk msg n).run (re, gh.cacheQuery (msg, wst.1) c))
+              = ((ghostSignBody ids M pk sk msg n).run (re, gh.cacheQuery (msg, wst.1) c) >>= pure)
+              from by rw [bind_pure]]
+          refine OracleComp.ProgramLogic.Relational.relTriple_bind hih ?_
+          rintro p₁ p₂ ⟨hout, hcache, hghcov⟩
+          refine OracleComp.ProgramLogic.Relational.relTriple_pure_pure ⟨hout, hcache, ?_⟩
+          intro mc hmc
+          have hmem := hghcov mc hmc
+          rw [List.append_assoc] at hmem
+          simpa using hmem
+
+/-! ### Stage 3a: the deferred-coupling decomposition of the linchpin
+
+The linchpin `ghostBlind_bad_le_drawList_fold` factors into two pieces through the deferred-draw
+handler `deferredDrawImpl`:
+
+* **Piece A** (`ghostBlind_bad_le_deferredDraw`): a *pointwise coupling* of the eager ghost-blind
+  run with the deferred-draw run, established on the pointwise mono skeleton
+  `relTriple_simulateQ_run_mono` carrying the state invariant `deferredCoupleInv` (real cache and
+  signed list equal; ghost domain covered by the drawn-commitment list; bad-flag ordered). The
+  read step is an output-equal coupling (both answer from the real layer via `roStep`, and the
+  membership flag fires more readily on the deferred side because it ignores the message component);
+  the sign step couples the two bodies' `ids.commit` draws so the eager ghost writes and the
+  deferred draws stay in lockstep. `probEvent_le_of_relTriple_imp` then reads off the ordered bad
+  marginals.
+* **Piece B** (`deferredDraw_bad_le_drawList_fold`): the *deferral commute* exhibiting the
+  deferred run's bad marginal as the front-loaded i.i.d. `drawList` game. The deferred handler draws
+  one i.i.d. raw commitment per attempt and only ever *records* the list; a read that hits a
+  commitment already drawn fires the flag, so the final bad event is dominated by a read-hit against
+  the full drawn list `ws₀ ++ ws`. The count law `kn` is the run's total-draw distribution.
+
+This decomposition replaces the abstract distribution-level coupling: the bad flags *are* pointwise
+linkable (eager ghost-membership ⟹ deferred commitment-membership, since the drawn list grows in
+lockstep with the ghost cache), so the pointwise `relTriple_simulateQ_run_mono` route applies and
+Piece A is genuine, bankable coupling content. The remaining open content is Piece B's deferral
+commute — the per-query commutation of the run's interleaved draws to the front block.
+
+The state invariant linking the eager `GhostState` and the deferred `DeferredState`: real cache and
+signed-message list agree, every key in the ghost cache has its commitment recorded in the drawn
+list, and the bad flag is ordered (eager-bad ⟹ deferred-bad). The read points coincide because both
+sides answer from the (shared) real layer. -/
+omit [SampleableType Stmt] in
+/-- The coupling invariant between the eager ghost-blind state and the deferred-draw state: real
+cache and signed list agree, every ghost-cache key's commitment is in the drawn list, and the bad
+flag is ordered. -/
+def deferredCoupleInv
+    (s₁ : GhostState M Commit Chal) (s₂ : DeferredState M Commit Chal) : Prop :=
+  s₁.1.1.1 = s₂.1.1.1 ∧ s₁.1.2 = s₂.1.1.2 ∧
+    (∀ mc : M × Commit, s₁.1.1.2 mc ≠ none → mc.2 ∈ s₂.1.2) ∧
+    (s₁.2 = true → s₂.2 = true)
+
+omit [SampleableType Stmt] in
+/-- **Per-query coupling step for the ghost-blind → deferred coupling.** From any pair of
+`deferredCoupleInv`-related states, one step of the eager ghost-blind handler couples with one step
+of the deferred-draw handler with equal output and the invariant preserved.
+
+* **Uniform** steps forward the same draw; the state is untouched, so the invariant is inherited.
+* **Read** steps answer from the shared real layer via `roStep` (same answer, same cache update);
+  the eager bad flag fires on ghost-domain membership and the deferred one on drawn-list membership;
+  the domain-coverage invariant makes the eager fire imply the deferred fire (it ignores the message
+  component), preserving the bad ordering.
+* **Sign** steps invoke `signBody_couple`: the matched `ids.commit` draws keep the outputs and real
+  caches equal and extend the drawn list to cover the new ghost writes; the bad flag is intact. -/
+theorem deferredCouple_step (pk : Stmt) (sk : Wit)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (u₁ : GhostState M Commit Chal) (u₂ : DeferredState M Commit Chal)
+    (hu : deferredCoupleInv M u₁ u₂) :
+    OracleComp.ProgramLogic.Relational.RelTriple
+      ((ghostBlindImpl ids M maxAttempts pk sk t).run u₁)
+      ((deferredDrawImpl ids M maxAttempts pk sk t).run u₂)
+      (fun p₁ p₂ => p₁.1 = p₂.1 ∧ deferredCoupleInv M p₁.2 p₂.2) := by
+  obtain ⟨hre, hl, hdom, hbad⟩ := hu
+  rcases t with (n | mc) | msg
+  · -- UNIFORM: both forward the same draw; state untouched.
+    have hrun₁ : (ghostBlindImpl ids M maxAttempts pk sk (.inl (.inl n))).run u₁ =
+        (fun u => (u, u₁)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+    have hrun₂ : (deferredDrawImpl ids M maxAttempts pk sk (.inl (.inl n))).run u₂ =
+        (fun u => (u, u₂)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+    rw [hrun₁, hrun₂]
+    refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+      (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+    rintro a b (rfl : a = b)
+    exact ⟨rfl, hre, hl, hdom, hbad⟩
+  · -- READ: answer from the shared real layer; bad flag dominated under domain coverage.
+    have hrun₂ : (deferredDrawImpl ids M maxAttempts pk sk (.inl (.inr mc))).run u₂ =
+        (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, (((cu.2, u₂.1.1.2), u₂.1.2), u₂.2 || decide (mc.2 ∈ u₂.1.2)))) <$>
+          roStep M u₂.1.1.1 mc := rfl
+    cases hgh : u₁.1.1.2 mc with
+    | none =>
+        have hrun₁ : (ghostBlindImpl ids M maxAttempts pk sk (.inl (.inr mc))).run u₁ =
+            (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, (((cu.2, u₁.1.1.2), u₁.1.2), u₁.2))) <$> roStep M u₁.1.1.1 mc := by
+          rw [ghostBlindImpl_eq_ghostHybridImpl_false]
+          exact ghostHybridImpl_run_ro_ghost_none ids M maxAttempts false pk sk hgh
+        rw [hrun₁, hrun₂, hre]
+        refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+          (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+            (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+        rintro a b (rfl : a = b)
+        exact ⟨rfl, rfl, hl, hdom, fun hb => by rw [hbad hb]; rfl⟩
+    | some v =>
+        have hgh2 : u₁.1.1.2 mc ≠ none := by rw [hgh]; exact Option.some_ne_none v
+        have hrun₁ : (ghostBlindImpl ids M maxAttempts pk sk (.inl (.inr mc))).run u₁ =
+            (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+              (cu.1, (((cu.2, u₁.1.1.2), u₁.1.2), true))) <$> roStep M u₁.1.1.1 mc := by
+          rw [ghostBlindImpl_eq_ghostHybridImpl_false,
+            ghostHybridImpl_run_ro_ghost_some ids M maxAttempts false pk sk hgh,
+            if_neg Bool.false_ne_true]
+        rw [hrun₁, hrun₂, hre]
+        refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+          (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+            (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+        rintro a b (rfl : a = b)
+        have hdef : (u₂.2 || decide (mc.2 ∈ u₂.1.2)) = true := by simp [hdom mc hgh2]
+        exact ⟨rfl, rfl, hl, hdom, fun _ => hdef⟩
+  · -- SIGN: couple the two signing bodies via `signBody_couple`; bad flag untouched.
+    have hrun₁ : (ghostBlindImpl ids M maxAttempts pk sk (.inr msg)).run u₁ =
+        (fun alc : Option (Commit × Resp) ×
+            ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) =>
+          (alc.1, ((alc.2, msg :: u₁.1.2), u₁.2))) <$>
+          (ghostSignBody ids M pk sk msg maxAttempts).run u₁.1.1 := by
+      rw [ghostBlindImpl_eq_ghostHybridImpl_false]
+      exact ghostHybridImpl_run_sign ids M maxAttempts false pk sk msg u₁
+    have hrun₂ : (deferredDrawImpl ids M maxAttempts pk sk (.inr msg)).run u₂ =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, (((alc.2, msg :: u₂.1.1.2), u₂.1.2 ++ alc.1.2), u₂.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run u₂.1.1.1 := rfl
+    rw [hrun₁, hrun₂]
+    have hu11 : u₁.1.1 = (u₂.1.1.1, u₁.1.1.2) := by rw [← hre]
+    rw [hu11]
+    refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+      (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+        (signBody_couple ids M pk sk msg maxAttempts u₂.1.1.1 u₁.1.1.2 u₂.1.2 hdom) ?_)
+    rintro p₁ p₂ ⟨hout, hcache, hghcov⟩
+    exact ⟨hout, hcache, by rw [hl], hghcov, hbad⟩
+
+omit [SampleableType Stmt] in
+/-- **The ghost-blind → deferred run coupling.** By induction on the adversary computation `oa`,
+the eager ghost-blind run and the deferred-draw run are coupled with the invariant `deferredCoupleInv`
+preserved at every leaf, using `deferredCouple_step` at each query and the inductive hypothesis for
+the continuation. -/
+theorem deferredCouple_run {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s₁ : GhostState M Commit Chal) (s₂ : DeferredState M Commit Chal),
+      deferredCoupleInv M s₁ s₂ →
+      OracleComp.ProgramLogic.Relational.RelTriple
+        ((simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run s₁)
+        ((simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s₂)
+        (fun q₁ q₂ => deferredCoupleInv M q₁.2 q₂.2) := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s₁ s₂ hinv
+      simp only [simulateQ_pure, StateT.run_pure]
+      exact OracleComp.ProgramLogic.Relational.relTriple_pure_pure hinv
+  | query_bind t ob ih =>
+      intro s₁ s₂ hinv
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind]
+      refine OracleComp.ProgramLogic.Relational.relTriple_bind
+        (deferredCouple_step ids M maxAttempts pk sk t s₁ s₂ hinv) ?_
+      rintro p₁ p₂ ⟨hout, hinv'⟩
+      rw [show p₁.1 = p₂.1 from hout]
+      exact ih p₂.1 p₁.2 p₂.2 hinv'
+
+omit [SampleableType Stmt] in
+/-- **Piece A: the ghost-blind → deferred coupling.** The ghost-blind run's bad marginal is at most
+the deferred-draw run's bad marginal, from any pair of `deferredCoupleInv`-related start states.
+
+Reads off the bad-flag ordering component of the invariant from the run coupling
+`deferredCouple_run` via `probEvent_le_of_relTriple_imp`. -/
+theorem ghostBlind_bad_le_deferredDraw {γ : Type}
+    (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (s₁ : GhostState M Commit Chal) (s₂ : DeferredState M Commit Chal)
+    (hinv : deferredCoupleInv M s₁ s₂) :
+    Pr[fun z : γ × GhostState M Commit Chal => z.2.2 = true |
+        (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run s₁]
+      ≤ Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
+          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s₂] :=
+  OracleComp.ProgramLogic.Relational.probEvent_le_of_relTriple_imp
+    (deferredCouple_run ids M maxAttempts pk sk oa s₁ s₂ hinv)
+    (fun p₁ p₂ hp => hp.2.2.2)
+
+/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral (pinned target)
 
 `ghostBlind_bad_le_drawList_fold` is the pinned, well-typed target, generalized so the induction on
 the adversary computation `oa` goes through. The residual `ghostBlind_bad_le_bind_drawList` is its
-`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance.
-
-**Induction.** On the adversary free-monad term `oa : OracleComp specAdv γ`, via
-`OracleComp.inductionOn`, generalizing over the starting state `(((re, gh), l), false)` and the
-deferred draw block `(ws₀, kn)`. The fold skeleton is
-`ProgramLogic.Relational.SimulateQ.probEvent_dist_simulateQ_mono`: its *distribution-level*
-stochastic dominance is exactly the shape needed here, because the eager handler has already
-committed sampled ghost keys into its state while the deferred game carries only a pending *count*,
-so no *pointwise* state relation links the two successor states — only a joint-law coupling over the
-deferred draw does (the lemma's own docstring calls out this eager-vs-deferred case). We instantiate
-`impl₁ := ghostBlindImpl …` (eager ghost-write handler over `GhostState`) and `impl₂` := the
-deferred handler whose state is `(real cache, signed list, rejected-draw count)`; `Rrun` is the
-coupling below; `bad₁` is the ghost-blind bad flag; `bad₂` is "some read hit a drawn commitment".
-
-**Carried invariant `Rrun`** (the design content to discharge per query type):
-* *count/prefix link.* The eager ghost cache's key domain is covered by the deferred draw list
-  `ws₀ ++ (the `kn`-sampled future draws)`: every key currently in `gh` already appears in `ws₀`
-  (hypothesis `hPrefix`), and every *future* rejected attempt adds one i.i.d. draw to the `kn` block
-  (`run_ghostSignBody_fst` / the rejected-attempt = i.i.d. raw `Prod.fst <$> ids.commit` draw).
-* *value-freeness recoupling.* At a **read** step, the eager bad-flag fire (membership in `gh`) is
-  dominated by a read-hit against `ws₀ ++ ws` — `ghostBlindImpl_read_singletonGhost_bad` is the
-  single-key atom, `blindStepProj_map_ghostBlindImpl_indep` (Stage 1) supplies that the read answer
-  and the continuation are independent of the drawn values, so the post-read continuation re-couples
-  with the *same* deferred block. At a **sign** step, the eager handler's rejected draws append to
-  `gh` (count `+= #rejections`) while the deferred game appends the matching number of i.i.d. draws
-  to the front block (`ghostBlind_singleDraw_fire_le` charges each, deferred via
-  `probEvent_bind_fire_eq_defer`); the visible output is value-free (`run_ghostSignBody_fst`). At a
-  **uniform** step both are identical.
-* *monotonicity.* The eager bad flag is monotone (`ghostBlindImpl_bad_mono`), matching the deferred
-  game's "once some read has hit, it stays hit" — discharging `h_mono`/`h_bad` of the skeleton.
+`gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance. It chains Piece A (the
+ghost-blind→deferred coupling) and Piece B (the deferred→drawList deferral commute) above.
 
 **Mean side.** `hmean` bounds the future-draw count expectation by `qSrem/(1-p)`; at the headline
 this is the aggregate of `tsum_probOutput_commit_mul_abort_le` over the `qSrem` remaining signing
-queries, folded by `geomAttemptSum_le` (each rejected attempt reached with geometric probability).
-
-Discharging the read-step and sign-step cases of `Rrun` is the multi-week PMF×PMF joint-coupling
-work flagged on the residual: the over-count framing (test *all* draws, including the accepted one)
-makes the direction `≤` and avoids the rejection-conditioning skew, but the per-query commutation of
-interleaved draws past the opaque adversary continuation remains to be built on the
-`probEvent_dist_simulateQ_mono` skeleton. -/
+queries, folded by `geomAttemptSum_le` (each rejected attempt reached with geometric prob). -/
 omit [SampleableType Stmt] in
 theorem ghostBlind_bad_le_drawList_fold {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
@@ -1548,9 +1854,9 @@ theorem ghostBlind_bad_le_drawList_fold {γ : Type}
           kn >>= fun n =>
             OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
               pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Pinned target: induct on `oa` via `probEvent_dist_simulateQ_mono` carrying the count/prefix
-  -- coupling `Rrun` described above. Discharging the read-step and sign-step cases is the
-  -- multi-week joint-coupling work; banked as the precise next-stage objective.
+  -- Pinned target: chain Piece A (the ghost-blind→deferred coupling) and Piece B (the
+  -- deferred→drawList deferral commute). Piece A is discharged; Piece B is the precise isolated
+  -- remaining obligation.
   sorry
 
 omit [SampleableType Stmt] in
