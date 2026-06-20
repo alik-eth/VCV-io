@@ -2300,24 +2300,232 @@ theorem deferredDraw_kn_mean_le {γ : Type} (pk : Stmt) (sk : Wit)
   congr 1
   field_simp
 
+/-! ### Read-recording handler: bad as a final-state predicate
+
+The deferred-draw run's bad flag is set at *read time*: a read fires when its target commitment is
+in the drawn list **as it stands at that read**. Because the drawn list only grows
+(`deferredDraw_run_drawn_prefix`), a read that hits the drawn-so-far list certainly hits the *final*
+drawn list, so the bad event is dominated by the final-state predicate "some recorded read-commit
+is in the final drawn list". The handler `deferredDrawReadImpl` records, in an extra `List Commit`
+component, the commitment `mc.2` of every adversarial read; its read step is otherwise identical to
+`deferredDrawImpl` (same answer via `roStep`, same drawn list, same bad flag). The reduction
+`deferredDraw_bad_le_readRecord` is the Piece A-style pointwise coupling that reads the bad ordering
+off the run; it converts the *read-time* bad flag into the *final-state* membership predicate
+`∃ rc ∈ readlist, rc ∈ drawnlist`, which removes the read-time/final-state mismatch that obstructs a
+direct expectation bound (see the residual docstring). The recorded read commits are **value-free**
+(answers come from the real layer via `roStep`; the drawn *values* never feed the read points), the
+content reused by the remaining deferral commute. -/
+
+/-- State of the read-recording deferred-draw handler: the underlying `DeferredState` together with
+the accumulated list of commitment components `mc.2` of every adversarial random-oracle read. The
+extra list makes the read-hit event a *final-state* predicate (membership in the drawn list) rather
+than a read-time flag. -/
+abbrev DeferredReadState (M Commit Chal : Type) : Type :=
+  DeferredState M Commit Chal × List Commit
+
+/-- The read-recording deferred-draw handler. Identical to `deferredDrawImpl` on the underlying
+`DeferredState`, additionally appending the read's commitment component `mc.2` to the recorded
+read-commit list on every adversarial random-oracle read. Uniform and signing steps leave the
+read-commit list untouched. -/
+noncomputable def deferredDrawReadImpl (pk : Stmt) (sk : Wit) :
+    QueryImpl ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp)))
+      (StateT (DeferredReadState M Commit Chal) ProbComp) :=
+  fun t => match t with
+  | .inl (.inl n) => StateT.mk fun s =>
+      (fun u => (u, s)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n
+  | .inl (.inr mc) => StateT.mk fun s =>
+      (fun cu => (cu.1, ((((cu.2, s.1.1.1.2), s.1.1.2), s.1.2 || decide (mc.2 ∈ s.1.1.2)),
+          mc.2 :: s.2))) <$>
+        roStep M s.1.1.1.1 mc
+  | .inr msg => StateT.mk fun s =>
+      (fun alc => (alc.1.1, ((((alc.2, msg :: s.1.1.1.2), s.1.1.2 ++ alc.1.2), s.1.2), s.2))) <$>
+        (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1.1
+
+omit [SampleableType Stmt] in
+/-- **Coupling invariant for the read-recording reduction.** The underlying deferred state matches,
+and whenever the deferred bad flag is set there is a recorded read-commit already in the deferred
+drawn list. The drawn list grows monotonically, so a read-time hit (recorded in the bad flag) is
+witnessed by a recorded read-commit lying in the *current* (hence final) drawn list. -/
+def deferredReadInv
+    (s₁ : DeferredState M Commit Chal) (s₂ : DeferredReadState M Commit Chal) : Prop :=
+  s₁.1 = s₂.1.1 ∧ (s₁.2 = true → ∃ rc ∈ s₂.2, rc ∈ s₂.1.1.2)
+
+omit [SampleableType Stmt] in
+/-- **Per-query coupling step for the read-recording reduction.** From any pair of
+`deferredReadInv`-related states one step of `deferredDrawImpl` couples with one step of
+`deferredDrawReadImpl` with equal output and the invariant preserved.
+
+* **Uniform** forwards the same draw; states untouched.
+* **Read** answers from the shared real layer via `roStep` (same answer, same cache, same drawn
+  list); the recorded read-commit `mc.2` witnesses any newly-set bad flag (it is appended to the
+  read-commit list and, when the flag fires, lies in the drawn list).
+* **Sign** runs the shared `ghostSignDrawBody`; the drawn list grows in lockstep, so an existing
+  read-commit witness is preserved (the drawn list only appends). -/
+theorem deferredDrawRead_step (pk : Stmt) (sk : Wit)
+    (t : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Domain)
+    (u₁ : DeferredState M Commit Chal) (u₂ : DeferredReadState M Commit Chal)
+    (hu : deferredReadInv M u₁ u₂) :
+    OracleComp.ProgramLogic.Relational.RelTriple
+      ((deferredDrawImpl ids M maxAttempts pk sk t).run u₁)
+      ((deferredDrawReadImpl ids M maxAttempts pk sk t).run u₂)
+      (fun p₁ p₂ => p₁.1 = p₂.1 ∧ deferredReadInv M p₁.2 p₂.2) := by
+  obtain ⟨hst, hbad⟩ := hu
+  rcases t with (n | mc) | msg
+  · -- UNIFORM: both forward the same draw; state untouched.
+    have hrun₁ : (deferredDrawImpl ids M maxAttempts pk sk (.inl (.inl n))).run u₁ =
+        (fun u => (u, u₁)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+    have hrun₂ : (deferredDrawReadImpl ids M maxAttempts pk sk (.inl (.inl n))).run u₂ =
+        (fun u => (u, u₂)) <$> (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n := rfl
+    rw [hrun₁, hrun₂]
+    refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+      (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+    rintro a b (rfl : a = b)
+    exact ⟨rfl, hst, hbad⟩
+  · -- READ: shared `roStep`; the recorded read-commit witnesses any newly-set bad flag.
+    have hrun₁ : (deferredDrawImpl ids M maxAttempts pk sk (.inl (.inr mc))).run u₁ =
+        (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, (((cu.2, u₁.1.1.2), u₁.1.2), u₁.2 || decide (mc.2 ∈ u₁.1.2)))) <$>
+          roStep M u₁.1.1.1 mc := rfl
+    have hrun₂ : (deferredDrawReadImpl ids M maxAttempts pk sk (.inl (.inr mc))).run u₂ =
+        (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+          (cu.1, ((((cu.2, u₂.1.1.1.2), u₂.1.1.2), u₂.1.2 || decide (mc.2 ∈ u₂.1.1.2)),
+              mc.2 :: u₂.2))) <$>
+          roStep M u₂.1.1.1.1 mc := rfl
+    rw [hrun₁, hrun₂, show u₁.1.1.1 = u₂.1.1.1.1 from by rw [hst],
+      show u₁.1.1.2 = u₂.1.1.1.2 from by rw [hst], show u₁.1.2 = u₂.1.1.2 from by rw [hst]]
+    refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+      (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+    rintro a b (rfl : a = b)
+    refine ⟨rfl, rfl, ?_⟩
+    intro hb
+    rcases Bool.or_eq_true _ _ |>.mp hb with hb' | hb'
+    · obtain ⟨rc, hrcmem, hrcdraw⟩ := hbad hb'
+      exact ⟨rc, List.mem_cons_of_mem _ hrcmem, hrcdraw⟩
+    · exact ⟨mc.2, List.mem_cons_self, by simpa using hb'⟩
+  · -- SIGN: shared signing body; drawn list grows, witness preserved.
+    have hrun₁ : (deferredDrawImpl ids M maxAttempts pk sk (.inr msg)).run u₁ =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, (((alc.2, msg :: u₁.1.1.2), u₁.1.2 ++ alc.1.2), u₁.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run u₁.1.1.1 := rfl
+    have hrun₂ : (deferredDrawReadImpl ids M maxAttempts pk sk (.inr msg)).run u₂ =
+        (fun alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache =>
+          (alc.1.1, ((((alc.2, msg :: u₂.1.1.1.2), u₂.1.1.2 ++ alc.1.2), u₂.1.2), u₂.2))) <$>
+          (ghostSignDrawBody ids M pk sk msg maxAttempts).run u₂.1.1.1.1 := rfl
+    rw [hrun₁, hrun₂, show u₁.1.1.1 = u₂.1.1.1.1 from by rw [hst],
+      show u₁.1.1.2 = u₂.1.1.1.2 from by rw [hst], show u₁.1.2 = u₂.1.1.2 from by rw [hst]]
+    refine OracleComp.ProgramLogic.Relational.relTriple_map (R := _)
+      (OracleComp.ProgramLogic.Relational.relTriple_post_mono
+        (OracleComp.ProgramLogic.Relational.relTriple_refl _) ?_)
+    rintro a b (rfl : a = b)
+    refine ⟨rfl, rfl, ?_⟩
+    intro hb
+    obtain ⟨rc, hrcmem, hrcdraw⟩ := hbad hb
+    exact ⟨rc, hrcmem, List.mem_append_left _ hrcdraw⟩
+
+omit [SampleableType Stmt] in
+/-- **The read-recording run coupling.** By induction on the adversary computation `oa`, the
+deferred-draw run and the read-recording run are coupled with `deferredReadInv` preserved at every
+leaf, using `deferredDrawRead_step` per query and the inductive hypothesis for the continuation.
+Mirrors `deferredCouple_run`. -/
+theorem deferredDrawRead_run {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s₁ : DeferredState M Commit Chal) (s₂ : DeferredReadState M Commit Chal),
+      deferredReadInv M s₁ s₂ →
+      OracleComp.ProgramLogic.Relational.RelTriple
+        ((simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s₁)
+        ((simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s₂)
+        (fun q₁ q₂ => deferredReadInv M q₁.2 q₂.2) := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s₁ s₂ hinv
+      simp only [simulateQ_pure, StateT.run_pure]
+      exact OracleComp.ProgramLogic.Relational.relTriple_pure_pure hinv
+  | query_bind t ob ih =>
+      intro s₁ s₂ hinv
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind]
+      refine OracleComp.ProgramLogic.Relational.relTriple_bind
+        (deferredDrawRead_step ids M maxAttempts pk sk t s₁ s₂ hinv) ?_
+      rintro p₁ p₂ ⟨hout, hinv'⟩
+      rw [show p₁.1 = p₂.1 from hout]
+      exact ih p₂.1 p₁.2 p₂.2 hinv'
+
+omit [SampleableType Stmt] in
+/-- **The read-recording reduction.** The deferred-draw run's bad marginal is at most the
+read-recording run's final-state predicate "some recorded read-commit lies in the final drawn
+list", from any pair of `deferredReadInv`-related start states.
+
+Reads off the bad-ordering component of `deferredReadInv` from the run coupling
+`deferredDrawRead_run` via `probEvent_le_of_relTriple_imp`. This converts the read-time bad flag of
+`deferredDrawImpl` into the membership predicate over the read-recording run's final state, where
+both the recorded read-commit list and the drawn list are available together. -/
+theorem deferredDraw_bad_le_readRecord {γ : Type}
+    (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (s₁ : DeferredState M Commit Chal) (s₂ : DeferredReadState M Commit Chal)
+    (hinv : deferredReadInv M s₁ s₂) :
+    Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
+        (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s₁]
+      ≤ Pr[fun z : γ × DeferredReadState M Commit Chal => ∃ rc ∈ z.2.2, rc ∈ z.2.1.1.2 |
+          (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s₂] :=
+  OracleComp.ProgramLogic.Relational.probEvent_le_of_relTriple_imp
+    (deferredDrawRead_run ids M maxAttempts pk sk oa s₁ s₂ hinv)
+    (fun _ _ hp hbad => hp.2 hbad)
+
+omit [SampleableType Stmt] in
+/-- **The isolated remaining obligation, in read-recording final-state form.** The read-recording
+run's *final-state* read-hit predicate (`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the
+front-loaded i.i.d. `drawList` game with the deferred run's new-draw count law `kn` and some
+all-miss strategy `σ`. This is strictly smaller than the read-time form: the bad event is now a
+function of
+the *final* state (the recorded read-commit list and the drawn list), so the read-time/final-state
+mismatch is gone — both the value-free read points and the i.i.d. draws are available together in
+the final state. What remains is the genuine deferral commute: the recorded read-commits are
+value-free
+(`roStep` answers from the real layer, never the drawn values), so the joint final distribution of
+(read-commit list, drawn list) front-loads to the independent block `drawList … n` with `σ` reading
+off the value-free read points. Over-count: a recorded read-commit in the drawn list certainly hits
+the full block `ws₀ ++ ws`. The mean of `kn` is discharged (`deferredDraw_kn_mean_le`). The atom is
+`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold is the
+remaining joint PMF×PMF coupling. -/
+theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ)
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
+    ∃ σ : List Bool → Commit,
+      Pr[fun z : γ × DeferredReadState M Commit Chal => ∃ rc ∈ z.2.2, rc ∈ z.2.1.1.2 |
+          (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+            ((((re, l), ws₀), false), [])]
+        ≤ Pr[(fun b : Bool => b = true) |
+            ((fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+              (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
+                (((re, l), ws₀), false)) >>= fun n =>
+              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+  -- The deferral commute on the read-recording final state: front-load the run's interleaved
+  -- per-attempt draws into the `drawList` block, leaving the value-free recorded read-commits as
+  -- the all-miss strategy `σ`. The bad event is now a final-state membership predicate.
+  sorry
+
 omit [SampleableType Stmt] in
 /-- **Piece B residual: the probabilistic over-count (the precise remaining obligation).** For the
 *constructed* count law `kn` — the deferred-draw run's new-draw count
-(`final.length - ws₀.length`), whose mean is already bounded by `deferredDraw_kn_mean_le` — there is
-an all-miss read strategy `σ` such that the deferred-draw run's bad marginal is at most the
-front-loaded i.i.d. `drawList` game `kn >>= drawList (commit) n >>= readManyList (ws₀ ++ ws)`.
+(`final.length - ws₀.length`) — there is an all-miss read strategy `σ` such that the deferred-draw
+run's bad marginal is at most the front-loaded i.i.d. `drawList` game.
 
-This is the single genuinely-open probabilistic content of the linchpin. Both sides are concrete and
-value-free (eager ghost-value irrelevance is discharged into Piece A, which reduced the eager run to
-this deferred run): the deferred handler draws one i.i.d. raw `Prod.fst <$> ids.commit pk sk`
-commitment per signing attempt and only records the growing list, while a read fires the bad flag
-iff its commitment is already in the drawn list. The remaining work is the *deferral commute*: pull
-the run's interleaved per-attempt draws out to the independent front block `drawList … n`, leaving
-the pre-first-hit reads as the fixed all-miss strategy `σ` (over-count: a read that hits a
-commitment drawn *so far* certainly hits one drawn in the full block `ws₀ ++ ws`, so the direction
-is `≤` and no rejection-conditioning skew is formed). The per-attempt single-draw deferral atom is
-`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold so all
-attempts' draws commute to the front is the joint PMF×PMF coupling. -/
+The read-time bad flag is first converted to a read-recording *final-state* membership predicate by
+the proven Piece A-style coupling `deferredDraw_bad_le_readRecord` (with start invariant
+`deferredReadInv`: the deferred and read-recording start states share the underlying deferred state
+`(((re, l), ws₀), false)` and the empty start read-commit list trivially has no false witness). The
+remaining content is the read-recording final-state over-count
+`readRecord_pred_le_drawList_fold_prob`. -/
 theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
@@ -2336,11 +2544,14 @@ theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
                 (((re, l), ws₀), false)) >>= fun n =>
               OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
                 pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- The deferral commute: front-load the deferred run's interleaved per-attempt draws into the
-  -- `drawList` block, leaving the pre-first-hit reads as the fixed all-miss strategy `σ`. The mean
-  -- of this `kn` is already discharged (`deferredDraw_kn_mean_le`); the remaining content is the
-  -- joint PMF×PMF coupling lifting `probEvent_bind_fire_eq_defer` across the opaque adversary fold.
-  sorry
+  -- Reduce the read-time bad flag to the read-recording final-state predicate (proven coupling),
+  -- then apply the isolated final-state over-count.
+  obtain ⟨σ, hbound⟩ :=
+    readRecord_pred_le_drawList_fold_prob ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+      hGuess hAbort oa qSrem hQ re l ws₀
+  refine ⟨σ, le_trans ?_ hbound⟩
+  exact deferredDraw_bad_le_readRecord ids M maxAttempts pk sk oa
+    (((re, l), ws₀), false) ((((re, l), ws₀), false), []) ⟨rfl, fun h => absurd h (by simp)⟩
 
 omit [SampleableType Stmt] in
 /-- **Piece B: the deferred → drawList deferral commute.** Assembles the constructed count law's
