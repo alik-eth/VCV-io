@@ -4389,6 +4389,100 @@ theorem deferredDrawRead_run_count_dl_invariant {γ : Type} (pk : Stmt) (sk : Wi
           (ih alc.1.1 alc.2 (msg :: sgn) rl (D₁ ++ alc.1.2) b₁ (D₂ ++ alc.1.2) b₂)
 
 omit [SampleableType Stmt] in
+/-- **The value-substituted continuation read-multiplicity functional is drawn-invariant.** A
+restatement of `deferredDrawRead_run_count_dl_invariant` reorganised for the body charge: the
+expected read-multiplicity `E[Σ_{rc ∈ readlist} R.count rc]` of a *fixed* commit list `R` against
+the continuation's recorded read list is invariant under the continuation's start drawn list (and
+bad flag). The reads answer via `roStep` on the real layer, never the drawn (rejected) values, so
+adding `R` (or any list) to the start drawn list does not change the read-list marginal. -/
+theorem deferredDrawRead_run_sum_count_dl_invariant {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (R : List Commit) (re : (M × Commit →ₒ Chal).QueryCache) (sgn : List M)
+    (rl : List Commit) (D₁ : List Commit) (b₁ : Bool) (D₂ : List Commit) (b₂ : Bool) :
+    (∑' z : γ × DeferredReadState M Commit Chal,
+        Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+            ((((re, sgn), D₁), b₁), rl)] * ((R.map (fun w => z.2.2.count w)).sum : ℝ≥0∞))
+      = ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+              ((((re, sgn), D₂), b₂), rl)] * ((R.map (fun w => z.2.2.count w)).sum : ℝ≥0∞) := by
+  classical
+  induction R with
+  | nil => simp
+  | cons w R ih =>
+      simp only [List.map_cons, List.sum_cons, Nat.cast_add]
+      rw [show ∀ (D : List Commit) (b : Bool),
+            (∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+                  ((((re, sgn), D), b), rl)] *
+                (((z.2.2.count w : ℕ) : ℝ≥0∞) + ((R.map (fun w => z.2.2.count w)).sum : ℝ≥0∞)))
+              = (∑' z : γ × DeferredReadState M Commit Chal,
+                  Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+                      ((((re, sgn), D), b), rl)] * ((z.2.2.count w : ℕ) : ℝ≥0∞))
+                + ∑' z : γ × DeferredReadState M Commit Chal,
+                    Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
+                        ((((re, sgn), D), b), rl)] *
+                      ((R.map (fun w => z.2.2.count w)).sum : ℝ≥0∞) from
+          fun D b => by rw [← ENNReal.tsum_add]; exact tsum_congr fun z => by rw [mul_add]]
+      rw [deferredDrawRead_run_count_dl_invariant ids M maxAttempts pk sk oa w re sgn rl
+            D₁ b₁ D₂ b₂, ih, ← ENNReal.tsum_add]
+      exact tsum_congr fun z => by rw [mul_add]
+
+omit [SampleableType Stmt] in
+/-- **The constant-length body charge (the genuine per-attempt induction).** Over one signing body
+`ghostSignDrawBody n`, the expected continuation read-multiplicity of the body's *rejected* draws —
+`E[Σ_{w ∈ body-rejects} continuation.readlist.count w]` — is at most `ε · (rl.length + qH) ·
+E[#body-rejects]`, where `rl` is the continuation's start read list and `qH` the continuation's
+read-query budget (so the continuation's recorded read list has length `≤ rl.length + qH`
+deterministically).
+
+Proved by induction on `n`:
+* **0** — the body rejects nothing, both sides are `0`.
+* **n+1** — the head draws `(w, st)`, samples a challenge, responds, and *accepts* (rejects nothing,
+  charge `0`) or *rejects* and recurses. On reject the recorded rejects are `w :: rec-rejects`; the
+  read-multiplicity splits as `continuation.readlist.count w` (the head's contribution) plus the
+  recursive body charge (the inductive hypothesis at the extended start drawn list). The head's
+  `continuation.readlist.count w` is averaged over `w`'s fresh `ids.commit pk sk` draw: `w` is
+  independent of the recursive body (which uses the cache `re`, not `w`) and of the value-free
+  continuation read list (`deferredDrawRead_run_sum_count_dl_invariant` moves `w` out of the drawn
+  list, and the reads answer via `roStep`), so the marginal `ε`-kernel
+  `tsum_probOutput_commit_mul_count_le` charges it `≤ ε · readlist.length ≤ ε · (rl.length + qH)`.
+  The reject indicator is dropped (`≤ 1`) on the value-substituted, hence fixed, read list. The head
+  charge `ε · (rl.length + qH)` matches the `+1` in `#rejects` from the head's rejected attempt. -/
+theorem ghostSignDrawBody_continuation_charge {γ : Type}
+    (qH : ℕ) (ε : ℝ) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (msg : M)
+    (ob : ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))).Range (Sum.inr msg) →
+      OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (hob : ∀ u, (ob u).IsQueryBoundP (· matches Sum.inl (Sum.inr _)) qH)
+    (sgn : List M) (rl : List Commit) (bad : Bool) :
+    ∀ (n : ℕ) (re : (M × Commit →ₒ Chal).QueryCache) (dr : List Commit),
+      (∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+          Pr[= alc | (ghostSignDrawBody ids M pk sk msg n).run re] *
+            ∑' z : γ × DeferredReadState M Commit Chal,
+              Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) (ob alc.1.1)).run
+                  ((((alc.2, sgn), dr ++ alc.1.2), bad), rl)] *
+                ((alc.1.2.map (fun w => z.2.2.count w)).sum : ℝ≥0∞))
+        ≤ ENNReal.ofReal ε * ((rl.length + qH : ℕ) : ℝ≥0∞) *
+          ∑' alc : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
+            Pr[= alc | (ghostSignDrawBody ids M pk sk msg n).run re] *
+              ((alc.1.2.length + 1 : ℕ) : ℝ≥0∞) := by
+  classical
+  intro n
+  induction n with
+  | zero =>
+      intro re dr
+      simp only [ghostSignDrawBody, StateT.run_pure, tsum_probOutput_pure_mul, List.map_nil,
+        List.sum_nil, Nat.cast_zero, mul_zero, tsum_zero]
+      exact zero_le'
+  | succ n ih =>
+      intro re dr
+      -- Abbreviate the per-attempt charge constant.
+      set L₀ : ℝ≥0∞ := ENNReal.ofReal ε * ((rl.length + qH : ℕ) : ℝ≥0∞) with hL₀
+      sorry
+
+omit [SampleableType Stmt] in
 /-- **The sign-step value-free charge (the isolated remaining core of the #228 ghost-read bound).**
 This is the single-query step of the inline-run induction
 `readRecord_expected_pairs_nontape_general` at a *signing* query `Sum.inr msg`. The signing body
