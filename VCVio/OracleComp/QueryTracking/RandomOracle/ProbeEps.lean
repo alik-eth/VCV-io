@@ -458,6 +458,21 @@ noncomputable def drawList (oa : ProbComp R) : ℕ → ProbComp (List R)
       let ws ← drawList oa n
       pure (w :: ws)
 
+omit [DecidableEq R] in
+/-- The front-block draw never fails: it only ever draws from `oa` (which is failure-free) and
+returns, so `drawList oa n` has zero failure mass. -/
+@[simp] lemma probFailure_drawList (oa : ProbComp R) (n : ℕ) :
+    Pr[⊥ | drawList oa n] = 0 := by
+  induction n with
+  | zero => simp [drawList]
+  | succ n _ => rw [drawList]; simp
+
+omit [DecidableEq R] in
+/-- Total output mass of the front-block draw is `1` (it never fails). -/
+lemma tsum_probOutput_drawList_eq_one (oa : ProbComp R) (n : ℕ) :
+    (∑' ws : List R, Pr[= ws | drawList oa n]) = 1 :=
+  tsum_probOutput_eq_one' (probFailure_drawList oa n)
+
 /-- **Explicit-list ↔ i.i.d. multi-key game.** Drawing `n` independent keys into a list and firing
 iff some key is read-hit (`drawList oa n >>= readManyList · q σ`) is *exactly* the i.i.d. multi-key
 hidden-target game `hiddenReadList oa q σ n` as a computation. The head key contributes its own

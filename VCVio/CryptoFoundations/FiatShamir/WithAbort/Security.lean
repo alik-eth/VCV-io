@@ -1687,6 +1687,96 @@ lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le (pk : Stmt) (sk : Wit)
         _ ≤ ENNReal.ofReal p_abort * S :=
             mul_le_mul_left (tsum_probOutput_commit_mul_abort_le ids pk sk hAbort) _
 
+omit [SampleableType Stmt] in
+/-- **Single-signing-body resampling over-count.** Testing the *drawn list* produced by one
+`ghostSignDrawBody` run (the rejected-attempt commitments, write-only side-data) against any *fixed*
+read strategy `σ` with `q` reads fires with probability at most testing `n` *fresh* i.i.d. raw
+`Prod.fst <$> ids.commit pk sk` draws against the same strategy (`drawList … n`, where `n` is the
+attempt budget `maxAttempts`).
+
+This is the genuine per-query resampling content, isolated to one signing body. The drawn list of
+the body is *not* equal in law to `n` fresh raw draws (the rejected draws are skewed by the
+rejection-conditioning `commit | reject`), but the firing event over-counts to the fresh game: on
+the accept branch the body records *no* commitment (so its read-game fires with probability `0`,
+dominated by the fresh side, which still draws and tests one value); on the reject branch the body's
+recorded commitment is a raw `Prod.fst <$> ids.commit pk sk` draw — distributed exactly as the fresh
+head — and its `readMany` test matches the fresh head's, while the recursive rejected list is
+dominated by the recursive fresh list (induction). The read strategy `σ` is *fixed* (the read points
+are determined by the all-miss reply history; the drawn values never feed them — value-freeness),
+which is what lets a single `σ` dominate both sides. Lifting this per-query over-count across the
+opaque adversary `simulateQ` fold — front-loading every signing query's interleaved draws into one
+aggregate `drawList` block indexed by the run's *reject* count `kn` — is the remaining fold-level
+deferral commute (see `readRecord_pred_le_drawList_fold_prob`). -/
+lemma ghostSignDrawBody_readManyList_le_drawList (pk : Stmt) (sk : Wit) (msg : M)
+    (q : ℕ) (σ : List Bool → Commit) :
+    ∀ (n : ℕ) (re : (M × Commit →ₒ Chal).QueryCache),
+      Pr[(fun b : Bool => b = true) |
+          (ghostSignDrawBody ids M pk sk msg n).run re >>= fun rws =>
+            pure (OracleComp.readManyList rws.1.2 q σ)]
+        ≤ Pr[(fun b : Bool => b = true) |
+            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+              pure (OracleComp.readManyList ws q σ)] := by
+  intro n
+  induction n with
+  | zero =>
+      intro re
+      simp [ghostSignDrawBody, OracleComp.drawList, OracleComp.readManyList]
+  | succ n ih =>
+      intro re
+      -- Unfold one attempt on the left and one fresh draw on the right; both bind over the same
+      -- raw `ids.commit pk sk` draw, so compare the per-draw fire-marginals termwise.
+      rw [run_ghostSignDrawBody_succ]
+      rw [OracleComp.drawList, bind_assoc, bind_map_left]
+      simp only [bind_assoc, pure_bind]
+      rw [probEvent_bind_eq_tsum, probEvent_bind_eq_tsum]
+      refine ENNReal.tsum_le_tsum fun ws => ?_
+      gcongr
+      -- Per commit draw `ws`: name the recursive fresh `n`-draw game and the recursive body-`n`
+      -- game; the latter is `≤` the former by the inductive hypothesis (`ih`).
+      set RHSinner : ℝ≥0∞ := Pr[(fun b : Bool => b = true) |
+        OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun rest =>
+          pure (OracleComp.readManyList rest q σ)] with hRHSinner
+      by_cases hhead : OracleComp.readMany ws.1 q σ = true
+      · -- The head already fires: the RHS `readManyList (ws.1 :: rest)` is always `true`, so the
+        -- RHS per-draw marginal is the full mass of `drawList n` = 1 ≥ the LHS.
+        refine le_trans probEvent_le_one (le_of_eq ?_)
+        symm
+        have hcongr : (OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun rest =>
+              pure (OracleComp.readManyList (ws.1 :: rest) q σ))
+            = (OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun _ =>
+              (pure true : ProbComp Bool)) := by
+          refine bind_congr fun rest => ?_
+          rw [OracleComp.readManyList, List.any_cons, hhead, Bool.true_or]
+        rw [hcongr, probEvent_bind_eq_tsum]
+        simp only [probEvent_pure, if_pos]
+        rw [ENNReal.tsum_mul_right, OracleComp.tsum_probOutput_drawList_eq_one, one_mul]
+      · -- The head misses: the RHS reduces to the recursive fresh game `RHSinner`, and the LHS is
+        -- dominated by the recursive body-`n` game, which is `≤ RHSinner` by `ih`.
+        rw [Bool.not_eq_true] at hhead
+        have hRHS : Pr[(fun b : Bool => b = true) |
+              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun rest =>
+                pure (OracleComp.readManyList (ws.1 :: rest) q σ)] = RHSinner := by
+          rw [hRHSinner]
+          refine probEvent_bind_congr fun rest _ => ?_
+          rw [OracleComp.readManyList, List.any_cons, hhead, Bool.false_or, OracleComp.readManyList]
+        rw [hRHS]
+        -- The LHS per-draw game is dominated by the recursive body-`n` game: drop the
+        -- `uniformSample`/`respond` draws (mass `≤ 1`); the accept branch records `[]`
+        -- (`readManyList [] = false`, fires with probability `0`) and the reject branch's head
+        -- test `readMany ws.1 q σ` misses (`hhead`), so its `readManyList (ws.1 :: inner)` reduces
+        -- to the body-`n` game's `readManyList inner`.
+        refine le_trans ?_ (ih re)
+        refine probEvent_bind_le_of_forall_le fun ch _ => ?_
+        refine probEvent_bind_le_of_forall_le fun oz _ => ?_
+        cases oz with
+        | some z => simp [OracleComp.readManyList]
+        | none =>
+            rw [bind_map_left]
+            refine le_of_eq ?_
+            refine probEvent_bind_congr fun rws _ => ?_
+            rw [OracleComp.readManyList, List.any_cons, hhead, Bool.false_or,
+              OracleComp.readManyList]
+
 /-- The deferred-draw handler for the adversary's oracles, driving the distribution-level mono
 skeleton against `ghostBlindImpl`. Carries the accumulated drawn-commitment list and a monotone
 read-hit flag in place of the eager ghost cache (see `DeferredState`). -/
