@@ -1461,9 +1461,11 @@ lemma ghostBlind_singleDraw_fire_le {α : Type} (pk : Stmt) (sk : Wit) {ε : ℝ
 
 /-! ### M2: the deferred-sampling factorization (the single open obligation)
 
-`ghostBlind_bad_fac_exists` is the **M2** content: the ghost-blind run's bad marginal *factors*
-as a value-free multi-key hidden-target game. This is the crux of the sound route and is the
-single open obligation; it is genuinely multi-week-class.
+The **M2** content is the ghost-blind run's bad marginal *factoring* as a value-free deferred-draw
+game. This is the crux of the sound route and is the single open obligation; it is genuinely
+multi-week-class. The headline charges it through the σ-free first-moment residual
+`readRecord_expected_coincidences_le` (the expected coincidence count of the value-free recorded
+read-commit list with the recorded rejected draws).
 
 Why it factors (the sound argument). In `ghostBlindImpl` an adversarial random-oracle read at a
 ghost-cache hit answers from the *real* layer via `roStep` — identically to a miss — and only
@@ -1475,14 +1477,11 @@ points, reject pattern / loop lengths, real cache) is produced by a value-free r
 per *rejected* attempt and gated into the ghost cache by the reject decision.
 
 Formalize as a deferred-sampling factorization: pull every rejected attempt's commitment draw
-into an independent front block `kn >>= fun n => hiddenReadList (Prod.fst <$> ids.commit pk sk)
-(qH+1) σ n`, where `kn` is the value-free run's ghost-key-count law (number of rejected attempts,
-`≤ qS` queries each contributing a geometric number of rejections) and `σ : List Bool → Commit`
-is the adversary's adaptive read strategy fixed by the all-miss history (every pre-first-hit read
-answers from the real layer, so the strategy is value-independent — the manifest output-irrelevance
-of `ghostBlindImpl`). The mean bound `E[n] ≤ qS/(1-p)` is the aggregate of
-`tsum_probOutput_commit_mul_abort_le` over the `qS` signing queries (each rejected attempt is
-reached with geometric probability, summed by `geomAttemptSum_le`).
+into the recorded drawn-list of the deferred handler `deferredDrawReadImpl`, independent of the
+value-free recorded read-commit list. The expected coincidence count is then bounded by
+`(#reads) · (#draws) · (max draw mass) ≤ (qH+1) · ε · E[#attempts]`, with `E[#attempts] ≤
+qS/(1-p)` the aggregate of `tsum_probOutput_commit_mul_abort_le` over the `qS` signing queries
+(each rejected attempt is reached with geometric probability, summed by `geomAttemptSum_le`).
 
 Banked tools for the eventual discharge: the read-marginal equalities
 `probEvent_ghostHybridImpl_read_bad_single_eq_lazyFire` /
@@ -1497,12 +1496,11 @@ adversary computation.
 This factorization route is sound precisely because `ghostBlindImpl` reads never feed the ghost
 value into the run, so the draws are genuinely deferrable. -/
 
-/-! ### Stage 3a: deferred-handler ingredients for the `simulateQ`-fold mono skeleton
+/-! ### Stage 3a: deferred-handler ingredients
 
-The pinned linchpin `ghostBlind_bad_le_drawList_fold` is driven on the distribution-level mono
-skeleton `ProgramLogic.Relational.SimulateQ.probEvent_dist_simulateQ_mono`. That skeleton needs a
-*deferred* handler `impl₂` (a genuine `QueryImpl`), a coupling relation `Rrun` on the two run
-distributions, and the two bad predicates `bad₁ / bad₂`. This block constructs those ingredients.
+The sound first-moment route couples the eager ghost-blind run to a *deferred* handler `impl₂` (a
+genuine `QueryImpl`) via a per-step coupling relation `Rrun` on the two run distributions and the
+two bad predicates `bad₁ / bad₂`. This block constructs those ingredients.
 
 The deferred handler `deferredDrawImpl` carries, instead of eager-committed ghost keys, the
 *accumulated list of drawn rejected-attempt commitments* (the front block, grown lazily as sign
@@ -1851,8 +1849,10 @@ dominated by the recursive fresh list (induction). The read strategy `σ` is *fi
 are determined by the all-miss reply history; the drawn values never feed them — value-freeness),
 which is what lets a single `σ` dominate both sides. Lifting this per-query over-count across the
 opaque adversary `simulateQ` fold — front-loading every signing query's interleaved draws into one
-aggregate `drawList` block indexed by the run's *reject* count `kn` — is the remaining fold-level
-deferral commute (see `readRecord_pred_le_drawList_fold_prob`). -/
+aggregate `drawList` block indexed by the run's attempt count — is the remaining fold-level deferral
+commute, the same value-free fold-lift isolated in `readRecord_expected_coincidences_le`. This lemma
+is a banked single-body over-count partial; it is not on the live headline path (which charges the
+expected coincidence count directly). -/
 lemma ghostSignDrawBody_readManyList_le_drawList (pk : Stmt) (sk : Wit) (msg : M)
     (q : ℕ) (σ : List Bool → Commit) :
     ∀ (n : ℕ) (re : (M × Commit →ₒ Chal).QueryCache),
@@ -2129,10 +2129,10 @@ theorem signBody_couple (pk : Stmt) (sk : Wit) (msg : M) :
           rw [List.append_assoc] at hmem
           simpa using hmem
 
-/-! ### Stage 3a: the deferred-coupling decomposition of the linchpin
+/-! ### Stage 3a: the deferred-coupling reduction (Piece A)
 
-The linchpin `ghostBlind_bad_le_drawList_fold` factors into two pieces through the deferred-draw
-handler `deferredDrawImpl`:
+The eager ghost-blind bad marginal reduces, through the deferred-draw handler `deferredDrawImpl`,
+to the deferred run's bad marginal:
 
 * **Piece A** (`ghostBlind_bad_le_deferredDraw`): a *pointwise coupling* of the eager ghost-blind
   run with the deferred-draw run, established on the pointwise mono skeleton
@@ -2143,17 +2143,17 @@ handler `deferredDrawImpl`:
   the sign step couples the two bodies' `ids.commit` draws so the eager ghost writes and the
   deferred draws stay in lockstep. `probEvent_le_of_relTriple_imp` then reads off the ordered bad
   marginals.
-* **Piece B** (`deferredDraw_bad_le_drawList_fold`): the *deferral commute* exhibiting the
-  deferred run's bad marginal as the front-loaded i.i.d. `drawList` game. The deferred handler draws
-  one i.i.d. raw commitment per attempt and only ever *records* the list; a read that hits a
-  commitment already drawn fires the flag, so the final bad event is dominated by a read-hit against
-  the full drawn list `ws₀ ++ ws`. The count law `kn` is the run's total-draw distribution.
 
-This decomposition replaces the abstract distribution-level coupling: the bad flags *are* pointwise
-linkable (eager ghost-membership ⟹ deferred commitment-membership, since the drawn list grows in
-lockstep with the ghost cache), so the pointwise `relTriple_simulateQ_run_mono` route applies and
-Piece A is genuine, bankable coupling content. The remaining open content is Piece B's deferral
-commute — the per-query commutation of the run's interleaved draws to the front block.
+The deferred run's bad marginal is then carried — through the read-recording reduction
+(`deferredDraw_bad_le_readRecord`) and the first-moment Markov step
+(`readRecord_pred_le_expected_coincidences`) — to the expected coincidence count bounded by
+`readRecord_expected_coincidences_le`.
+
+This reduction uses the pointwise coupling because the bad flags *are* pointwise linkable (eager
+ghost-membership ⟹ deferred commitment-membership, since the drawn list grows in lockstep with the
+ghost cache), so the pointwise `relTriple_simulateQ_run_mono` route applies and Piece A is genuine,
+bankable coupling content. The remaining open content is the value-free fold-lift isolated in
+`readRecord_expected_coincidences_le`.
 
 The state invariant linking the eager `GhostState` and the deferred `DeferredState`: real cache and
 signed-message list agree, every key in the ghost cache has its commitment recorded in the drawn
@@ -3044,7 +3044,7 @@ least one coincidence, so the indicator of the firing event is dominated by the 
 integer-valued) coincidence count, and `Pr[fire] ≤ E[count]` by the Markov core
 `probEvent_le_tsum_probOutput_mul_cost`. The remaining content — bounding `E[count]` by
 `(qH+1)·ε·E[#attempts]` — is the genuine per-position independence of each fresh draw from the
-value-free recorded read-commit list (see `readRecord_pred_le_drawList_fold_prob`). This lemma is
+value-free recorded read-commit list (see `readRecord_expected_coincidences_le`). This lemma is
 axiom-clean and isolates that independence as the sole open content. -/
 theorem readRecord_pred_le_expected_coincidences {γ : Type}
     (pk : Stmt) (sk : Wit)
@@ -3070,10 +3070,9 @@ The read-recording run's expected coincidence count
 `E[#{ rc ∈ readlist : rc ∈ drawnlist }]` — the first moment fed by the banked Markov step
 `readRecord_pred_le_expected_coincidences` — is at most `qSrem · (qH+1) · ε / (1-p)`.
 
-This is the strictly-cleaner, σ-free numeric form of the remaining open content. It replaces the
-existential `drawList`-game residual `readRecord_pred_le_drawList_fold_prob` (no front-loaded game,
-no all-miss strategy `σ`): both the headline ghost-read bound and the `euf_cma` proof are charged
-through this single numeric inequality.
+This is the σ-free numeric form of the remaining open content (no front-loaded game, no all-miss
+strategy `σ`): both the headline ghost-read bound and the `euf_cma` proof are charged through this
+single numeric inequality.
 
 **The accounting (why this is TRUE and additive — no per-output skew).** The coincidence count is a
 double sum `Σ_{rc ∈ readlist} Σ_{d ∈ drawnlist} 1[rc = d]`, hence purely additive; the
@@ -3119,332 +3118,13 @@ theorem readRecord_expected_coincidences_le {γ : Type}
   sorry
 
 omit [SampleableType Stmt] in
-/-- **The `drawList`-game form of the remaining obligation (banked partial; off the live path).**
-The headline ghost-read bound is now charged through the σ-free first-moment residual
-`readRecord_expected_coincidences_le` (bounding the expected coincidence count directly). This
-existential `drawList`-game form is retained as a banked alternative formulation of the same open
-content — the value-free fold-lift — with its full counterexample analysis and the attempt-count
-redraft preserved below.
-
-The read-recording run's *final-state* read-hit predicate
-(`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the front-loaded i.i.d. `drawList` game with the
-deferred run's *attempt-count* law `kn` and some all-miss strategy `σ`. The bad event is a function
-of the *final* state (the recorded read-commit list and the drawn list), so the
-read-time/final-state mismatch is gone — both the value-free read points and the i.i.d. draws are
-available together in the final state.
-
-**Count law (the redraft):** `kn` is the total ATTEMPT count `(drawnlist.length - ws₀.length) +
-(signedlist.length - l.length)`, i.e. the rejected-attempt count plus the signing-query count,
-**not** the reject count alone. The reject count is too small to dominate the firing — the firing
-tests reads against the *actual* rejected draws, each distributed as `commit | reject`, whereas the
-`drawList`-game RHS draws raw `Prod.fst <$> ids.commit`; a read at `c⋆` with `Pr[reject | c⋆] = 1`,
-`Pr[= c⋆ | commit] = ε` fires with probability `≈ ε` on the LHS, while a reject-count RHS of mean
-`≈ ε` fires only with probability `≈ ε²`. The attempt count adds one raw draw per signing query,
-covering each accepting attempt's fresh output-irrelevant draw, which removes the
-rejection-conditioning skew: at `maxAttempts = 1` it gives RHS `= 1 - (1-ε)^(reject+1) ≥ ε = LHS`
-(verified). The attempt count keeps the clean mean `qSrem/(1-p)`
-(`deferredDraw_attemptKn_mean_le`): the per-query charge `(reject expectation) + 1 =
-∑_{a≤maxAttempts} p^a ≤ 1/(1-p)` absorbs the extra `+1` by the tight reject bound
-`tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight` (`∑_{a<n} p^(a+1)`). The drawn list
-stays rejected-only, so the eager-bad ⟹ deferred-bad coupling
-(`deferredDraw_bad_le_readRecord` / `signBody_couple`) is untouched.
-
-**Remaining content (the genuine open core), via the first-moment route.** The firing probability
-on the LHS is reduced by the banked, axiom-clean Markov step
-`readRecord_pred_le_expected_coincidences` to the *expected coincidence count*
-`E[#{ rc ∈ readlist : rc ∈ drawnlist }]`. The sole open content is then the **per-position
-independence** bound `E[#coincidences] ≤ (qH+1)·ε·E[#attempts]`: each recorded drawn commit is a
-fresh i.i.d. raw `Prod.fst <$> ids.commit pk sk` draw of mass `≤ ε`, and is independent of the
-recorded read-commit list because the reads answer from the real RO layer (`roStep`) and never see
-the drawn values (`blindStepProj_map_ghostBlindImpl_indep` / `ghostHybridImpl_proj_trans`). That
-per-draw independence — the value-free draws being conditionally i.i.d. and `⊥` the readlist
-*through the opaque adversary `simulateQ` fold* — is the multi-week PMF×PMF joint coupling: every
-decomposition (Markov coincidence counter, `σ`-domination top-mass set, direct first moment) reduces
-to this same value-free-draws-`⊥`-reads-through-the-fold fact. The atom
-`OracleComp.probEvent_bind_fire_eq_defer` commutes one value-free draw past a value-free generator;
-the single-body resampling over-count `ghostSignDrawBody_readManyList_le_drawList` discharges one
-signing body (loosely, to `drawList maxAttempts`); lifting either across the interleaved
-per-attempt draws of the whole fold — front-loading them to the independent block `drawList … n`
-with `σ` the value-free all-miss read strategy — is the open joint coupling. -/
-theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
-    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (qSrem : ℕ)
-    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
-    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
-    ∃ σ : List Bool → Commit,
-      Pr[fun z : γ × DeferredReadState M Commit Chal => ∃ rc ∈ z.2.2, rc ∈ z.2.1.1.2 |
-          (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run
-            ((((re, l), ws₀), false), [])]
-        ≤ Pr[(fun b : Bool => b = true) |
-            ((fun z : γ × DeferredState M Commit Chal =>
-                (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
-              (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
-                (((re, l), ws₀), false)) >>= fun n =>
-              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- The deferral commute on the read-recording final state: front-load the run's interleaved
-  -- per-attempt draws into the `drawList` block, leaving the value-free recorded read-commits as
-  -- the all-miss strategy `σ`. The bad event is now a final-state membership predicate, and the
-  -- count law is the total attempt count (rejects + signing queries), which removes the
-  -- rejection-conditioning skew.
-  sorry
-
-omit [SampleableType Stmt] in
-/-- **Piece B residual: the probabilistic over-count (the precise remaining obligation).** For the
-*constructed* count law `kn` — the deferred-draw run's new-draw count
-(`final.length - ws₀.length`) — there is an all-miss read strategy `σ` such that the deferred-draw
-run's bad marginal is at most the front-loaded i.i.d. `drawList` game.
-
-The read-time bad flag is first converted to a read-recording *final-state* membership predicate by
-the proven Piece A-style coupling `deferredDraw_bad_le_readRecord` (with start invariant
-`deferredReadInv`: the deferred and read-recording start states share the underlying deferred state
-`(((re, l), ws₀), false)` and the empty start read-commit list trivially has no false witness). The
-remaining content is the read-recording final-state over-count
-`readRecord_pred_le_drawList_fold_prob`. -/
-theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
-    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (qSrem : ℕ)
-    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
-    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
-    ∃ σ : List Bool → Commit,
-      Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
-          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
-        ≤ Pr[(fun b : Bool => b = true) |
-            ((fun z : γ × DeferredState M Commit Chal =>
-                (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
-              (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
-                (((re, l), ws₀), false)) >>= fun n =>
-              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Reduce the read-time bad flag to the read-recording final-state predicate (proven coupling),
-  -- then apply the isolated final-state over-count.
-  obtain ⟨σ, hbound⟩ :=
-    readRecord_pred_le_drawList_fold_prob ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-      hGuess hAbort oa qSrem hQ re l ws₀
-  refine ⟨σ, le_trans ?_ hbound⟩
-  exact deferredDraw_bad_le_readRecord ids M maxAttempts pk sk oa
-    (((re, l), ws₀), false) ((((re, l), ws₀), false), []) ⟨rfl, fun h => absurd h (by simp)⟩
-
-omit [SampleableType Stmt] in
-/-- **Piece B: the deferred → drawList deferral commute.** Assembles the constructed count law's
-mean bound (`deferredDraw_attemptKn_mean_le`) with the probabilistic over-count
-(`deferredDraw_bad_le_drawList_fold_prob`). The deferred-draw run's bad marginal — starting with
-drawn prefix `ws₀` — is at most a front-loaded
-i.i.d. `drawList` game with *some* adaptive all-miss read strategy `σ` and *some* count law `kn`
-whose mean is `≤ qSrem/(1-p)`. The strategy `σ` and the count law `kn` are **constructed from the
-run itself** (they are existentially bound here, exactly as in the headline residual): `kn` is the
-deferred run's total *attempt*-count law (rejected-attempt count plus signing-query count) and `σ`
-is the all-miss read strategy. Stating `kn`/`σ`
-existentially — rather than as inputs with only a mean bound — is what makes this statement *sound*:
-for an arbitrary `kn` with only a mean bound the inequality is false (e.g. `kn = δ₀`); the bound
-holds only for the `kn` that genuinely dominates the run's draw count. The query bound `hQ` (≤ qSrem
-signing queries on `oa`) is what makes the constructed `kn`'s mean `≤ qSrem/(1-p)` sound.
-
-This is the single genuinely-open probabilistic content of the linchpin. Both sides are now concrete
-and value-free (the eager ghost-value irrelevance is already discharged into Piece A, which reduced
-the eager run to this deferred run): the deferred handler draws one i.i.d. raw
-`Prod.fst <$> ids.commit pk sk` commitment per signing attempt and only ever *records* the growing
-list, while a read fires the bad flag iff its commitment is already in the drawn list. The remaining
-work is the *deferral commute*: pull the run's interleaved per-attempt draws out to the independent
-front block `drawList … n`, leaving the pre-first-hit reads as the fixed all-miss strategy `σ`
-(over-count: a read that hits a commitment drawn *so far* certainly hits one drawn in the full block
-`ws₀ ++ ws`, so the direction is `≤` and no rejection-conditioning skew is formed). The per-attempt
-single-draw deferral atom is `OracleComp.probEvent_bind_fire_eq_defer` (value-freeness from
-`blindStepProj_map_ghostBlindImpl_indep`, packaged in `ghostBlind_singleDraw_fire_le`); lifting it
-across the opaque adversary fold so all attempts' draws commute to the front is the joint coupling.
-The mean `≤ qSrem/(1-p)` is `deferredDraw_attemptKn_mean_le` (the tight reject bound
-`tsum_probOutput_run_ghostSignDrawBody_mul_length_le_tight` folded with `geomSum_le`). -/
-theorem deferredDraw_bad_le_drawList_fold {γ : Type}
-    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (qSrem : ℕ)
-    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
-    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M)
-    (ws₀ : List Commit) :
-    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
-      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-        ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) ∧
-      Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
-          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
-        ≤ Pr[(fun b : Bool => b = true) |
-            kn >>= fun n =>
-              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Construct `kn` as the run's total attempt-count law (rejects + signing queries); `σ` from the
-  -- probabilistic over-count. The mean bound is fully discharged
-  -- (`deferredDraw_attemptKn_mean_le`); only the over-count remains.
-  obtain ⟨σ, hbound⟩ :=
-    deferredDraw_bad_le_drawList_fold_prob ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-      hGuess hAbort oa qSrem hQ re l ws₀
-  exact ⟨σ,
-    (fun z : γ × DeferredState M Commit Chal =>
-        (z.2.1.2.length - ws₀.length) + (z.2.1.1.2.length - l.length)) <$>
-      (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false),
-    deferredDraw_attemptKn_mean_le ids M maxAttempts pk sk hp₀ hp hAbort oa qSrem hQ.1 re l ws₀,
-    hbound⟩
-
-/-! ### Stage 3 linchpin: the `simulateQ`-fold deferral
-
-`ghostBlind_bad_le_drawList_fold` is the linchpin in its **sound existential form**: it exhibits the
-eager ghost-blind run's bad marginal as a front-loaded `drawList` game for *some* `σ`/`kn` with
-mean `≤ qSrem/(1-p)`, generalized over the start `(re, gh, l)` and drawn prefix `ws₀`. The headline
-residual `ghostBlind_bad_le_bind_drawList` is its `gh = ∅`, `ws₀ = []`, `oa = adv.main pk`,
-`qSrem = qS` instance. It chains Piece A (`ghostBlind_bad_le_deferredDraw`, proven) and Piece B
-(`deferredDraw_bad_le_drawList_fold`, the precise remaining obligation).
-
-`σ`/`kn` are existential — not free inputs with only a mean bound — because the bound is only sound
-for the `kn` that dominates the run's draw count (an arbitrary mean-bounded `kn` is insufficient;
-the prior pinned ∀-`kn` sketch was unsound on that point). -/
-omit [SampleableType Stmt] in
-theorem ghostBlind_bad_le_drawList_fold {γ : Type}
-    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
-    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
-    (qSrem : ℕ)
-    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
-    (re gh : (M × Commit →ₒ Chal).QueryCache) (l : List M)
-    (ws₀ : List Commit)
-    (hPrefix : ∀ mc : M × Commit, gh mc ≠ none → mc.2 ∈ ws₀) :
-    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
-      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-        ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort))) ∧
-      Pr[fun z : γ × GhostState M Commit Chal => z.2.2 = true |
-          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) oa).run (((re, gh), l), false)]
-        ≤ Pr[(fun b : Bool => b = true) |
-            kn >>= fun n =>
-              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- Chain Piece A (proven) and Piece B (isolated). The eager start `(((re, gh), l), false)`
-  -- couples to the deferred start `(((re, l), ws₀), false)` because `hPrefix` is exactly the
-  -- domain-coverage component of `deferredCoupleInv` (real cache and signed list agree by `rfl`,
-  -- both bad flags `false`). Piece B supplies the existential `σ`/`kn`; Piece A's bound for the
-  -- deferred run composes by transitivity.
-  obtain ⟨σ, kn, hmean, hPieceB⟩ :=
-    deferredDraw_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
-      hGuess hAbort oa qSrem hQ re l ws₀
-  exact ⟨σ, kn, hmean, le_trans
-    (ghostBlind_bad_le_deferredDraw ids M maxAttempts pk sk oa (((re, gh), l), false)
-      (((re, l), ws₀), false) ⟨rfl, rfl, hPrefix, by simp⟩) hPieceB⟩
-
-omit [SampleableType Stmt] in
-/-- **The sole remaining residual of the sound #228 ghost-read bound** (M2, explicit-list form).
-
-Exhibits the ghost-blind run's bad marginal as the front-loaded game
-`kn >>= fun n => drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-  pure (readManyList ws (qH+1) σ)`,
-with mean `E[kn] ≤ qS/(1-p)`.
-
-The downstream chain is fully banked and axiom-clean: `ghostBlind_bad_fac_exists` converts
-this to the i.i.d. `hiddenReadList` form via `drawList_readManyList_eq_hiddenReadList`;
-`probEvent_ghostBlindImpl_bad_le` (M3) charges the result via
-`probEvent_ghostBlind_bad_le_of_fac` to the target bound `qS·(qH+1)·ε/(1-p)`;
-`probEvent_ghostHybridImpl_bad_le_ghostBlind` (M1) reduces the eager form to the ghost-blind
-run; and `probEvent_ghostRead_bad_le` assembles the headline.
-
-The obstruction: the aggregate measure-threading through the opaque `simulateQ (adv.main pk)`
-fold. Every per-output (`postStepOutM`) decomposition reintroduces the rejection skew
-(`Pr[reject|mc]/Pr[reject]` from `commit|reject`); no functional of the ghost state absorbs it
-because the skew lives in the output-conditioning, not the state. The sound closure requires a
-non-per-output joint-law / aggregate-threading engine — lifting the ghost-value
-output-irrelevance (`ghostHybridImpl_proj_trans`) through the full fold so that the
-per-rejected-attempt commitment draws commute to the independent front block independently of
-the intervening adversary computation. This is the multi-week PMF×PMF joint coupling work.
-
-The first-moment / Markov core of the sound route is banked separately and assumption-free
-(`probEvent_le_tsum_probOutput_mul_cost` / `…_of_mem_support` in `EvalDist/Defs/Basic.lean`):
-it bounds `Pr[bad]` by the expectation of any unit cost that fires on the bad event. Applying
-it to the ghost-blind run does **not** dissolve this residual, however: the bad flag's
-hit point is a *read-time* property of the ghost cache (a hit can be later `uncacheQuery`-ed by
-an accepting attempt), so it is not recoverable from the final state, and a faithful unit cost
-requires re-instrumenting the run with a `ℕ` read-hit counter whose expectation bound is again
-the same opaque-fold commutation. The peel is genuine (the union-over-reads layer is now an
-elementary lemma) but the per-read marginal through `simulateQ (adv.main pk)` remains the core. -/
-theorem ghostBlind_bad_le_bind_drawList
-    (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
-      (S' := Option (Commit × Resp)) (oa := adv.main pk) qS qH)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit,
-      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
-    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
-      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-        ≤ ENNReal.ofReal ((qS : ℝ) / (1 - p_abort))) ∧
-      (Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
-          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
-            ((((∅, ∅), []) :
-              ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
-                List M), false)]
-        ≤ Pr[(fun b : Bool => b = true) |
-          kn >>= fun n =>
-            OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-              pure (OracleComp.readManyList ws (qH + 1) σ)]) := by
-  -- The `gh = ∅`, `ws₀ = []`, `oa = adv.main pk`, `qSrem = qS` instance of the sound linchpin
-  -- `ghostBlind_bad_le_drawList_fold`; the empty prefix makes `readManyList ([] ++ ws) =
-  -- readManyList ws`.
-  obtain ⟨σ, kn, hmean, hbound⟩ :=
-    ghostBlind_bad_le_drawList_fold ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk hGuess hAbort
-      (adv.main pk) qS (hQ pk) ∅ ∅ [] [] (fun mc h => absurd rfl h)
-  refine ⟨σ, kn, hmean, hbound.trans_eq ?_⟩
-  simp only [List.nil_append]
-
-omit [SampleableType Stmt] in
-theorem ghostBlind_bad_fac_exists
-    (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
-    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
-      (S' := Option (Commit × Resp)) (oa := adv.main pk) qS qH)
-    (pk : Stmt) (sk : Wit)
-    (hGuess : ∀ cm : Commit,
-      Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
-    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort) :
-    ∃ (σ : List Bool → Commit) (kn : ProbComp ℕ),
-      (∑' n : ℕ, Pr[= n | kn] * (n : ℝ≥0∞)
-        ≤ ENNReal.ofReal ((qS : ℝ) / (1 - p_abort))) ∧
-      (Pr[fun z : (M × Option (Commit × Resp)) × GhostState M Commit Chal => z.2.2 = true |
-          (simulateQ (ghostBlindImpl ids M maxAttempts pk sk) (adv.main pk)).run
-            ((((∅, ∅), []) :
-              ((M × Commit →ₒ Chal).QueryCache × (M × Commit →ₒ Chal).QueryCache) ×
-                List M), false)]
-        ≤ Pr[(fun b : Bool => b = true) |
-          kn >>= fun n =>
-            OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n]) := by
-  -- Convert the Stage B explicit-list residual to the i.i.d. `hiddenReadList` form via the
-  -- program-level equality `drawList_readManyList_eq_hiddenReadList`: the two games are the same
-  -- computation, so the mean bound transfers verbatim and the inequality re-targets the equal RHS.
-  obtain ⟨σ, kn, hmean, hineq⟩ :=
-    ghostBlind_bad_le_bind_drawList ids hr M maxAttempts adv qS qH ε p_abort hp₀ hp hε hQ pk sk
-      hGuess hAbort
-  refine ⟨σ, kn, hmean, ?_⟩
-  have hgame : (kn >>= fun n =>
-        OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
-          pure (OracleComp.readManyList ws (qH + 1) σ))
-      = kn >>= fun n =>
-          OracleComp.hiddenReadList (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n :=
-    bind_congr fun n =>
-      OracleComp.drawList_readManyList_eq_hiddenReadList
-        (Prod.fst <$> ids.commit pk sk) (qH + 1) σ n
-  rw [hgame] at hineq
-  exact hineq
-
-omit [SampleableType Stmt] in
-/-- **Ghost-blind ghost-read bound** (the sound headline target, modulo the M2 factorization).
-The ghost-blind run's adversarial-read bad mass is at most `qS·(qH+1)·ε/(1-p)`. Immediate from
-the M2 factorization `ghostBlind_bad_fac_exists` fed into the M3 charge assembly
-`probEvent_ghostBlind_bad_le_of_fac`. Chaining with M1's
-`probEvent_ghostHybridImpl_bad_le_ghostBlind` discharges the eager form
+/-- **Ghost-blind ghost-read bound** (the sound headline target). The ghost-blind run's
+adversarial-read bad mass is at most `qS·(qH+1)·ε/(1-p)`, via the first-moment route: the eager bad
+mass is reduced to the deferred-draw run (`ghostBlind_bad_le_deferredDraw`), then to the
+read-recording final-state read-hit predicate (`deferredDraw_bad_le_readRecord`), then to the
+expected coincidence count by the banked Markov step (`readRecord_pred_le_expected_coincidences`),
+which is finally charged by the numeric value-free bound `readRecord_expected_coincidences_le`.
+Chaining with `probEvent_ghostHybridImpl_bad_le_ghostBlind` discharges the eager form
 (`probEvent_ghostRead_bad_le`) without the unsound eager↔lazy detour. -/
 theorem probEvent_ghostBlindImpl_bad_le
     (qS qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
@@ -3510,8 +3190,8 @@ lemma probEvent_ghostRead_bad_le
       ≤ ENNReal.ofReal (qS * (qH + 1) * ε / (1 - p_abort)) := by
   -- M1 reduces the eager ghost-read bad mass to the ghost-blind run's bad mass
   -- (`probEvent_ghostHybridImpl_bad_le_ghostBlind`, identical until bad), and the ghost-blind
-  -- bound `probEvent_ghostBlindImpl_bad_le` (M2 factorization ∘ M3 charge) closes it at
-  -- `qS·(qH+1)·ε/(1-p)`. The residual `ghostBlind_bad_le_bind_drawList` carries the one
+  -- bound `probEvent_ghostBlindImpl_bad_le` (the first-moment route) closes it at
+  -- `qS·(qH+1)·ε/(1-p)`. The residual `readRecord_expected_coincidences_le` carries the one
   -- open obligation; all downstream steps are banked axiom-clean.
   refine (probEvent_ghostHybridImpl_bad_le_ghostBlind ids hr M maxAttempts adv pk sk).trans ?_
   refine le_trans (probEvent_ghostBlindImpl_bad_le ids hr M maxAttempts adv qS qH ε p_abort
