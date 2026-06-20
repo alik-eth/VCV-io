@@ -3034,6 +3034,37 @@ theorem deferredDraw_bad_le_readRecord {γ : Type}
     (fun _ _ hp hbad => hp.2 hbad)
 
 omit [SampleableType Stmt] in
+/-- **Markov reduction for the read-recording firing event.** The read-recording run's final-state
+read-hit predicate `∃ rc ∈ readlist, rc ∈ drawnlist` has probability at most the *expected
+coincidence count* `E[#{ rc ∈ readlist : rc ∈ drawnlist }]`, the first moment of the number of
+recorded read-commits that lie in the drawn list.
+
+This is the elementary first-moment (Markov) step of the per-position route: a firing run has at
+least one coincidence, so the indicator of the firing event is dominated by the (nonnegative,
+integer-valued) coincidence count, and `Pr[fire] ≤ E[count]` by the Markov core
+`probEvent_le_tsum_probOutput_mul_cost`. The remaining content — bounding `E[count]` by
+`(qH+1)·ε·E[#attempts]` — is the genuine per-position independence of each fresh draw from the
+value-free recorded read-commit list (see `readRecord_pred_le_drawList_fold_prob`). This lemma is
+axiom-clean and isolates that independence as the sole open content. -/
+theorem readRecord_pred_le_expected_coincidences {γ : Type}
+    (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (s : DeferredReadState M Commit Chal) :
+    Pr[fun z : γ × DeferredReadState M Commit Chal => ∃ rc ∈ z.2.2, rc ∈ z.2.1.1.2 |
+        (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s]
+      ≤ ∑' z : γ × DeferredReadState M Commit Chal,
+          Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk) oa).run s] *
+            (z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) : ℝ≥0∞) := by
+  classical
+  refine probEvent_le_tsum_probOutput_mul_cost _ _ _ (fun z hz => ?_)
+  obtain ⟨rc, hrc, hrd⟩ := hz
+  have hpos : 0 < z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) := by
+    rw [List.countP_pos_iff]
+    exact ⟨rc, hrc, by simpa using hrd⟩
+  have h1 : (1 : ℕ) ≤ z.2.2.countP (fun rc => decide (rc ∈ z.2.1.1.2)) := hpos
+  exact_mod_cast h1
+
+omit [SampleableType Stmt] in
 /-- **The isolated remaining obligation, in read-recording final-state form (attempt-count
 redraft).** The read-recording run's *final-state* read-hit predicate
 (`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the front-loaded i.i.d. `drawList` game with the
@@ -3058,16 +3089,23 @@ rejection-conditioning skew: at `maxAttempts = 1` it gives RHS `= 1 - (1-ε)^(re
 stays rejected-only, so the eager-bad ⟹ deferred-bad coupling
 (`deferredDraw_bad_le_readRecord` / `signBody_couple`) is untouched.
 
-**Remaining content (the genuine open core):** the fold-level deferral commute. The drawn list and
-the recorded read-commit list are correlated through the run, but the recorded read-commits are
-value-free (`roStep` answers from the real layer; the drawn values never feed the read points,
-`blindStepProj_map_ghostBlindImpl_indep`), so front-loading the run's interleaved per-attempt draws
-to the independent block `drawList … n` — with `σ` reading off the value-free read points as a fixed
-all-miss strategy — is the multi-week PMF×PMF joint coupling
-(`OracleComp.probEvent_bind_fire_eq_defer` lifted across the opaque adversary `simulateQ` fold).
-The single-body resampling over-count `ghostSignDrawBody_readManyList_le_drawList` is the sound but
-loose (`drawList maxAttempts`) per-query atom; the fold-lift tightens `maxAttempts` to the attempt
-count and extracts `σ`. -/
+**Remaining content (the genuine open core), via the first-moment route.** The firing probability
+on the LHS is reduced by the banked, axiom-clean Markov step
+`readRecord_pred_le_expected_coincidences` to the *expected coincidence count*
+`E[#{ rc ∈ readlist : rc ∈ drawnlist }]`. The sole open content is then the **per-position
+independence** bound `E[#coincidences] ≤ (qH+1)·ε·E[#attempts]`: each recorded drawn commit is a
+fresh i.i.d. raw `Prod.fst <$> ids.commit pk sk` draw of mass `≤ ε`, and is independent of the
+recorded read-commit list because the reads answer from the real RO layer (`roStep`) and never see
+the drawn values (`blindStepProj_map_ghostBlindImpl_indep` / `ghostHybridImpl_proj_trans`). That
+per-draw independence — the value-free draws being conditionally i.i.d. and `⊥` the readlist
+*through the opaque adversary `simulateQ` fold* — is the multi-week PMF×PMF joint coupling: every
+decomposition (Markov coincidence counter, `σ`-domination top-mass set, direct first moment) reduces
+to this same value-free-draws-`⊥`-reads-through-the-fold fact. The atom
+`OracleComp.probEvent_bind_fire_eq_defer` commutes one value-free draw past a value-free generator;
+the single-body resampling over-count `ghostSignDrawBody_readManyList_le_drawList` discharges one
+signing body (loosely, to `drawList maxAttempts`); lifting either across the interleaved
+per-attempt draws of the whole fold — front-loading them to the independent block `drawList … n`
+with `σ` the value-free all-miss read strategy — is the open joint coupling. -/
 theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
