@@ -4400,23 +4400,48 @@ new-attempt count.
 The genuine content is concentrated here. Expanding the inductive hypothesis at the post-body state,
 the only term not covered by the `s`-based pre-existing term and the slack of the `#attempt` count
 is the **body charge** `E[Σ_{rc ∈ readlist} body-rejects.count rc]`, which must be bounded by
-`ε · E[readlist.length · #body-rejects]`. Crucially the body's draws must remain **averaged** (the
-sum over body outputs is retained, not factored): for a *fixed* body output the recorded rejected
-commitment is a determined value, and a continuation adversary could read the random oracle at
-exactly that value, so the per-output charge is not `≤ ε`. The `ε` arises only by averaging each
-rejected commitment over the fresh `ids.commit pk sk` draw (`tsum_probOutput_commit_mul_count_le`),
-which requires the body's rejected values to be **independent of the (value-free) final read
-list**: the rejected commitments are never cached (only accepted commitments are, via `cacheQuery`)
-and the continuation's reads answer from `roStep` on the real layer, so the recorded read list is
-independent of the rejected draws. Formalizing this value-substitution — that `ghostSignDrawBody`'s
-recorded rejected commitments are jointly independent of its accept output, the resulting cache, and
-hence the whole continuation's read list — is the precise remaining structural fact (a body-level
-dependence property, not the multi-week PMF×PMF fold coupling, which the fold-level factorization
-`evalDist_deferredDrawRead_eq_drawList_tapeDrawRead` already resolved). The atomic `ε`-kernel
+`ε · E[readlist.length · #body-attempts]` (where `#body-attempts = #body-rejects + 1`, the body's
+single unconditional signing query providing the `+1`). Crucially the body's draws must remain
+**averaged** (the sum over body outputs is retained, not factored): for a *fixed* body output the
+recorded rejected commitment is a determined value, and a continuation adversary could read the
+random oracle at exactly that value, so the per-output charge is not `≤ ε`. The `ε` arises only by
+averaging each rejected commitment over the fresh `ids.commit pk sk` draw
+(`tsum_probOutput_commit_mul_count_le`).
+
+The statement is **TRUE** (verified): the recorded read list is *value-free* — the continuation's
+reads answer via `roStep` on the real layer and never the drawn (rejected) values, and the rejected
+commitments are write-only (never cached; only accepted commitments are, via `cacheQuery`). The
+value-substitution lemma `deferredDrawRead_run_count_dl_invariant` makes this precise: the
+continuation's expected `readlist.count w` is invariant under the start drawn list, so the read list
+is independent of every rejected draw's *value*. Combined with the body's draws being independent of
+*reach* (a position is reached iff the earlier attempts rejected, which is determined by the earlier
+draws — the body tape factorization `evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody` exhibits
+this), each rejected draw charges its continuation read-multiplicity at the full marginal
+`Pr[· | Prod.fst <$> commit] ≤ ε` (drop the reject indicator `≤ 1` on the value-substituted, hence
+fixed, read list — no rejection-conditioning skew). The body's single unconditional signing query
+(`+1`) pays the full-marginal head charge, and the read list `⊥` the attempt count factors
+`E[readlist.length · #attempts] = E[readlist.length] · E[#attempts]`.
+
+**Remaining work (the sole sorry on the `MLDSA.euf_cma_security_of_nma` path).** The reduction to
+the sound per-position bound is not a naive per-attempt induction over `ghostSignDrawBody`: the
+continuation's expected read-list *length* depends on the body *output* (the adversary `ob out`
+reads adaptively on the returned signature `out`), so the accept-branch and reject-branch
+continuations have unrelated read lengths, and a per-attempt split mismatches them (a real
+obstruction, machine-checked: the abstract per-body charge with the
+`(#rejects + 1)·E[length(body-output)]` form is *not* provable by attempt induction — the head's
+full-marginal charge needs the whole-body output-averaged length, which the per-branch `+1` cannot
+supply). The sound route charges *all* body draws against the *same* final continuation via the
+body tape factorization (`evalDist_ghostSignDrawBody_eq_drawList_tapeSignBody`, banked): the `n`
+draws are pre-drawn (`⊥` reach), the read list is value-substituted (`⊥` each rejected draw's
+value), and the
+per-position charge `Σ_k Pr[reach k] · ε · E[readlist.length]` telescopes to
+`ε · E[#attempts] · E[readlist.length]`.
+The value-substitution lemma (`deferredDrawRead_run_count_dl_invariant`), the atomic `ε`-kernel
 (`tsum_probOutput_commit_mul_count_le`), the inline-run induction (pure / read / uniform cases,
-`readRecord_expected_pairs_nontape_general`), and the transport from the tape representation
-(`readRecord_expected_pairs_tape_le`) are all proven; this is the only sorry on the
-`MLDSA.euf_cma_security_of_nma` path. -/
+`readRecord_expected_pairs_nontape_general`), the body tape factorization, and the transport from
+the tape representation (`readRecord_expected_pairs_tape_le`) are all proven; what remains is the
+per-position assembly composing the body tape factorization with the value substitution and the
+draws-`⊥`-reach per-position kernel. -/
 theorem nontape_signStep_charge {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
