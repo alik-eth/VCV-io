@@ -4598,7 +4598,7 @@ theorem ghostSignDrawBody_succ_charge {γ : Type}
                 Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
                     (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] * L₀ := by
           refine ENNReal.tsum_le_tsum fun rws => ?_
-          gcongr
+          refine mul_le_mul' le_rfl ?_
           refine ENNReal.tsum_le_tsum fun z => ?_
           rcases eq_or_ne Pr[= z | (simulateQ (deferredDrawReadImpl ids M maxAttempts pk sk)
               (ob rws.1.1)).run ((((rws.2, sgn), dr), bad), rl)] 0 with hz | hz
@@ -5223,7 +5223,7 @@ theorem nontape_signStep_charge {γ : Type}
     rw [List.sum_map_add, sum_map_count_comm alc.1.2 z.2.2]
   -- Assemble: sum the per-`alc` bound, split into pre-existing + body-coincidence + ih-slack, then
   -- recombine the slack via `hslack` (the `#attempts + 1` gap) and the coincidence via `hbody`.
-  refine le_trans (ENNReal.tsum_le_tsum fun alc => by gcongr; exact h_alc alc) ?_
+  refine le_trans (ENNReal.tsum_le_tsum fun alc => mul_le_mul' le_rfl (h_alc alc)) ?_
   simp_rw [mul_add]
   rw [ENNReal.tsum_add, ENNReal.tsum_add, add_assoc]
   refine add_le_add le_rfl ?_
