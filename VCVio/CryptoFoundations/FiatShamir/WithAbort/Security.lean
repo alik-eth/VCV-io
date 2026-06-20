@@ -2064,6 +2064,45 @@ theorem ghostBlind_bad_le_deferredDraw {γ : Type}
     (fun _ _ hp => hp.2.2.2)
 
 omit [SampleableType Stmt] in
+/-- **The drawn list only grows.** Every reachable final state of the deferred-draw run from a
+start state `s` has the start's drawn list `s.1.2` as a prefix: uniform and read steps leave the
+drawn list untouched, and a signing step appends (`s.1.2 ++ alc.1.2`). Hence the number of *new*
+draws is `final.length - s.1.2.length` and is well-behaved (`s.1.2.length ≤ final.length`). -/
+theorem deferredDraw_run_drawn_prefix {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s : DeferredState M Commit Chal)
+      (z : γ × DeferredState M Commit Chal),
+      z ∈ support ((simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s) →
+      s.1.2 <+: z.2.1.2 := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact List.prefix_rfl
+  | query_bind t ob ih =>
+      intro s z hz
+      rw [simulateQ_query_bind, StateT.run_bind, mem_support_bind_iff] at hz
+      obtain ⟨x, hx, hzx⟩ := hz
+      refine List.IsPrefix.trans ?_ (ih x.1 x.2 z hzx)
+      -- The step's output drawn list extends `s.1.2`.
+      rcases t with (n | mc) | msg
+      · have hxs : x ∈ support ((fun u => (u, s)) <$>
+            (HasQuery.toQueryImpl (spec := unifSpec) (m := ProbComp)) n) := hx
+        rw [support_map] at hxs
+        obtain ⟨u, _, rfl⟩ := hxs; exact List.prefix_rfl
+      · have hxs : x ∈ support ((fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
+            (cu.1, (((cu.2, s.1.1.2), s.1.2), s.2 || decide (mc.2 ∈ s.1.2)))) <$>
+              roStep M s.1.1.1 mc) := hx
+        rw [support_map] at hxs
+        obtain ⟨cu, _, rfl⟩ := hxs; exact List.prefix_rfl
+      · have hxs : x ∈ support ((fun alc : (Option (Commit × Resp) × List Commit) ×
+            (M × Commit →ₒ Chal).QueryCache =>
+            (alc.1.1, (((alc.2, msg :: s.1.1.2), s.1.2 ++ alc.1.2), s.2))) <$>
+              (ghostSignDrawBody ids M pk sk msg maxAttempts).run s.1.1.1) := hx
+        rw [support_map] at hxs
+        obtain ⟨alc, _, rfl⟩ := hxs; exact List.prefix_append s.1.2 alc.1.2
+
+omit [SampleableType Stmt] in
 /-- **Run-level expected drawn-list length of the deferred-draw run.** By induction on the
 adversary computation `oa`, the expected final drawn-list length of the deferred-draw run from a
 start state `s` is at most `s.1.2.length + qSrem · (1/(1-p))`, where `qSrem` bounds the number of
@@ -2167,8 +2206,147 @@ theorem deferredDraw_run_expected_length_le {γ : Type} (pk : Stmt) (sk : Wit)
               rw [← this]; push_cast; ring]
 
 omit [SampleableType Stmt] in
-/-- **Piece B: the deferred → drawList deferral commute (the precise remaining obligation).**
-The deferred-draw run's bad marginal — starting with drawn prefix `ws₀` — is at most a front-loaded
+/-- **The deferred-draw run never fails.** Every step of `deferredDrawImpl` is a pushforward of a
+non-failing `ProbComp` (uniform sampling, `roStep`, or the draw-collecting signing body), so the
+whole `simulateQ` fold has zero failure mass. -/
+theorem deferredDraw_run_neverFail {γ : Type} (pk : Stmt) (sk : Wit)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ) :
+    ∀ (s : DeferredState M Commit Chal),
+      Pr[⊥ | (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run s] = 0 := by
+  induction oa using OracleComp.inductionOn with
+  | pure a => intro s; simp [simulateQ_pure]
+  | query_bind t ob ih =>
+      intro s
+      rw [simulateQ_query_bind, StateT.run_bind, probFailure_bind_eq_zero_iff]
+      refine ⟨?_, fun x _ => ih x.1 x.2⟩
+      rcases t with (n | mc) | msg
+      · simp [deferredDrawImpl]
+      · simp only [deferredDrawImpl, StateT.run_mk]
+        rcases hg : s.1.1.1 mc with _ | v <;> simp [roStep, hg]
+      · simp [deferredDrawImpl]
+
+omit [SampleableType Stmt] in
+/-- **The constructed count law of Piece B and its mean bound.** Mapping the deferred-draw run to
+its number of *new* draws beyond the start prefix `ws₀` (i.e. `final.length - ws₀.length`) gives a
+count law `kn` whose mean is at most `qSrem/(1-p)`. The mean equals the expected total drawn length
+minus `ws₀.length` (valid because `ws₀` is always a prefix, `deferredDraw_run_drawn_prefix`), and
+the expected total length is bounded by `ws₀.length + qSrem·(1/(1-p))`
+(`deferredDraw_run_expected_length_le`), so the `ws₀.length` cancels. This is the mean obligation of
+Piece B, discharged for the constructed `kn`. -/
+theorem deferredDraw_kn_mean_le {γ : Type} (pk : Stmt) (sk : Wit)
+    {p_abort : ℝ} (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ) (hQ : oa.IsQueryBoundP (· matches Sum.inr _) qSrem)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
+    (∑' n : ℕ, Pr[= n |
+        (fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)] *
+        (n : ℝ≥0∞))
+      ≤ ENNReal.ofReal ((qSrem : ℝ) / (1 - p_abort)) := by
+  classical
+  have h1p : (0 : ℝ) < 1 - p_abort := by linarith
+  set run : ProbComp (γ × DeferredState M Commit Chal) :=
+    (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false) with hrun
+  -- The mean of `kn` equals the run-expectation of the new-draw count.
+  have hmean : (∑' n : ℕ, Pr[= n |
+        (fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$> run] *
+        (n : ℝ≥0∞))
+      = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+          ((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞) :=
+    tsum_probOutput_map_mul' run
+      (fun z => z.2.1.2.length - ws₀.length) (fun n => (n : ℝ≥0∞))
+  rw [hmean]
+  -- Add back `ws₀.length` to recover the total-length expectation, bounded by the fold lemma.
+  have hsplit : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+        ((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞)) + (ws₀.length : ℝ≥0∞)
+      ≤ (ws₀.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+    have hmass : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run]) = 1 := by
+      rw [hrun]
+      exact tsum_probOutput_eq_one'
+        (deferredDraw_run_neverFail ids M maxAttempts pk sk oa (((re, l), ws₀), false))
+    calc (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            ((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞)) + (ws₀.length : ℝ≥0∞)
+        = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            (((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞) + (ws₀.length : ℝ≥0∞)) := by
+          rw [show (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+                (((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞) + (ws₀.length : ℝ≥0∞)))
+              = (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+                  ((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞)) +
+                ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] * (ws₀.length : ℝ≥0∞) from by
+              rw [← ENNReal.tsum_add]; exact tsum_congr fun z => by rw [mul_add]]
+          rw [ENNReal.tsum_mul_right, hmass, one_mul]
+      _ = ∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+            (z.2.1.2.length : ℝ≥0∞) := by
+          refine tsum_congr fun z => ?_
+          by_cases hz : z ∈ support run
+          · have hpre : ws₀.length ≤ z.2.1.2.length :=
+              (deferredDraw_run_drawn_prefix ids M maxAttempts pk sk oa _ z hz).length_le
+            congr 1
+            rw [← Nat.cast_add, Nat.sub_add_cancel hpre]
+          · rw [probOutput_eq_zero_of_not_mem_support hz, zero_mul, zero_mul]
+      _ ≤ (ws₀.length : ℝ≥0∞) + (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+          have := deferredDraw_run_expected_length_le ids M maxAttempts pk sk hp₀ hp hAbort oa
+            qSrem hQ (((re, l), ws₀), false)
+          rwa [← hrun] at this
+  -- Cancel `ws₀.length` (finite) and rewrite `qSrem·ofReal(1/(1-p)) = ofReal(qSrem/(1-p))`.
+  have hcancel : (∑' z : γ × DeferredState M Commit Chal, Pr[= z | run] *
+        ((z.2.1.2.length - ws₀.length : ℕ) : ℝ≥0∞))
+      ≤ (qSrem : ℝ≥0∞) * ENNReal.ofReal (1 / (1 - p_abort)) := by
+    rw [add_comm] at hsplit
+    exact (ENNReal.add_le_add_iff_left (by simp : (ws₀.length : ℝ≥0∞) ≠ ∞)).mp hsplit
+  refine hcancel.trans (le_of_eq ?_)
+  rw [← ENNReal.ofReal_natCast qSrem, ← ENNReal.ofReal_mul (by positivity)]
+  congr 1
+  field_simp
+
+omit [SampleableType Stmt] in
+/-- **Piece B residual: the probabilistic over-count (the precise remaining obligation).** For the
+*constructed* count law `kn` — the deferred-draw run's new-draw count
+(`final.length - ws₀.length`), whose mean is already bounded by `deferredDraw_kn_mean_le` — there is
+an all-miss read strategy `σ` such that the deferred-draw run's bad marginal is at most the
+front-loaded i.i.d. `drawList` game `kn >>= drawList (commit) n >>= readManyList (ws₀ ++ ws)`.
+
+This is the single genuinely-open probabilistic content of the linchpin. Both sides are concrete and
+value-free (eager ghost-value irrelevance is discharged into Piece A, which reduced the eager run to
+this deferred run): the deferred handler draws one i.i.d. raw `Prod.fst <$> ids.commit pk sk`
+commitment per signing attempt and only records the growing list, while a read fires the bad flag
+iff its commitment is already in the drawn list. The remaining work is the *deferral commute*: pull
+the run's interleaved per-attempt draws out to the independent front block `drawList … n`, leaving
+the pre-first-hit reads as the fixed all-miss strategy `σ` (over-count: a read that hits a commitment
+drawn *so far* certainly hits one drawn in the full block `ws₀ ++ ws`, so the direction is `≤` and no
+rejection-conditioning skew is formed). The per-attempt single-draw deferral atom is
+`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold so all
+attempts' draws commute to the front is the joint PMF×PMF coupling. -/
+theorem deferredDraw_bad_le_drawList_fold_prob {γ : Type}
+    (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
+    (pk : Stmt) (sk : Wit)
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : Pr[= none | ids.honestExecution pk sk] ≤ ENNReal.ofReal p_abort)
+    (oa : OracleComp ((unifSpec + (M × Commit →ₒ Chal)) + (M →ₒ Option (Commit × Resp))) γ)
+    (qSrem : ℕ)
+    (hQ : FiatShamir.signHashQueryBound M (S' := Option (Commit × Resp)) (oa := oa) qSrem qH)
+    (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) (ws₀ : List Commit) :
+    ∃ σ : List Bool → Commit,
+      Pr[fun z : γ × DeferredState M Commit Chal => z.2.2 = true |
+          (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false)]
+        ≤ Pr[(fun b : Bool => b = true) |
+            ((fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+              (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run
+                (((re, l), ws₀), false)) >>= fun n =>
+              OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
+                pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
+  -- The deferral commute: front-load the deferred run's interleaved per-attempt draws into the
+  -- `drawList` block, leaving the pre-first-hit reads as the fixed all-miss strategy `σ`. The mean
+  -- of this `kn` is already discharged (`deferredDraw_kn_mean_le`); the remaining content is the
+  -- joint PMF×PMF coupling lifting `probEvent_bind_fire_eq_defer` across the opaque adversary fold.
+  sorry
+
+omit [SampleableType Stmt] in
+/-- **Piece B: the deferred → drawList deferral commute.** Assembles the constructed count law's
+mean bound (`deferredDraw_kn_mean_le`) with the probabilistic over-count
+(`deferredDraw_bad_le_drawList_fold_prob`). The deferred-draw run's bad marginal — starting with
+drawn prefix `ws₀` — is at most a front-loaded
 i.i.d. `drawList` game with *some* adaptive all-miss read strategy `σ` and *some* count law `kn`
 whose mean is `≤ qSrem/(1-p)`. The strategy `σ` and the count law `kn` are **constructed from the
 run itself** (they are existentially bound here, exactly as in the headline residual): `kn` is the
@@ -2210,10 +2388,16 @@ theorem deferredDraw_bad_le_drawList_fold {γ : Type}
             kn >>= fun n =>
               OracleComp.drawList (Prod.fst <$> ids.commit pk sk) n >>= fun ws =>
                 pure (OracleComp.readManyList (ws₀ ++ ws) (qH + 1) σ)] := by
-  -- The deferral commute: front-load the deferred run's per-attempt draws into the `drawList`
-  -- block, leaving the pre-first-hit reads as the fixed strategy `σ`. Multi-week joint coupling.
-  -- `kn` = the run's total-draw count law; `σ` = the all-miss read strategy.
-  sorry
+  -- Construct `kn` as the run's new-draw count law; `σ` from the probabilistic over-count.
+  -- The mean bound is fully discharged (`deferredDraw_kn_mean_le`); only the over-count remains.
+  obtain ⟨σ, hbound⟩ :=
+    deferredDraw_bad_le_drawList_fold_prob ids M maxAttempts qH ε p_abort hp₀ hp hε pk sk
+      hGuess hAbort oa qSrem hQ re l ws₀
+  exact ⟨σ,
+    (fun z : γ × DeferredState M Commit Chal => z.2.1.2.length - ws₀.length) <$>
+      (simulateQ (deferredDrawImpl ids M maxAttempts pk sk) oa).run (((re, l), ws₀), false),
+    deferredDraw_kn_mean_le ids M maxAttempts pk sk hp₀ hp hAbort oa qSrem hQ.1 re l ws₀,
+    hbound⟩
 
 /-! ### Stage 3 linchpin: the `simulateQ`-fold deferral
 
