@@ -1382,6 +1382,64 @@ lemma probEvent_ghostBlindImpl_read_bad (pk : Stmt) (sk : Wit) (mc : M × Commit
       rw [ghostHybridImpl_run_ro_ghost_none ids M maxAttempts false pk sk hgh, if_pos rfl]
       simp [probEvent_eq_zero]
 
+/-! ### Stage 2: single-query deferral primitives
+
+The value-free foundation (`blindStepProj_map_ghostBlindImpl_indep`, Stage 1) shows the stored
+ghost commitment values never feed back into the ghost-blind run. The two lemmas here are the
+*single-query* deferral atoms that Stage 3 instantiates once per rejected signing attempt:
+
+* `ghostBlindImpl_read_singletonGhost_bad` connects the ghost-blind read handler to the
+  membership predicate. With the ghost cache holding a single rejected-attempt key `(msg, w) ↦ c`,
+  an adversarial read at `mc` fires the bad flag *exactly* when `mc = (msg, w)` — the structural
+  read-hit test that `OracleComp.readMany` models for one hidden target.
+* `ghostBlind_singleDraw_fire_le` is the commit-sampler instance of the deferral primitive
+  `OracleComp.probEvent_bind_fire_le_of_gen`: a run that draws one ghost commitment up front and
+  feeds it *only* through the fixed `q`-read game of a value-free generator fires with probability
+  at most `q · ε`. This is the "front-loaded one draw" charge; Stage 3 supplies the value-free
+  generator `gen` from `blindStepProj_map_ghostBlindImpl_indep` and folds the `qS` per-query
+  charges into the aggregate `kn >>= drawList` block. -/
+
+omit [SampleableType Stmt] in
+/-- **Stage 2 read-membership atom.** With the ghost cache holding exactly the single
+rejected-attempt key `(msg, w) ↦ c`, an adversarial random-oracle read at `mc` in the ghost-blind
+run fires the bad flag with mass `1` when `mc = (msg, w)` and `0` otherwise. This is the structural
+single-target read-hit indicator (`OracleComp.readMany`'s per-read test) realised by the
+ghost-blind handler: the value `w` enters the run *only* through this membership test, never through
+the read's answer (which is `roStep` on the real layer — `probEvent_ghostBlindImpl_read_bad`). -/
+lemma ghostBlindImpl_read_singletonGhost_bad (pk : Stmt) (sk : Wit) (mc : M × Commit) (msg : M)
+    (w : Commit) (c : Chal) (re : (M × Commit →ₒ Chal).QueryCache) (l : List M) :
+    Pr[fun z : Chal × GhostState M Commit Chal => z.2.2 = true |
+        (ghostBlindImpl ids M maxAttempts pk sk (.inl (.inr mc))).run
+          (((re, (∅ : (M × Commit →ₒ Chal).QueryCache).cacheQuery (msg, w) c), l), false)] =
+      if mc = (msg, w) then 1 else 0 := by
+  rw [probEvent_ghostBlindImpl_read_bad ids M maxAttempts pk sk mc
+    ((re, (∅ : (M × Commit →ₒ Chal).QueryCache).cacheQuery (msg, w) c), l)]
+  by_cases h : mc = (msg, w)
+  · subst h
+    rw [if_neg (by simp), if_pos rfl]
+  · rw [if_pos (by simp [QueryCache.cacheQuery_of_ne _ _ h]), if_neg h]
+
+omit [SampleableType Stmt] [SampleableType Chal] in
+/-- **Stage 2 single-query deferral.** A run that draws one ghost commitment
+`w ← Prod.fst <$> ids.commit pk sk` (each outcome of mass at most `ε`) and feeds it to a
+*value-free* continuation `k w = gen >>= fun p => pure (p.1, readMany w q p.2)` — a `w`-free
+generator `gen` producing the visible output `p.1` and the `q`-read strategy `p.2`, with the drawn
+commitment entering *only* through the fixed read game `readMany w q p.2` — fires with probability
+at most `q · ε`.
+
+This is the commit-sampler instance of `OracleComp.probEvent_bind_fire_le_of_gen`. The hypothesis
+`hk` is exactly the value-freeness supplied by `blindStepProj_map_ghostBlindImpl_indep` (Stage 1):
+because the ghost value never influences the run, the continuation's fire-marginal factors through
+a `w`-free generator with the draw confined to the read-membership test
+(`ghostBlindImpl_read_singletonGhost_bad`). Stage 3 instantiates this once per rejected attempt. -/
+lemma ghostBlind_singleDraw_fire_le {α : Type} (pk : Stmt) (sk : Wit) {ε : ℝ≥0∞}
+    (hGuess : ∀ cm : Commit, Pr[= cm | Prod.fst <$> ids.commit pk sk] ≤ ε)
+    (q : ℕ) (gen : ProbComp (α × (List Bool → Commit))) (k : Commit → ProbComp (α × Bool))
+    (hk : ∀ w : Commit, k w = gen >>= fun p => pure (p.1, OracleComp.readMany w q p.2)) :
+    Pr[(fun z : α × Bool => z.2 = true) | (Prod.fst <$> ids.commit pk sk) >>= k]
+      ≤ (q : ℝ≥0∞) * ε :=
+  OracleComp.probEvent_bind_fire_le_of_gen hGuess q gen k hk
+
 /-! ### M2: the deferred-sampling factorization (the single open obligation)
 
 `ghostBlind_bad_fac_exists` is the **M2** content: the ghost-blind run's bad marginal *factors*
