@@ -1515,11 +1515,14 @@ abbrev DeferredState (M Commit Chal : Type) : Type :=
   (((M × Commit →ₒ Chal).QueryCache × List M) × List Commit) × Bool
 
 /-- Draw-collecting signing body: mirrors `ghostSignBody` but threads only the *real* cache and
-accumulates the list of drawn rejected-attempt commitments instead of writing them to a ghost
-layer. Returns `(output, drawn commits this query)`. The accepted-attempt commitment, if any, is
-appended last; rejected-attempt commitments are appended in attempt order. Forgetting the drawn
-list recovers `transSignBody` (the value-free output and real cache), and the drawn list is exactly
-the list of i.i.d. raw `Prod.fst <$> ids.commit pk sk` samples taken across the attempt loop. -/
+accumulates the list of drawn *rejected*-attempt commitments instead of writing them to a ghost
+layer. Returns `(output, drawn commits this query)`. Only the rejected-attempt commitments are
+recorded, in attempt order; the accepted attempt (whose commitment is returned to the caller and
+cached in the real layer) records nothing, exactly mirroring `ghostSignBody`, whose ghost layer
+holds the rejected commitments and `uncacheQuery`-s the accepted one. Forgetting the drawn list
+recovers `transSignBody` (the value-free output and real cache), and the drawn list is exactly the
+list of i.i.d. raw `Prod.fst <$> ids.commit pk sk` samples taken on the *rejected* attempts — the
+value-free side-data that never feeds back into the run's outputs. -/
 noncomputable def ghostSignDrawBody (pk : Stmt) (sk : Wit) (msg : M) :
     ℕ → StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp
       (Option (Commit × Resp) × List Commit)
@@ -1532,15 +1535,16 @@ noncomputable def ghostSignDrawBody (pk : Stmt) (sk : Wit) (msg : M) :
     match oz with
     | some z =>
         modify fun cache => cache.cacheQuery (msg, w) c
-        pure (some (w, z), [w])
+        pure (some (w, z), [])
     | none =>
         let (res, ws) ← ghostSignDrawBody pk sk msg n
         pure (res, w :: ws)
 
 omit [SampleableType Stmt] in
 /-- One-step unfolding of the draw-collecting signing body, mirroring `run_ghostSignBody_succ`.
-The body draws a commitment `w`, samples a challenge `ch`, responds, and on accept records the
-single drawn commitment `[w]` while on reject prepends `w` to the recursively collected list. -/
+The body draws a commitment `w`, samples a challenge `ch`, responds, and on accept records *no*
+drawn commitment (the accepted commit is returned, not deferred) while on reject prepends `w` to
+the recursively collected list of rejected commitments. -/
 lemma run_ghostSignDrawBody_succ (pk : Stmt) (sk : Wit) (msg : M) (n : ℕ)
     (re : (M × Commit →ₒ Chal).QueryCache) :
     (ghostSignDrawBody ids M pk sk msg (n + 1)).run re =
@@ -1548,7 +1552,7 @@ lemma run_ghostSignDrawBody_succ (pk : Stmt) (sk : Wit) (msg : M) (n : ℕ)
         uniformSample Chal >>= fun ch =>
           ids.respond pk sk ws.2 ch >>= fun oz =>
             match oz with
-            | some z => pure ((some (ws.1, z), [ws.1]), re.cacheQuery (msg, ws.1) ch)
+            | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
             | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
                 (ghostSignDrawBody ids M pk sk msg n).run re := by
   simp only [ghostSignDrawBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
@@ -1598,7 +1602,7 @@ lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le (pk : Stmt) (sk : Wit)
             Pr[= z | uniformSample Chal >>= fun ch =>
               ids.respond pk sk ws.2 ch >>= fun oz =>
                 match oz with
-                | some z => pure ((some (ws.1, z), [ws.1]), re.cacheQuery (msg, ws.1) ch)
+                | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
                 | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
                     (ghostSignDrawBody ids M pk sk msg n).run re] * (z.1.2.length : ℝ≥0∞))
           ≤ 1 + Pr[= none | uniformSample Chal >>= fun ch => ids.respond pk sk ws.2 ch] * S := by
@@ -1608,7 +1612,7 @@ lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le (pk : Stmt) (sk : Wit)
             (∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
               Pr[= z | ids.respond pk sk ws.2 ch >>= fun oz =>
                 match oz with
-                | some z => pure ((some (ws.1, z), [ws.1]), re.cacheQuery (msg, ws.1) ch)
+                | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
                 | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
                     (ghostSignDrawBody ids M pk sk msg n).run re] * (z.1.2.length : ℝ≥0∞))
             ≤ 1 + Pr[= none | ids.respond pk sk ws.2 ch] * S := by
@@ -1617,7 +1621,7 @@ lemma tsum_probOutput_run_ghostSignDrawBody_mul_length_le (pk : Stmt) (sk : Wit)
           have h_oz : ∀ oz : Option Resp,
               (∑' z : (Option (Commit × Resp) × List Commit) × (M × Commit →ₒ Chal).QueryCache,
                 Pr[= z | (match oz with
-                  | some z => pure ((some (ws.1, z), [ws.1]), re.cacheQuery (msg, ws.1) ch)
+                  | some z => pure ((some (ws.1, z), []), re.cacheQuery (msg, ws.1) ch)
                   | none => (fun rws => ((rws.1.1, ws.1 :: rws.1.2), rws.2)) <$>
                       (ghostSignDrawBody ids M pk sk msg n).run re :
                   ProbComp ((Option (Commit × Resp) × List Commit) ×
@@ -1833,7 +1837,7 @@ theorem signBody_couple (pk : Stmt) (sk : Wit) (msg : M) :
           (ids.commit pk sk >>= fun wst => uniformSample Chal >>= fun c =>
             ids.respond pk sk wst.2 c >>= fun oz =>
               match oz with
-              | some z => pure ((some (wst.1, z), [wst.1]), re.cacheQuery (msg, wst.1) c)
+              | some z => pure ((some (wst.1, z), []), re.cacheQuery (msg, wst.1) c)
               | none => (fun rws => ((rws.1.1, wst.1 :: rws.1.2), rws.2)) <$>
                   (ghostSignDrawBody ids M pk sk msg n).run re) := by
         simp only [ghostSignDrawBody, bind_assoc, StateT.run_bind, OracleComp.liftM_run_StateT,
@@ -2478,18 +2482,27 @@ omit [SampleableType Stmt] in
 /-- **The isolated remaining obligation, in read-recording final-state form.** The read-recording
 run's *final-state* read-hit predicate (`∃ rc ∈ readlist, rc ∈ drawnlist`) is at most the
 front-loaded i.i.d. `drawList` game with the deferred run's new-draw count law `kn` and some
-all-miss strategy `σ`. This is strictly smaller than the read-time form: the bad event is now a
-function of
-the *final* state (the recorded read-commit list and the drawn list), so the read-time/final-state
-mismatch is gone — both the value-free read points and the i.i.d. draws are available together in
-the final state. What remains is the genuine deferral commute: the recorded read-commits are
-value-free
-(`roStep` answers from the real layer, never the drawn values), so the joint final distribution of
+all-miss strategy `σ`. The bad event is a function of the *final* state (the recorded read-commit
+list and the drawn list), so the read-time/final-state mismatch is gone — both the value-free read
+points and the i.i.d. draws are available together in the final state.
+
+This statement is *sound* precisely because the drawn list records only the **rejected**-attempt
+commitments (`ghostSignDrawBody`'s accept branch records nothing; see its docstring): the rejected
+draws are write-only side-data that never feed back into the run's outputs or read points, so a read
+point can match a fixed drawn value with probability `≤ ε`. (Recording the *accepted* commitment
+here would be unsound: it is returned to the adversary, who could then read at it deterministically,
+forcing the read-recording predicate to fire with probability `≈ 1` while this `drawList`-game RHS
+stays `≈ ε`.)
+
+What remains is the genuine deferral commute: the recorded read-commits are value-free (`roStep`
+answers from the real layer, never the drawn values), so the joint final distribution of
 (read-commit list, drawn list) front-loads to the independent block `drawList … n` with `σ` reading
 off the value-free read points. Over-count: a recorded read-commit in the drawn list certainly hits
 the full block `ws₀ ++ ws`. The mean of `kn` is discharged (`deferredDraw_kn_mean_le`). The atom is
-`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold is the
-remaining joint PMF×PMF coupling. -/
+`OracleComp.probEvent_bind_fire_eq_defer`; lifting it across the opaque adversary fold (the
+per-query commutation of the run's interleaved write-only draws to the independent front block,
+justified per step by the ghost-value independence `blindStepProj_map_ghostBlindImpl_indep` /
+`ghostHybridImpl_proj_trans`) is the remaining joint PMF×PMF coupling. -/
 theorem readRecord_pred_le_drawList_fold_prob {γ : Type}
     (qH : ℕ) (ε p_abort : ℝ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1) (hε : 0 ≤ ε)
     (pk : Stmt) (sk : Wit)
