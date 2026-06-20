@@ -4222,6 +4222,69 @@ theorem evalDist_deferredDrawRead_eq_drawList_tapeDrawRead {γ : Type} (pk : Stm
           (fun a s' => ih a (qSrem - 1) (hQ2 a) s')
 
 omit [SampleableType Stmt] in
+/-- Summing the multiplicity `rl.count rc` of every element `rc` over the whole index type recovers
+the list length (the multiplicities partition the list). -/
+private lemma tsum_count_eq_length {C : Type} [DecidableEq C] (rl : List C) :
+    (∑' rc : C, (rl.count rc : ℝ≥0∞)) = (rl.length : ℝ≥0∞) := by
+  induction rl with
+  | nil => simp
+  | cons a rl ih =>
+      have hsplit : ∀ rc : C,
+          ((a :: rl).count rc : ℝ≥0∞) = (if rc = a then 1 else 0) + (rl.count rc : ℝ≥0∞) := by
+        intro rc; rw [List.count_cons]; by_cases h : rc = a
+        · subst h; simp [add_comm]
+        · simp [h, Ne.symm h]
+      simp_rw [hsplit]
+      rw [ENNReal.tsum_add, ih, List.length_cons, tsum_ite_eq]
+      push_cast; ring
+
+omit [SampleableType Stmt] in
+/-- **The atomic value-free charge (the irreducible probabilistic kernel).** One fresh raw
+commitment draw `w ← ids.commit pk sk`, *independent of* a value-free list `rl`, contributes
+expected multiplicity `E[rl.count w.1] ≤ ε · rl.length`: each of the `rl.length` slots of `rl` is
+hit by the fresh draw with probability `Pr[= slot | Prod.fst <$> ids.commit pk sk] ≤ ε` (`hGuess`).
+
+This is the single source of the `ε` in the ghost-read bound. It is purely the per-draw mass bound
+combined with the independence of the draw from the (value-free) read list; the structural content
+of the full charge is to exhibit each recorded rejected draw of the tape run in exactly this
+independent-of-the-readlist position (the value-substitution at rejected tape positions). -/
+private lemma tsum_probOutput_commit_mul_count_le {C P : Type} [DecidableEq C]
+    (commit : ProbComp (C × P)) (rl : List C) (ε : ℝ)
+    (hGuess : ∀ cm : C, Pr[= cm | Prod.fst <$> commit] ≤ ENNReal.ofReal ε) :
+    (∑' w : C × P, Pr[= w | commit] * (rl.count w.1 : ℝ≥0∞))
+      ≤ ENNReal.ofReal ε * (rl.length : ℝ≥0∞) := by
+  have hcount : ∀ w : C × P,
+      ((rl.count w.1 : ℕ) : ℝ≥0∞)
+        = ∑' rc : C, (rl.count rc : ℝ≥0∞) * (if w.1 = rc then 1 else 0) := by
+    intro w; rw [tsum_eq_single w.1 (fun rc hrc => by simp [Ne.symm hrc])]; simp
+  simp_rw [hcount]
+  rw [show (∑' w : C × P, Pr[= w | commit] *
+        ∑' rc : C, (rl.count rc : ℝ≥0∞) * (if w.1 = rc then 1 else 0))
+      = ∑' rc : C, ∑' w : C × P,
+          Pr[= w | commit] * ((rl.count rc : ℝ≥0∞) * (if w.1 = rc then 1 else 0)) from by
+    rw [ENNReal.tsum_comm]; exact tsum_congr fun w => by rw [ENNReal.tsum_mul_left]]
+  have hmarg : ∀ rc : C,
+      (∑' w : C × P, Pr[= w | commit] * ((rl.count rc : ℝ≥0∞) * (if w.1 = rc then 1 else 0)))
+        = (rl.count rc : ℝ≥0∞) * Pr[= rc | Prod.fst <$> commit] := by
+    intro rc
+    rw [show Pr[= rc | Prod.fst <$> commit]
+          = ∑' w : C × P, Pr[= w | commit] * (if w.1 = rc then 1 else 0) from by
+      rw [probOutput_map_eq_tsum]; refine tsum_congr fun w => ?_
+      simp only [eq_comm]; split <;> rename_i h <;> simp [h]]
+    rw [show (∑' w : C × P,
+            Pr[= w | commit] * ((rl.count rc : ℝ≥0∞) * (if w.1 = rc then 1 else 0)))
+          = ∑' w : C × P,
+              (rl.count rc : ℝ≥0∞) * (Pr[= w | commit] * (if w.1 = rc then 1 else 0)) from
+      tsum_congr fun w => by ring]
+    rw [ENNReal.tsum_mul_left]
+  simp_rw [hmarg]
+  calc (∑' rc : C, (rl.count rc : ℝ≥0∞) * Pr[= rc | Prod.fst <$> commit])
+      ≤ ∑' rc : C, (rl.count rc : ℝ≥0∞) * ENNReal.ofReal ε :=
+        ENNReal.tsum_le_tsum fun rc => by gcongr; exact hGuess rc
+    _ = ENNReal.ofReal ε * (rl.length : ℝ≥0∞) := by
+        rw [ENNReal.tsum_mul_right, mul_comm, tsum_count_eq_length]
+
+omit [SampleableType Stmt] in
 /-- **The per-position charge in the tape-factored representation (the isolated remaining core).**
 After the fold-level tape factorization `evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`, the
 read-recording run is `drawList (ids.commit pk sk) (maxAttempts·qSrem) >>= fun tape => …`, with the
