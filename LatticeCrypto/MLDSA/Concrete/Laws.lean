@@ -8,10 +8,10 @@ import LatticeCrypto.MLDSA.Concrete.Instance
 /-!
 # Concrete ML-DSA Primitive Laws
 
-This file discharges the **algebraic** fields of `MLDSA.Primitives.Laws` for the concrete
-`concretePrimitives` instance built from the FIPS 204 rounding and NTT layers, for any approved
-parameter set. Each provable field is banked as a standalone theorem (`concrete_*`) and then
-wired into a partial witness `concretePrimitivesLaws`.
+This file discharges the deterministically-provable fields of `MLDSA.Primitives.Laws` for the
+concrete `concretePrimitives` instance built from the FIPS 204 rounding, NTT, and byte-encoding
+layers, for any approved parameter set. Each provable field is banked as a standalone theorem
+(`concrete_*`).
 
 ## What is proven
 
@@ -22,29 +22,24 @@ in `Concrete/Rounding.lean` and the concrete NTT laws in `Concrete/NTT.lean`, br
 - `transform`, `high_low_decomp`, `lowBits_bound`, `hide_low`, `highBitsShift_injective`,
   `useHint_makeHint`, `power2Round_decomp`, `power2Round_bound`.
 
-## What is NOT proven (and why) — the gap in `concretePrimitivesLaws`
+Two further fields are discharged from the concrete byte-encoding decode ranges and packer
+roundtrip in `Concrete/Encoding.lean`:
 
-Five fields are left as clearly-marked `sorry` in the witness, in three honest categories:
+- `expandMask_bound` (`concrete_expandMask_bound`): every `expandMask` coefficient is a value
+  decoded by `polyZUnpack` over the range `[-γ₁ + 1, γ₁]`, so its centered infinity norm is at
+  most `γ₁`. This is a property of the decoder's output window (`bitUnpackPoly_get`) and is
+  independent of the opaque SHAKE byte stream. It matches the restated abstract bound `γ₁`.
+- `w1Encode_injective` (`concrete_w1Encode_injOn`): on the valid commitment range — every
+  component an actual `highBits` output — each coefficient lies in `[0, (q-1)/(2γ₂) - 1]`
+  (`highBits_coeff_val_lt_m`), which fits the `w₁` packer's bit width, so `simpleBitPackPoly` is
+  inverted by `simpleBitUnpackPoly` and `w1Encode` is injective. This matches the restated
+  abstract `Set.InjOn` field, whose validity set is exactly the image of `highBits`.
 
-1. **False as stated for the concrete instance** (must NOT be proven toward):
-   - `expandMask_bound` (`≤ γ₁ - 1`): the concrete `expandMask` decodes via `polyZUnpack`, i.e.
-     `bitUnpackPoly` on the range `[-γ₁ + 1, γ₁]`. The all-zero codeword decodes to the
-     coefficient `γ₁`, whose centered representative is `γ₁ > γ₁ - 1` (ML-DSA-44:
-     `centeredRepr γ₁ = 131072`). So some `(ρ'', κ)` produce a coefficient of size `γ₁`,
-     violating the `γ₁ - 1` bound. This is the FIPS-204 conformance spec drift recorded in the
-     gap map: the concrete decoder's upper endpoint is `γ₁`, not `γ₁ - 1`. Restating soundly
-     requires either changing the concrete decode range to `[-γ₁ + 1, γ₁ - 1]` or relaxing the
-     abstract bound to `γ₁` — an owner statement decision, so it is isolated rather than proven.
-   - `w1Encode_injective`: `concretePrimitives.w1Encode` packs `High = Rq` (arbitrary
-     coefficients) via `simpleBitPackPoly` at `simpleWidth ((modulus - 1) / (2 γ₂) - 1)` bits
-     (6 bits for ML-DSA-44), keeping only the low bits of each coefficient. Distinct `High`
-     vectors differing by `2^width` in a coefficient (e.g. coefficient `0` vs `64`) pack
-     identically, so `w1Encode` is not injective on the full `Vector High p.k` domain. (The
-     `Concrete/Encoding.lean` docstring already notes the codec is injective only on the
-     FIPS-valid subset.) Injectivity holds only on the well-formed range; as a statement over
-     all of `Vector High p.k` it is false.
+## What is NOT proven (and why)
 
-2. **Blocked by opaque rejection samplers** (structurally true, but not extractable here):
+Five fields remain, in two honest categories — there are no longer any false-as-stated fields:
+
+1. **Blocked by opaque rejection samplers** (structurally true, but not extractable here):
    - `sampleInBall_norm`, `sampleInBall_smul_bound`: `concretePrimitives.sampleInBall` only
      writes the values `0`, `+1`, `-1` into its accumulator, so the output is structurally
      bounded by `1` (and has exactly `τ` nonzero `±1` coefficients). However, it does so through
@@ -57,13 +52,13 @@ Five fields are left as clearly-marked `sorry` in the witness, in three honest c
      padding on short streams). The pushed values (`2 - u`, `4 - t`) lie in `[-η, η]`, but the
      bound is again gated behind the opaque do-block, so it is isolated for the same reason.
 
-3. **Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
+2. **Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
    from any fixed deterministic instantiation — see their docstrings in `Primitives.lean`):
    - `expandS_honest_sampling`, `keyVector_t0_determined`: standard ROM idealizations of the
      SHAKE XOFs (`ExpandSeed` / `ExpandS`). These are model assumptions, left abstract.
 
-The abstract `Primitives.Laws` statement is **not** modified by this file; the partial witness
-simply makes explicit which concrete obligations are discharged and which remain.
+The abstract `Primitives.Laws` statement is **not** modified by this file; the banked `concrete_*`
+theorems make explicit which concrete obligations are discharged and which remain.
 -/
 
 
@@ -137,31 +132,114 @@ theorem concrete_power2Round_bound (r : Rq) :
   rw [← concretePower2Round_remainder_eq_low]
   exact concretePower2Round_bound r
 
+/-! ## `expandMask_bound` (restated to the FIPS-204 `z`-range, now provable)
+
+The concrete `expandMask` decodes each coefficient through `polyZUnpack p`, i.e.
+`bitUnpackPoly bytes (-γ₁ + 1) γ₁`. By the decode-range bound `bitUnpackPoly_get`, every coefficient
+is `γ₁ - v` for a `width`-bit value `v` with `width = rangeWidth (-γ₁ + 1) γ₁`. For the approved
+parameter sets `2 ^ width = 2 γ₁`, so `v ≤ 2 γ₁ - 1` and `γ₁ - v ∈ [-(γ₁ - 1), γ₁]`, whose centered
+representative (since `2 γ₁ < q`) is `γ₁ - v` itself, of absolute value at most `γ₁`. The argument
+is purely about the decoder's output range and independent of the opaque SHAKE byte stream. -/
+
+/-- Decode-range infinity-norm bound for a `z`-range `bitUnpackPoly`: every coefficient of
+`bitUnpackPoly bytes (-γ + 1) γ` has centered absolute value at most `γ`, provided the bit width
+satisfies `2 ^ width = 2 γ` (true for FIPS-204 `γ₁`, a power of two) and `2 γ < q`. -/
+theorem bitUnpackPoly_z_cInfNorm_le (bytes : ByteArray) (γ : ℕ)
+    (hwidth : (2 : ℕ) ^ rangeWidth (-(γ : ℤ) + 1) (γ : ℤ) = 2 * γ)
+    (hq : 2 * γ < modulus) :
+    LatticeCrypto.cInfNorm (bitUnpackPoly bytes (-(γ : ℤ) + 1) (γ : ℤ)) ≤ γ := by
+  rw [LatticeCrypto.cInfNorm_le_iff]
+  intro i
+  obtain ⟨v, hv, hget⟩ := bitUnpackPoly_get bytes (-(γ : ℤ) + 1) (γ : ℤ) i
+  rw [hget, hwidth] at *
+  have hbound : ((γ : ℤ) - (v : ℤ)).natAbs ≤ γ := by omega
+  rw [LatticeCrypto.centeredRepr_intCast_eq_of_natAbs_le ((γ : ℤ) - (v : ℤ)) hbound (by omega)]
+  exact hbound
+
+/-- For each approved parameter set the `z`-range bit width satisfies `2 ^ width = 2 γ₁` (because
+`γ₁` is a power of two) and `2 γ₁ < q`. -/
+private theorem approved_gamma1_width (hp : p.isApproved) :
+    (2 : ℕ) ^ rangeWidth (-(p.gamma1 : ℤ) + 1) (p.gamma1 : ℤ) = 2 * p.gamma1 ∧
+      2 * p.gamma1 < modulus := by
+  rcases hp with rfl | rfl | rfl <;> exact ⟨by decide, by decide⟩
+
+/-- `Primitives.Laws.expandMask_bound` (restated bound `γ₁`) for the concrete instance, at any
+approved parameter set. -/
+theorem concrete_expandMask_bound (hp : p.isApproved) (rhoDoublePrime : Bytes 64) (kappa : ℕ) :
+    polyVecBounded ((concretePrimitives p).expandMask rhoDoublePrime kappa) p.gamma1 := by
+  obtain ⟨hwidth, hq⟩ := approved_gamma1_width p hp
+  rw [polyVecBounded, polyVecNorm, LatticeCrypto.PolyVec.cInfNorm_le_iff]
+  intro j
+  -- Each component is `polyZUnpack p (<opaque SHAKE stream>)`; the bound is a decode-range
+  -- property, so generalize the opaque byte argument and apply the decoder bound.
+  change polyNorm ((MLDSA.Concrete.expandMask rhoDoublePrime kappa p).get j) ≤ p.gamma1
+  rw [polyNorm_eq_cInfNorm]
+  unfold MLDSA.Concrete.expandMask
+  rw [Vector.get_ofFn]
+  -- The decoder argument is an opaque SHAKE stream; the bound holds for any byte input,
+  -- since `polyZUnpack p bytes = bitUnpackPoly bytes (-γ₁ + 1) γ₁`.
+  exact bitUnpackPoly_z_cInfNorm_le _ p.gamma1 hwidth hq
+
+/-! ## `w1Encode_injective` (restated to `Set.InjOn` on the valid range, now provable)
+
+The concrete `w1Encode` packs each `High` coefficient via `simpleBitPackPoly` at the bit width
+`simpleWidth ((q-1)/(2γ₂) - 1)`. On the valid commitment range — every component an actual
+`highBits` output — each coefficient lies in `[0, (q-1)/(2γ₂) - 1]` (`highBits_coeff_val_lt_m`),
+which fits in that bit width, so the packer is inverted by `simpleBitUnpackPoly` and is injective.
+This is exactly the `Set.InjOn` predicate of the restated abstract field, since the abstract
+validity set is the image of `highBits`. -/
+
+/-- Every approved-parameter `highBits` coefficient fits in the `w₁` packer's bit width. -/
+private theorem highBits_coeff_val_lt_width (hp : p.isApproved) (r : Rq) (c : Fin ringDegree) :
+    ((MLDSA.Concrete.highBits p r).get c).val
+      < 2 ^ MLDSA.Concrete.simpleWidth ((modulus - 1) / (2 * p.gamma2) - 1) := by
+  have hlt : ((MLDSA.Concrete.highBits p r).get c).val < (modulus - 1) / (2 * p.gamma2) :=
+    MLDSA.Concrete.highBits_coeff_val_lt_m p hp r c
+  -- `(q-1)/(2γ₂) ≤ 2 ^ simpleWidth ((q-1)/(2γ₂) - 1)`.
+  have hwin : (modulus - 1) / (2 * p.gamma2)
+      ≤ 2 ^ MLDSA.Concrete.simpleWidth ((modulus - 1) / (2 * p.gamma2) - 1) := by
+    rcases hp with rfl | rfl | rfl <;> decide
+  omega
+
+/-- `Primitives.Laws.w1Encode_injective` (restated to `Set.InjOn`) for the concrete instance, at any
+approved parameter set: `w1Encode` is injective on commitment vectors all of whose components are
+`highBits` outputs. -/
+theorem concrete_w1Encode_injOn (hp : p.isApproved) :
+    Set.InjOn (concretePrimitives p).w1Encode
+      { w : Vector (concretePrimitives p).High p.k |
+          ∀ i : Fin p.k, w.get i ∈ Set.range (concretePrimitives p).highBits } := by
+  -- The concrete validity set sits inside the bit-width set on which `w1Encode_injOn` applies.
+  apply Set.InjOn.mono (s₂ := { w : Vector High p.k | ∀ i : Fin p.k, ∀ c : Fin ringDegree,
+      ((w.get i).get c).val
+        < 2 ^ MLDSA.Concrete.simpleWidth ((modulus - 1) / (2 * p.gamma2) - 1) })
+  · intro w hw i c
+    obtain ⟨r, hr⟩ := hw i
+    rw [show w.get i = MLDSA.Concrete.highBits p r from hr.symm]
+    exact highBits_coeff_val_lt_width p hp r c
+  · exact MLDSA.Concrete.w1Encode_injOn p
+
 /-! ## `Primitives.Laws` status for `concretePrimitives` (no full witness — by design)
 
-The eight algebraic fields above (`concrete_transform`, `concrete_high_low_decomp`,
-`concrete_lowBits_bound`, `concrete_hide_low`, `concrete_highBitsShift_injective`,
-`concrete_useHint_makeHint`, `concrete_power2Round_decomp`, `concrete_power2Round_bound`) are
-**proven axiom-clean** for the concrete instance at any approved parameter set.
+Ten `Primitives.Laws` fields are now **proven axiom-clean** for the concrete instance at any
+approved parameter set: the eight algebraic fields (`concrete_transform`,
+`concrete_high_low_decomp`, `concrete_lowBits_bound`, `concrete_hide_low`,
+`concrete_highBitsShift_injective`, `concrete_useHint_makeHint`, `concrete_power2Round_decomp`,
+`concrete_power2Round_bound`) plus the two byte-encoding fields `concrete_expandMask_bound` and
+`concrete_w1Encode_injOn`. The latter two discharge the `expandMask_bound` and `w1Encode_injective`
+fields under their sound restatements (the `γ₁` mask bound and the `Set.InjOn` commitment-range
+injectivity), which hold for the concrete instance — there are no longer any false-as-stated fields.
 
-We deliberately do **not** assemble a `Primitives.Laws (concretePrimitives p) …` witness, because
-the abstract `Primitives.Laws` is **not satisfiable by the concrete instance as currently stated**
-— two of its fields are *false* for `concretePrimitives` (verified counterexamples):
+We deliberately do **not** assemble a full `Primitives.Laws (concretePrimitives p) …` witness,
+because five fields remain undischarged here for reasons that are not statement bugs:
 
-* `expandMask_bound`: the concrete `polyZUnpack` decode range reaches the coefficient `γ₁`
-  (`centeredRepr γ₁ = γ₁` for ML-DSA-44), exceeding the stated `γ₁ − 1` bound — the FIPS-204 spec
-  drift. Fixing it requires an owner statement change (decoder range or the abstract bound).
-* `w1Encode_injective`: the 6-bit truncating packer is injective only on the FIPS-valid commitment
-  range, not on the full `Rq` carrier the abstract field quantifies over (explicit collision).
+* `sampleInBall_norm` / `expandS_bound` / `sampleInBall_smul_bound`: structurally true but blocked
+  by opaque `@[extern]` SHAKE rejection samplers (unbounded `while`-loop `Id.run` do-blocks), with
+  no imperative verification infrastructure in the tree.
+* `expandS_honest_sampling` / `keyVector_t0_determined`: inherent ROM modeling assumptions, left
+  abstract (see their docstrings in `Primitives.lean`).
 
-The remaining gap fields are `sampleInBall_norm` / `expandS_bound` / `sampleInBall_smul_bound`
-(structurally true but blocked by opaque `@[extern]` SHAKE rejection samplers — no imperative
-verification infrastructure) and the inherent ROM modeling assumptions `expandS_honest_sampling` /
-`keyVector_t0_determined`.
-
-Providing a `sorry`-backed aggregate witness here would assert the *false* fields and could be
-misused to instantiate a concrete EUF-CMA claim unsoundly; it is intentionally omitted until the two
-false-as-stated abstract fields are restated (owner decision). The eight proven lemmas above stand
-on their own and are safe to consume. -/
+A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-blocked SHAKE
+and ROM fields, which is unsound to bank. The ten proven `concrete_*` lemmas above stand on their
+own and are safe to consume. -/
 
 end MLDSA.Concrete
