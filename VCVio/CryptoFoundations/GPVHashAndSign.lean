@@ -313,13 +313,17 @@ noncomputable def programmedPreimageReduction
 
 /-- The salt-collision birthday bound (GPV08, Proposition 6.2).
 
-For `qSign` signing queries with salts drawn uniformly from a set of size `|Salt|`,
-the birthday bound gives collision probability at most `qSign² / (2 · |Salt|)`.
+For `qSign` signing queries and `qHash` random-oracle queries, with salts drawn uniformly from a
+set of size `|Salt|`, the standard GPV/FDH-with-salt bound on a fresh signing salt colliding with
+any previously recorded random-oracle input (a prior signing salt or an adversary hash query) is
+`(qSign + qHash)² / (2 · |Salt|)`. This upper-bounds the exact union sum
+`qSign·(qSign-1)/2 + qSign·qHash` over the `qSign` fresh draws, each compared against at most
+`j + qHash` recorded entries.
 
-For Falcon with 40-byte salts (`|Salt| = 2^320`) and `qSign ≤ 2^64`:
-  `collisionBound (Bytes 40) (2^64) = 2^128 / (2 · 2^320) = 2^{-193}` -/
-noncomputable def collisionBound (qSign : ℕ) : ENNReal :=
-  (qSign : ENNReal) ^ 2 / (2 * Fintype.card Salt)
+For Falcon with 40-byte salts (`|Salt| = 2^320`) and `qSign, qHash ≤ 2^64`:
+  `collisionBound (Bytes 40) (2^64) (2^64) = 2^130 / (2 · 2^320) = 2^{-191}`. -/
+noncomputable def collisionBound (qSign qHash : ℕ) : ENNReal :=
+  ((qSign + qHash : ℕ) : ENNReal) ^ 2 / (2 * Fintype.card Salt)
 
 open scoped Classical in
 omit [DecidableEq Salt] in
@@ -339,50 +343,56 @@ omit [DecidableEq Salt] [SampleableType Salt] in
 /-- Arithmetic core of the GPV salt-collision birthday bound.
 
 Summing the per-draw collision probabilities for `qSign` signing queries, where the `j`-th
-fresh salt is compared against the at most `j` salts recorded by the prior queries, gives the
-running total `∑_{j < qSign} j / |Salt|`. The Gauss sum `∑_{j < qSign} j = qSign·(qSign-1)/2`
-is at most `qSign² / 2`, so the union bound is dominated by `collisionBound`. -/
-lemma sum_range_div_card_le_collisionBound (qSign : ℕ) :
-    (∑ j ∈ Finset.range qSign, (j : ℝ≥0∞) / Fintype.card Salt) ≤ collisionBound Salt qSign := by
+fresh salt is compared against the at most `j + qHash` recorded random-oracle inputs (the `j`
+prior signing salts and the up to `qHash` adversary hash queries), gives the running total
+`∑_{j < qSign} (j + qHash) / |Salt|`. The exact sum
+`∑_{j < qSign} (j + qHash) = qSign·(qSign-1)/2 + qSign·qHash` is at most `(qSign + qHash)² / 2`,
+so the union bound is dominated by `collisionBound`. -/
+lemma sum_range_div_card_le_collisionBound (qSign qHash : ℕ) :
+    (∑ j ∈ Finset.range qSign, ((j + qHash : ℕ) : ℝ≥0∞) / Fintype.card Salt)
+      ≤ collisionBound Salt qSign qHash := by
   unfold collisionBound
   simp only [div_eq_mul_inv]
   rw [← Finset.sum_mul]
-  have hsum : (∑ j ∈ Finset.range qSign, (j : ℝ≥0∞))
-      = ((∑ j ∈ Finset.range qSign, j : ℕ) : ℝ≥0∞) := by rw [Nat.cast_sum]
-  rw [hsum, Finset.sum_range_id]
+  have hsum : (∑ j ∈ Finset.range qSign, ((j + qHash : ℕ) : ℝ≥0∞))
+      = ((∑ j ∈ Finset.range qSign, (j + qHash) : ℕ) : ℝ≥0∞) := by rw [Nat.cast_sum]
+  rw [hsum]
   rw [ENNReal.mul_inv (Or.inl (by norm_num)) (Or.inl (by norm_num)), ← mul_assoc]
   gcongr
-  have hnat : qSign * (qSign - 1) / 2 * 2 ≤ qSign ^ 2 := by
+  have hnat : (∑ j ∈ Finset.range qSign, (j + qHash)) * 2 ≤ (qSign + qHash) ^ 2 := by
+    rw [Finset.sum_add_distrib, Finset.sum_range_id, Finset.sum_const, Finset.card_range,
+      smul_eq_mul, add_mul, Nat.div_mul_cancel (Nat.even_mul_pred_self qSign).two_dvd]
     rcases Nat.eq_zero_or_pos qSign with h | h
     · simp [h]
-    · rw [Nat.div_mul_cancel (Nat.even_mul_pred_self qSign).two_dvd]
-      nlinarith [Nat.sub_le qSign 1]
-  have hcast : ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞) * 2 ≤ ((qSign : ℝ≥0∞)) ^ 2 := by
+    · nlinarith [Nat.sub_le qSign 1]
+  have hcast : ((∑ j ∈ Finset.range qSign, (j + qHash) : ℕ) : ℝ≥0∞) * 2
+      ≤ (((qSign + qHash : ℕ) : ℝ≥0∞)) ^ 2 := by
     have h2 := (Nat.cast_le (α := ℝ≥0∞)).2 hnat
-    push_cast at h2
+    push_cast at h2 ⊢
     convert h2 using 2
-  calc ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞)
-      = ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞) * 2 * 2⁻¹ := by
+  calc ((∑ j ∈ Finset.range qSign, (j + qHash) : ℕ) : ℝ≥0∞)
+      = ((∑ j ∈ Finset.range qSign, (j + qHash) : ℕ) : ℝ≥0∞) * 2 * 2⁻¹ := by
         rw [mul_assoc, ENNReal.mul_inv_cancel (by norm_num) (by norm_num), mul_one]
-    _ ≤ (qSign : ℝ≥0∞) ^ 2 * 2⁻¹ := by gcongr
+    _ ≤ ((qSign + qHash : ℕ) : ℝ≥0∞) ^ 2 * 2⁻¹ := by gcongr
 
 open scoped Classical in
 omit [DecidableEq Salt] in
 /-- The GPV salt-collision union bound (GPV08, Proposition 6.2), as a uniform-draw-hits-cache
 estimate.
 
-If the random-oracle cache seen by the `j`-th signing query has size at most `j` (each prior
-query records at most one `(salt, message)` input), then the total probability that some fresh
-salt collides with a previously recorded entry is bounded by `collisionBound`. The hypothesis
-`hcache` supplies the per-draw cache sizes `c j` together with the bound `c j ≤ j`; the
-conclusion is the union bound over the `qSign` independent uniform draws.
+If the random-oracle cache seen by the `j`-th signing query has size at most `j + qHash` (the `j`
+prior signing salts plus the up to `qHash` adversary hash queries already recorded), then the
+total probability that some fresh salt collides with a previously recorded entry is bounded by
+`collisionBound`. The hypothesis `hcache` supplies the per-draw cache sizes `c j` together with
+the bound `c j ≤ j + qHash`; the conclusion is the union bound over the `qSign` independent
+uniform draws.
 
 This is the real salt-collision event of the GPV proof (a fresh uniform draw hitting the
 recorded random-oracle inputs), distinct from a hash-*output* collision over `|Range|`. -/
-lemma probEvent_salt_collision_le_collisionBound (qSign : ℕ)
-    (c : ℕ → Finset Salt) (hcache : ∀ j, (c j).card ≤ j) :
-    (∑ j ∈ Finset.range qSign, Pr[(· ∈ c j) | ($ᵗ Salt)]) ≤ collisionBound Salt qSign := by
-  refine le_trans (Finset.sum_le_sum ?_) (sum_range_div_card_le_collisionBound Salt qSign)
+lemma probEvent_salt_collision_le_collisionBound (qSign qHash : ℕ)
+    (c : ℕ → Finset Salt) (hcache : ∀ j, (c j).card ≤ j + qHash) :
+    (∑ j ∈ Finset.range qSign, Pr[(· ∈ c j) | ($ᵗ Salt)]) ≤ collisionBound Salt qSign qHash := by
+  refine le_trans (Finset.sum_le_sum ?_) (sum_range_div_card_le_collisionBound Salt qSign qHash)
   intro j _
   rw [probEvent_mem_uniformSample]
   gcongr
@@ -447,8 +457,8 @@ This is the exact, statistical-distance form of the sign-then-hash hop: it is on
 an exact equality (stating it as equality would be false, since a fresh salt can collide with a
 cached entry). It combines the pre-bridge `runtime_evalDist_liftComp` with the banked
 `tvDist_simulateQ_randomOracle_withProgramming_le_probEvent_bad`. The downstream task is to bound
-the right-hand bad-event probability by `collisionBound Salt qSign` using regularity `hreg` (to
-align the programmed value `psf.eval pk s` with the real uniform answer) and the salt-collision
+the right-hand bad-event probability by `collisionBound Salt qSign qHash` using regularity `hreg`
+(to align the programmed value `psf.eval pk s` with the real uniform answer) and the salt-collision
 union bound `probEvent_salt_collision_le_collisionBound`.
 
 The `Finite Range`/`Inhabited Range` hypotheses supply the `IsUniformSpec (Salt × M →ₒ Range)`
@@ -474,28 +484,28 @@ omit [DecidableEq Range] [SampleableType Salt] in
 /-- **U2 headline (proven, conditional on the bad-event bound).**
 
 The sign-then-hash hop is correct up to the salt-collision birthday bound: if the programming bad
-event of `policy` on the run `ob` is bounded by `collisionBound Salt qSign` (the Part-C obligation
-discharged by regularity + the salt-collision union bound
+event of `policy` on the run `ob` is bounded by `collisionBound Salt qSign qHash` (the Part-C
+obligation discharged by regularity + the salt-collision union bound
 `probEvent_salt_collision_le_collisionBound`), then the total-variation distance between the real
 GPV runtime output and the programmed (sign-then-hash) output is at most
-`(collisionBound Salt qSign).toReal`.
+`(collisionBound Salt qSign qHash).toReal`.
 
 This packages the full U2 statement with the genuine remaining obligation isolated as the
 hypothesis `hbad`. The proof simply chains the proven up-to-bad core
 `tvDist_runtime_real_programmed_le_bad` with `hbad`. -/
 theorem tvDist_runtime_real_programmed_le_collisionBound [Finite Range] [Inhabited Range]
-    [Nonempty Salt] {α : Type} (qSign : ℕ)
+    [Nonempty Salt] {α : Type} (qSign qHash : ℕ)
     (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
     (ob : OracleComp (Salt × M →ₒ Range) α)
     (hbad : Pr[ fun z : α × (Salt × M →ₒ Range).QueryCache × Bool => z.2.2 = true |
         (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob).run (∅, false)]
-        ≤ collisionBound Salt qSign) :
+        ≤ collisionBound Salt qSign qHash) :
     SPMF.tvDist
         ((runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
         (liftM (StateT.run'
           (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
           : SPMF α)
-      ≤ (collisionBound Salt qSign).toReal := by
+      ≤ (collisionBound Salt qSign qHash).toReal := by
   refine (tvDist_runtime_real_programmed_le_bad M Salt policy ob).trans ?_
   refine ENNReal.toReal_mono ?_ hbad
   refine (ENNReal.div_lt_top ?_ ?_).ne
@@ -534,7 +544,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
     adv.advantage (runtime M Salt) ≤
       collisionFindingAdvantage (psf := psf) (hr := hr)
         (reduction psf hr M Salt adv) +
-      collisionBound Salt qSign := by
+      collisionBound Salt qSign qHash := by
   let _ := hcorrect
   let _ := hreg
   let _ := qSign
@@ -566,7 +576,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
         ((qSign + qHash : ℕ) : ENNReal) *
           programmedPreimageAdvantage (psf := psf) (hr := hr)
             (programmedPreimageReduction psf hr M Salt adv) +
-        collisionBound Salt qSign := by
+        collisionBound Salt qSign qHash := by
   let _ := hcorrect
   let _ := hreg
   let _ := qSign
@@ -581,15 +591,16 @@ For any adversary `A` making at most `qSign` signing queries against the GPV has
 scheme with a correct PSF and `k`-bit salts, and making at most `qHash`
 random-oracle queries, there exists a collision-finding reduction `B` such that:
 
-  `Adv^{EUF-CMA}(A) ≤ Adv^{collision}(B) + qSign² / (2 · |Salt|)`
+  `Adv^{EUF-CMA}(A) ≤ Adv^{collision}(B) + (qSign + qHash)² / (2 · |Salt|)`
 
 This packages the distinct-preimage branch of the standard GPV argument. The complementary
 exact-match branch, where the forgery reproduces the simulator's programmed preimage, is to
 be discharged separately via a PSF preimage-min-entropy or one-wayness lemma.
 
-The salt-collision term `qSign² / (2 · |Salt|)` is the birthday bound on reuse of the
-`(salt, message)` random-oracle input across signing queries. For Falcon with 40-byte
-salts (`|Salt| = 2^320`), this is `2^{-193}` even for `qSign = 2^64`.
+The salt-collision term `(qSign + qHash)² / (2 · |Salt|)` is the birthday bound on a fresh
+signing salt colliding with any previously recorded `(salt, message)` random-oracle input (a
+prior signing salt or an adversary hash query). For Falcon with 40-byte salts
+(`|Salt| = 2^320`), this is `2^{-191}` even for `qSign = qHash = 2^64`.
 
 References: GPV08 Section 6; BDF+11 for the QROM extension. -/
 theorem euf_cma_collision_bound [DecidableEq Domain]
@@ -602,7 +613,7 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
     ∃ (red : CollisionAdversary (PK := PK) (Domain := Domain)),
       adv.advantage (runtime M Salt) ≤
         collisionFindingAdvantage (psf := psf) (hr := hr) red +
-        collisionBound Salt qSign := by
+        collisionBound Salt qSign qHash := by
   exact ⟨reduction psf hr M Salt adv,
     forgery_yields_collision psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
 
@@ -631,7 +642,7 @@ theorem euf_cma_split_bound [DecidableEq Domain]
         collisionFindingAdvantage (psf := psf) (hr := hr) collisionRed +
           ((qSign + qHash : ℕ) : ENNReal) *
             programmedPreimageAdvantage (psf := psf) (hr := hr) exactMatchRed +
-          collisionBound Salt qSign := by
+          collisionBound Salt qSign qHash := by
   exact ⟨reduction psf hr M Salt adv,
     programmedPreimageReduction psf hr M Salt adv,
     forgery_yields_collision_or_exact_match psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
