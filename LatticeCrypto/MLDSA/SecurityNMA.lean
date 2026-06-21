@@ -4,6 +4,7 @@ Released under Apache 2.0 license as described in the file LICENSE.
 Authors: Oleksandr Vovkotrub
 -/
 import LatticeCrypto.MLDSA.Security
+import LatticeCrypto.MLDSA.SecurityHVZK
 
 /-!
 # ML-DSA EUF-NMA Security: the MLWE key-swap hop (Lemma 7, Step 1)
@@ -810,6 +811,73 @@ theorem euf_cma_security_of_nma [SampleableType (PublicKey p prims)]
     rw [SignatureAlg.eufNmaAdv.advantage, hbridge]
   rw [hmanaged]
   exact add_le_add hnma le_rfl
+
+open scoped Classical in
+/-- **EUF-CMA security of ML-DSA with the HVZK hypotheses discharged.**
+
+A corollary of `euf_cma_security_of_nma` that instantiates the abstract HVZK simulator with the
+proven ML-DSA simulator `hvzkSimulatorReal` and discharges the `hhvzk` obligation via
+`idsWithAbort_hvzk_real`. The zero-knowledge slack `ζ_zk` is therefore exposed as its concrete
+value `hvzkBoundReal p prims` — the supremum over honestly generated key pairs of the
+prover's extra-rejection mass — rather than being a free parameter.
+
+Compared with `euf_cma_security_of_nma`, this statement drops the four HVZK hypotheses
+(`sim`, `ζ_zk`, `hζ`, `hhvzk`): the simulator and its quantitative bound are now supplied by the
+already-proven `idsWithAbort_hvzk_real`. The remaining hypotheses are unchanged. The abort-rate
+side conditions `hAbort`/`hAbortSim` are retained: they bound a different quantity (the abort
+probability of, respectively, the honest execution and the simulator) and are not implied by the
+HVZK bound without strengthening `p_abort` to `p_abort + ζ_zk`.
+
+The `hvzkBoundReal p prims` slack is a genuine finite real bound (a probability mass projected
+through `ENNReal.toReal`, nonnegative by `ENNReal.toReal_nonneg`), not a vacuous `⊤` placeholder. -/
+theorem euf_cma_security_of_nma_hvzk [SampleableType (PublicKey p prims)]
+    (h_laws : Primitives.Laws prims nttOps)
+    (mlwe : LearningWithErrors.Problem (TqMatrix p.k p.l) (RqVec p.l) (RqVec p.k))
+    (stmsis : SelfTargetMSIS.Problem
+      (TqMatrix p.k p.l) (Response p prims)
+      (PublicKey p prims) (M × Commitment p prims) (CommitHashBytes p))
+    (maxAttempts : ℕ)
+    (hr : GenerableRelation (PublicKey p prims) (SecretKey p)
+      (validKeyPair p prims))
+    (hGen : hr.gen = keygen0 p prims)
+    (hStmsis : stmsis = mldsaSTMSIS p prims M)
+    (qS qH : ℕ) (ε p_abort δ : ℝ)
+    (hε : 0 ≤ ε) (hδ : 0 ≤ δ) (hp₀ : 0 ≤ p_abort) (hp : p_abort < 1)
+    (Good : PublicKey p prims → SecretKey p → Prop)
+    (hGood : Pr[ fun xw : PublicKey p prims × SecretKey p => ¬ Good xw.1 xw.2 | hr.gen] ≤
+      ENNReal.ofReal δ)
+    (hGuess : ∀ pk sk, Good pk sk → ∀ cm : Commitment p prims,
+      Pr[= cm | Prod.fst <$> (identificationScheme p prims).commit pk sk] ≤ ENNReal.ofReal ε)
+    (hAbort : ∀ pk sk, Good pk sk →
+      Pr[= none | (identificationScheme p prims).honestExecution pk sk] ≤
+        ENNReal.ofReal p_abort)
+    (hAbortSim : ∀ pk sk, Good pk sk →
+      Pr[= none | hvzkSimulatorReal p prims pk] ≤ ENNReal.ofReal p_abort)
+    (adv : SignatureAlg.unforgeableAdv
+      (FiatShamirWithAbort (identificationScheme p prims) hr M maxAttempts))
+    (hQ : ∀ pk, FiatShamir.signHashQueryBound M
+      (S' := Option (Commitment p prims × Response p prims)) (oa := adv.main pk) qS qH)
+    (hMlweBridge : ∀ (main : PublicKey p prims →
+        OracleComp (unifSpec + (M × Commitment p prims →ₒ CommitHashBytes p))
+          (M × Option (Commitment p prims × Response p prims))),
+      ∃ B : LearningWithErrors.Adversary mlwe,
+        LearningWithErrors.advantage (mldsaMLWE p prims)
+          (distinguisherB p prims hr maxAttempts main) ≤
+          LearningWithErrors.advantage mlwe B) :
+    ∃ (mlweReduction : LearningWithErrors.Adversary mlwe)
+      (stmsisReduction : SelfTargetMSIS.Adversary stmsis),
+      adv.advantage
+          (FiatShamirWithAbort.runtime
+            (Commit := Commitment p prims) (Chal := CommitHashBytes p) M) ≤
+        ENNReal.ofReal (LearningWithErrors.advantage mlwe mlweReduction) +
+        SelfTargetMSIS.advantage stmsisReduction +
+        ENNReal.ofReal
+          (FiatShamirWithAbort.cmaToNmaLoss qS qH ε p_abort
+            (hvzkBoundReal p prims) δ hp) :=
+  euf_cma_security_of_nma p prims h_laws mlwe stmsis maxAttempts hr hGen hStmsis
+    (hvzkSimulatorReal p prims) (hvzkBoundReal p prims) ENNReal.toReal_nonneg
+    (idsWithAbort_hvzk_real p prims h_laws) qS qH ε p_abort δ hε hδ hp₀ hp Good hGood hGuess
+    hAbort hAbortSim adv hQ hMlweBridge
 
 end Headline
 
