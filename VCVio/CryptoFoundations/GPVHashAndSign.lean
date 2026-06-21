@@ -9,6 +9,7 @@ import VCVio.CryptoFoundations.HardnessAssumptions.HardRelation
 import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
 import VCVio.OracleComp.Coercions.Add
 import VCVio.OracleComp.SimSemantics.StateT.BundledSemantics
+import VCVio.ProgramLogic.Relational.ProgrammingOracle
 
 /-!
 # GPV Hash-and-Sign Framework
@@ -64,7 +65,7 @@ The proof decomposes into:
 universe v
 
 
-open OracleComp OracleSpec ENNReal
+open OracleComp OracleSpec ENNReal OracleComp.ProgramLogic.Relational
 
 /-! ## Preimage Sampleable Functions -/
 
@@ -386,6 +387,121 @@ lemma probEvent_salt_collision_le_collisionBound (qSign : ℕ)
   rw [probEvent_mem_uniformSample]
   gcongr
   exact_mod_cast hcache j
+
+/-! ## State-threading bridge: runtime ↦ bare random oracle
+
+The GPV `runtime` interprets the surface program over the *sum* spec
+`unifSpec + (Salt × M →ₒ Range)` via
+`simulateQ' ((QueryImpl.ofLift unifSpec ProbComp).liftTarget _ + randomOracle)`. The reusable
+state-threading bridge in `ProgramLogic/Relational/ProgrammingOracle.lean`
+(`tvDist_simulateQ_randomOracle_withProgramming_le_probEvent_bad`) is instead stated for the bare
+single-spec lazy random oracle `simulateQ randomOracle`. The lemma
+`runtime_evalDist_liftComp` is the missing reduction connecting the two: on a sub-computation that
+only touches the random oracle (a hash-only `OracleComp (Salt × M →ₒ Range)` lifted into the sum),
+the runtime's bundled `SPMF` semantics collapse to the bare `randomOracle` run from the empty
+cache. -/
+
+omit [DecidableEq Range] [SampleableType Salt] [Fintype Salt] in
+/-- **Pre-bridge.** On a random-oracle-only sub-computation `ob` lifted into the sum spec, the GPV
+runtime's `SPMF` semantics equal the externally observed bare lazy random-oracle run from the empty
+cache.
+
+This is the reduction from the runtime's sum-spec `simulateQ'` interpreter down to the bare
+`simulateQ randomOracle` form expected by the banked random-oracle state-threading bridge. It is
+proved by unfolding `withStateOracle` and applying `QueryImpl.simulateQ_add_liftComp_right`, which
+discards the (lifted-identity) uniform-sampling handler on a computation that never queries it. -/
+theorem runtime_evalDist_liftComp {α : Type} (ob : OracleComp (Salt × M →ₒ Range) α) :
+    (runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range)))
+      = (liftM (StateT.run'
+          (simulateQ (randomOracle :
+            QueryImpl (Salt × M →ₒ Range) (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ob)
+          ∅) : SPMF α) := by
+  classical
+  unfold ProbCompRuntime.evalDist runtime
+  change (SPMFSemantics.withStateOracle _ ∅).evalDist _ = _
+  unfold SPMFSemantics.evalDist SPMFSemantics.withStateOracle
+  simp only [SemanticsVia.denote]
+  rw [QueryImpl.simulateQ_add_liftComp_right]
+
+/-! ## U2: sign-then-hash ≡ real, up to the programming bad event
+
+The "sign-then-hash ≡ real" hop replaces the real lazy random oracle by a `policy`-programmed one
+(the simulator programs each fresh signing target with `psf.eval pk s` for a freshly sampled short
+preimage `s`). This is **not** an exact distributional equality: it is exact up to the
+*programming bad event*, namely that a freshly sampled signing salt collides with an entry already
+present in the random-oracle cache. `tvDist_runtime_real_programmed_le_bad` is the exact, proven
+core of the hop: the total-variation distance between the real-runtime output and the
+programmed-run output is bounded by the probability that the programming bad flag fires.
+
+The `Fintype Range`/`Inhabited Range` hypotheses supply the `IsUniformSpec (Salt × M →ₒ Range)`
+instance required by the banked bridge; they are mild for a hash range. -/
+
+omit [DecidableEq Range] [SampleableType Salt] [Fintype Salt] in
+/-- **U2 core (proven): sign-then-hash up-to-bad TV bound.**
+
+For any random-oracle-only sub-computation `ob` and any programming `policy`, the total-variation
+distance between the *real* GPV runtime output and the *programmed* (sign-then-hash) output is
+bounded by the probability that the programming bad flag fires during the programmed run.
+
+This is the exact, statistical-distance form of the sign-then-hash hop: it is one TV bound, **not**
+an exact equality (stating it as equality would be false, since a fresh salt can collide with a
+cached entry). It combines the pre-bridge `runtime_evalDist_liftComp` with the banked
+`tvDist_simulateQ_randomOracle_withProgramming_le_probEvent_bad`. The downstream task is to bound
+the right-hand bad-event probability by `collisionBound Salt qSign` using regularity `hreg` (to
+align the programmed value `psf.eval pk s` with the real uniform answer) and the salt-collision
+union bound `probEvent_salt_collision_le_collisionBound`.
+
+The `Finite Range`/`Inhabited Range` hypotheses supply the `IsUniformSpec (Salt × M →ₒ Range)`
+instance required by the banked bridge; they are mild for a hash range. -/
+theorem tvDist_runtime_real_programmed_le_bad [Finite Range] [Inhabited Range] {α : Type}
+    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
+    (ob : OracleComp (Salt × M →ₒ Range) α) :
+    SPMF.tvDist
+        ((runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
+        (liftM (StateT.run'
+          (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
+          : SPMF α)
+      ≤ Pr[fun z : α × (Salt × M →ₒ Range).QueryCache × Bool => z.2.2 = true |
+          (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob).run
+            (∅, false)].toReal := by
+  haveI : Fintype Range := Fintype.ofFinite Range
+  haveI : IsUniformSpec (Salt × M →ₒ Range) := IsUniformSpec.ofFintypeInhabited _
+  rw [runtime_evalDist_liftComp]
+  exact tvDist_simulateQ_randomOracle_withProgramming_le_probEvent_bad
+    (spec := (Salt × M →ₒ Range)) policy ob ∅
+
+omit [DecidableEq Range] [SampleableType Salt] in
+/-- **U2 headline (proven, conditional on the bad-event bound).**
+
+The sign-then-hash hop is correct up to the salt-collision birthday bound: if the programming bad
+event of `policy` on the run `ob` is bounded by `collisionBound Salt qSign` (the Part-C obligation
+discharged by regularity + the salt-collision union bound
+`probEvent_salt_collision_le_collisionBound`), then the total-variation distance between the real
+GPV runtime output and the programmed (sign-then-hash) output is at most
+`(collisionBound Salt qSign).toReal`.
+
+This packages the full U2 statement with the genuine remaining obligation isolated as the
+hypothesis `hbad`. The proof simply chains the proven up-to-bad core
+`tvDist_runtime_real_programmed_le_bad` with `hbad`. -/
+theorem tvDist_runtime_real_programmed_le_collisionBound [Finite Range] [Inhabited Range]
+    [Nonempty Salt] {α : Type} (qSign : ℕ)
+    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
+    (ob : OracleComp (Salt × M →ₒ Range) α)
+    (hbad : Pr[ fun z : α × (Salt × M →ₒ Range).QueryCache × Bool => z.2.2 = true |
+        (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob).run (∅, false)]
+        ≤ collisionBound Salt qSign) :
+    SPMF.tvDist
+        ((runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
+        (liftM (StateT.run'
+          (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
+          : SPMF α)
+      ≤ (collisionBound Salt qSign).toReal := by
+  refine (tvDist_runtime_real_programmed_le_bad M Salt policy ob).trans ?_
+  refine ENNReal.toReal_mono ?_ hbad
+  refine (ENNReal.div_lt_top ?_ ?_).ne
+  · simp
+  · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
+    exact Fintype.card_ne_zero
 
 /-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
 makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
