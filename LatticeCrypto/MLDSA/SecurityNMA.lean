@@ -632,7 +632,7 @@ prims M`, and
 `hGen : hr.gen = keygen0 p prims` pins the Fiat-Shamir key generation to the real ML-DSA keygen.
 
 This is the EUF-NMA half (Lemma 7) of the ML-DSA security proof; the CMA-to-NMA statistical step
-(`euf_cma_security`) composes on top of it. -/
+(`euf_cma_security_of_nma`) composes on top of it. -/
 theorem nma_security (h_laws : Primitives.Laws prims nttOps)
     (mlwe : LearningWithErrors.Problem (TqMatrix p.k p.l) (RqVec p.l) (RqVec p.k))
     (stmsis : SelfTargetMSIS.Problem
