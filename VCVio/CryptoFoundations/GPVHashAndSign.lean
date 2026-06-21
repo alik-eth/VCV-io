@@ -398,6 +398,130 @@ lemma probEvent_salt_collision_le_collisionBound (qSign qHash : ℕ)
   gcongr
   exact_mod_cast hcache j
 
+/-! ## Salt-averaged collision telescope (the combined draw-then-query step)
+
+The Phase-5 per-query `withProgramming` union framework cannot see the GPV salt averaging: the
+programming bad flag fires deterministically on a *fixed* query input `t = (r, m)`, while the
+collision randomness lives in the fresh salt `r` drawn *inside* the signing oracle, one step
+*before* the random-oracle query is issued. The right granularity is therefore a **combined
+"draw salt `r`, then check `r` against the recorded inputs" step**, whose firing probability,
+*integrated over the uniform salt draw*, is `card cache / |Salt|`.
+
+`saltSeq` is exactly this combined-step process abstracted away from the oracle plumbing: it
+draws `qSign` fresh salts in sequence and reports whether any draw `r_j` lands in the recorded
+set `c j` seen by the `j`-th signing query. `probEvent_saltSeq_le` telescopes the per-draw
+collision probabilities (each a `probEvent_mem_uniformSample` instance) into the running sum
+`∑_{j < qSign} card (c j) / |Salt|`, and `probEvent_saltSeq_le_collisionBound` finishes with the
+banked Gauss-sum estimate. This realizes the salt-AVERAGED step bound that the Phase-5 wall
+identified as the missing reformulation. -/
+
+open Classical in
+omit [DecidableEq Salt] in
+/-- The combined draw-then-collision-check process underlying the GPV salt-collision union bound.
+
+`saltSeq c n` draws `n` fresh uniform salts in sequence; the `j`-th draw `r_j` is checked for
+membership in the recorded random-oracle input set `c j` (the salts and hash inputs seen by the
+`j`-th signing query). It returns `true` iff some draw collides with its recorded set. This is the
+salt-averaged abstraction of "draw a fresh signing salt, then query the random oracle at it":
+firing is integrated over the fresh draw rather than evaluated at a fixed query input. -/
+noncomputable def saltSeq (c : ℕ → Finset Salt) : (n : ℕ) → ProbComp Bool
+  | 0 => pure false
+  | (n + 1) => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let rest ← saltSeq c n
+      pure ((decide (r ∈ c n)) || rest)
+
+/-- **Salt-averaged collision telescope.** The probability that the combined draw-then-check
+process `saltSeq c n` ever reports a collision is bounded by the running sum of per-draw
+collision probabilities `∑_{j < n} card (c j) / |Salt|`.
+
+This is the salt-AVERAGED per-step bound the Phase-5 wall called for: the head draw `r ← $ᵗ Salt`
+contributes `card (c n) / |Salt|` (one `probEvent_mem_uniformSample` instance, integrated over the
+fresh salt), and the remaining `n` draws contribute the inductive tail. The union is assembled by
+`probEvent_bind_le_add` on the monotone Boolean disjunction. Unlike the Phase-5 fixed-`t`
+`withProgramming` step (which fires deterministically and cannot be capped below `1`), every step
+here is averaged over its own fresh salt draw, so the small `card / |Salt|` cap is honest. -/
+theorem probEvent_saltSeq_le (c : ℕ → Finset Salt) (n : ℕ) :
+    Pr[(· = true) | saltSeq (Salt := Salt) c n]
+      ≤ ∑ j ∈ Finset.range n, ((c j).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞) := by
+  classical
+  induction n with
+  | zero => simp [saltSeq]
+  | succ n ih =>
+      rw [probEvent_congr' (q := fun y : Bool => ¬ y = false)
+            (oa' := saltSeq (Salt := Salt) c (n + 1)) (fun b _ => by cases b <;> simp) rfl]
+      rw [saltSeq, Finset.sum_range_succ, add_comm]
+      refine probEvent_bind_le_add (m := ProbComp)
+        (p := fun r => r ∉ c n) (q := fun b : Bool => b = false)
+        (ε₁ := ((c n).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞))
+        (ε₂ := ∑ j ∈ Finset.range n, ((c j).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞))
+        ?_ ?_
+      · simp only [not_not]
+        rw [probEvent_uniformSample]
+        simp
+      · intro r _ hr
+        simp only [Bool.not_eq_false]
+        rw [decide_eq_false hr]
+        simp only [Bool.false_or]
+        rw [bind_pure]
+        exact ih
+
+/-- **Salt-averaged collision telescope, finished against `collisionBound`.** When the recorded
+input set seen by the `j`-th signing query has size at most `j + qHash` (the `j` prior signing
+salts plus the up to `qHash` adversary hash queries), the combined draw-then-check process over
+`qSign` signing queries reports a collision with probability at most `collisionBound Salt qSign
+qHash`.
+
+This chains `probEvent_saltSeq_le` with the banked Gauss-sum estimate
+`sum_range_div_card_le_collisionBound`. It is the salt-averaged collision bound stated directly on
+the fresh-salt-draw process, the honest counterpart of the deterministic Phase-5 fixed-`t` step. -/
+theorem probEvent_saltSeq_le_collisionBound (qSign qHash : ℕ)
+    (c : ℕ → Finset Salt) (hcache : ∀ j, (c j).card ≤ j + qHash) :
+    Pr[(· = true) | saltSeq (Salt := Salt) c qSign] ≤ collisionBound Salt qSign qHash := by
+  refine (probEvent_saltSeq_le Salt c qSign).trans ?_
+  refine le_trans (Finset.sum_le_sum ?_) (sum_range_div_card_le_collisionBound Salt qSign qHash)
+  intro j _
+  gcongr
+  exact_mod_cast hcache j
+
+/-! ## Open sub-step: connecting `hbad` to the salt-averaged telescope
+
+The salt-averaged telescope above (`probEvent_saltSeq_le_collisionBound`) is the honest, axiom-clean
+bound on the GPV salt-collision event: a sequence of `qSign` fresh uniform salt draws, the `j`-th
+checked against the recorded inputs `c j` of size `≤ j + qHash`, collides with probability at most
+`collisionBound Salt qSign qHash`. This realizes the salt-AVERAGED combined "draw salt, then check"
+step that the per-query `withProgramming` framework cannot express.
+
+Discharging the U2 hypothesis `hbad` of `tvDist_runtime_real_programmed_le_collisionBound` from this
+telescope is **not** possible at the current statement granularity, for two independent structural
+reasons, both of which are genuine and isolated here (no false bridge is asserted):
+
+1. **Wrong event.** The `hbad` left-hand side is the `withProgramming` *bad flag*, which fires on a
+   cache-*miss* whose query input lies in the programming policy's support
+   (`cache t = none ∧ policy t = some v`; see `QueryImpl.withProgramming`). For the GPV simulator
+   policy (which programs at every fresh signing point) this fires *deterministically* once an
+   uncached signing point is reached, so its probability is near `1`, not `collisionBound`. The
+   salt-collision event of the telescope is the opposite: a fresh salt *hitting* an
+   already-recorded entry (a cache *hit* at a programmed point), which the monotone fire-on-miss
+   flag does not record.
+
+2. **Invisible salt draws.** `hbad` is phrased over `ob : OracleComp (Salt × M →ₒ Range)`, a
+   random-oracle-only computation. The GPV signing salts are drawn in `unifSpec`/`ProbComp`, i.e.
+   *outside* the `(Salt × M →ₒ Range)` spec, one step before each random-oracle query. By the time a
+   query input `(r, m)` reaches the `withProgramming` handler the salt `r` is already a fixed value,
+   so the `card / |Salt|` averaging that the telescope performs over the fresh draw is structurally
+   absent from `ob`'s granularity. The averaging cannot be recovered without exposing the salt
+   draws.
+
+Closing this sub-step therefore requires re-stating U2 over the *salt-inclusive* signing run — so
+the fresh salt draws are visible to the bad event — and instrumenting the bad event as a
+salt-collision
+(cache-hit-at-programmed-point) flag rather than the fire-on-miss flag. That is a statement-level
+change to the U2 surface (and a joint distribution / coupling argument over the interleaved draw and
+query streams), in the same difficulty class as the `#228` averaged-vs-pointwise coupling. The
+salt-averaged telescope banked above is the reusable analytic core that such a re-statement will
+consume; only the structural re-instrumentation of the bad event remains. -/
+
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
 The GPV `runtime` interprets the surface program over the *sum* spec
