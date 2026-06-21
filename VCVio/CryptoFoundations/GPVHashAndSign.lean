@@ -93,6 +93,34 @@ def Correct (psf : PreimageSampleableFunction PK SK Domain Range) : Prop :=
     psf.eval pk x = t ∧
       psf.isShort x = true
 
+/-- The GPV *regularity* (preimage-sampleability) property, expressed externally as an
+equality of joint distributions.
+
+A PSF is regular when there is a domain sampler `domainSample : PK → ProbComp Domain` such
+that, for every key pair `(pk, sk)`, the joint distribution of `(eval pk s, s)` for a
+forward-sampled preimage `s ← domainSample pk` matches the joint distribution of `(c, s)`
+where the target `c` is drawn uniformly from `Range` and `s ← trapdoorSample pk sk c` is the
+trapdoor preimage of `c`.
+
+This is the classical GPV08 preimage-sampleability requirement: sampling a short preimage and
+hashing it forward is statistically identical to sampling a uniform target and inverting it
+with the trapdoor. It is the hypothesis that justifies the sign-then-hash hop in the EUF-CMA
+proof. It is entered as an external hypothesis rather than as a field of
+`PreimageSampleableFunction`, so the generic GPV theorem stays loss-free and each concrete
+instance (e.g. Falcon) accounts for any sampler imperfection separately.
+
+The property is satisfiable in principle: when `eval pk` is a bijection,
+`trapdoorSample pk sk c := pure ((eval pk)⁻¹ c)` and `domainSample pk := $ᵗ Domain` realize
+the equality. It is also non-trivial: the equation genuinely constrains `domainSample` against
+the trapdoor sampler, so it is not vacuously true. -/
+def Regularity [SampleableType Range]
+    (psf : PreimageSampleableFunction PK SK Domain Range) : Prop :=
+  ∃ domainSample : PK → ProbComp Domain,
+    ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]
+
 end PreimageSampleableFunction
 
 /-! ## GPV Hash-and-Sign Construction -/
@@ -292,6 +320,73 @@ For Falcon with 40-byte salts (`|Salt| = 2^320`) and `qSign ≤ 2^64`:
 noncomputable def collisionBound (qSign : ℕ) : ENNReal :=
   (qSign : ENNReal) ^ 2 / (2 * Fintype.card Salt)
 
+open scoped Classical in
+omit [DecidableEq Salt] in
+/-- A single uniform salt draw lands in a fixed cache `cache ⊆ Salt` with probability exactly
+`|cache| / |Salt|`.
+
+This is the per-draw building block of the GPV salt-collision union bound: each fresh salt is
+sampled uniformly and independently, so the chance it hits any of the previously recorded
+random-oracle inputs is the size of that recorded set over the size of the salt space. -/
+lemma probEvent_mem_uniformSample (cache : Finset Salt) :
+    Pr[(· ∈ cache) | ($ᵗ Salt)] = cache.card / Fintype.card Salt := by
+  rw [probEvent_uniformSample]
+  congr 1
+  simp
+
+omit [DecidableEq Salt] [SampleableType Salt] in
+/-- Arithmetic core of the GPV salt-collision birthday bound.
+
+Summing the per-draw collision probabilities for `qSign` signing queries, where the `j`-th
+fresh salt is compared against the at most `j` salts recorded by the prior queries, gives the
+running total `∑_{j < qSign} j / |Salt|`. The Gauss sum `∑_{j < qSign} j = qSign·(qSign-1)/2`
+is at most `qSign² / 2`, so the union bound is dominated by `collisionBound`. -/
+lemma sum_range_div_card_le_collisionBound (qSign : ℕ) :
+    (∑ j ∈ Finset.range qSign, (j : ℝ≥0∞) / Fintype.card Salt) ≤ collisionBound Salt qSign := by
+  unfold collisionBound
+  simp only [div_eq_mul_inv]
+  rw [← Finset.sum_mul]
+  have hsum : (∑ j ∈ Finset.range qSign, (j : ℝ≥0∞))
+      = ((∑ j ∈ Finset.range qSign, j : ℕ) : ℝ≥0∞) := by rw [Nat.cast_sum]
+  rw [hsum, Finset.sum_range_id]
+  rw [ENNReal.mul_inv (Or.inl (by norm_num)) (Or.inl (by norm_num)), ← mul_assoc]
+  gcongr
+  have hnat : qSign * (qSign - 1) / 2 * 2 ≤ qSign ^ 2 := by
+    rcases Nat.eq_zero_or_pos qSign with h | h
+    · simp [h]
+    · rw [Nat.div_mul_cancel (Nat.even_mul_pred_self qSign).two_dvd]
+      nlinarith [Nat.sub_le qSign 1]
+  have hcast : ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞) * 2 ≤ ((qSign : ℝ≥0∞)) ^ 2 := by
+    have h2 := (Nat.cast_le (α := ℝ≥0∞)).2 hnat
+    push_cast at h2
+    convert h2 using 2
+  calc ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞)
+      = ((qSign * (qSign - 1) / 2 : ℕ) : ℝ≥0∞) * 2 * 2⁻¹ := by
+        rw [mul_assoc, ENNReal.mul_inv_cancel (by norm_num) (by norm_num), mul_one]
+    _ ≤ (qSign : ℝ≥0∞) ^ 2 * 2⁻¹ := by gcongr
+
+open scoped Classical in
+omit [DecidableEq Salt] in
+/-- The GPV salt-collision union bound (GPV08, Proposition 6.2), as a uniform-draw-hits-cache
+estimate.
+
+If the random-oracle cache seen by the `j`-th signing query has size at most `j` (each prior
+query records at most one `(salt, message)` input), then the total probability that some fresh
+salt collides with a previously recorded entry is bounded by `collisionBound`. The hypothesis
+`hcache` supplies the per-draw cache sizes `c j` together with the bound `c j ≤ j`; the
+conclusion is the union bound over the `qSign` independent uniform draws.
+
+This is the real salt-collision event of the GPV proof (a fresh uniform draw hitting the
+recorded random-oracle inputs), distinct from a hash-*output* collision over `|Range|`. -/
+lemma probEvent_salt_collision_le_collisionBound (qSign : ℕ)
+    (c : ℕ → Finset Salt) (hcache : ∀ j, (c j).card ≤ j) :
+    (∑ j ∈ Finset.range qSign, Pr[(· ∈ c j) | ($ᵗ Salt)]) ≤ collisionBound Salt qSign := by
+  refine le_trans (Finset.sum_le_sum ?_) (sum_range_div_card_le_collisionBound Salt qSign)
+  intro j _
+  rw [probEvent_mem_uniformSample]
+  gcongr
+  exact_mod_cast hcache j
+
 /-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
 makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
 that it produces a fresh forgery whose preimage differs from the simulator's programmed
@@ -314,7 +409,7 @@ simulator's hidden preimage for that entry, the pair is a valid collision under
 `psf.eval`. The salt-collision probability bounds the only way the programming can
 become inconsistent. -/
 theorem forgery_yields_collision [DecidableEq Domain]
-    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hQ : ∀ pk, signHashQueryBound
@@ -325,6 +420,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
         (reduction psf hr M Salt adv) +
       collisionBound Salt qSign := by
   let _ := hcorrect
+  let _ := hreg
   let _ := qSign
   let _ := qHash
   let _ := adv
@@ -342,7 +438,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
 
 The only additional failure mode is a salt collision, bounded by `collisionBound`. -/
 theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
-    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hQ : ∀ pk, signHashQueryBound
@@ -356,6 +452,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
             (programmedPreimageReduction psf hr M Salt adv) +
         collisionBound Salt qSign := by
   let _ := hcorrect
+  let _ := hreg
   let _ := qSign
   let _ := qHash
   let _ := adv
@@ -380,7 +477,7 @@ salts (`|Salt| = 2^320`), this is `2^{-193}` even for `qSign = 2^64`.
 
 References: GPV08 Section 6; BDF+11 for the QROM extension. -/
 theorem euf_cma_collision_bound [DecidableEq Domain]
-    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hQ : ∀ pk, signHashQueryBound
@@ -391,7 +488,7 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
         collisionFindingAdvantage (psf := psf) (hr := hr) red +
         collisionBound Salt qSign := by
   exact ⟨reduction psf hr M Salt adv,
-    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv hQ⟩
+    forgery_yields_collision psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
 
 /-- **Split GPV PFDH bound in the random-oracle model**.
 
@@ -405,7 +502,7 @@ This theorem makes both branches of the GPV proof explicit:
 It is the most honest generic statement available from the current API, before any additional
 PSF-specific min-entropy lemma collapses the exact-match branch into the collision branch. -/
 theorem euf_cma_split_bound [DecidableEq Domain]
-    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hQ : ∀ pk, signHashQueryBound
@@ -421,6 +518,6 @@ theorem euf_cma_split_bound [DecidableEq Domain]
           collisionBound Salt qSign := by
   exact ⟨reduction psf hr M Salt adv,
     programmedPreimageReduction psf hr M Salt adv,
-    forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash adv hQ⟩
+    forgery_yields_collision_or_exact_match psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
 
 end GPVHashAndSign
