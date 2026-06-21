@@ -137,34 +137,31 @@ theorem concrete_power2Round_bound (r : Rq) :
   rw [← concretePower2Round_remainder_eq_low]
   exact concretePower2Round_bound r
 
-/-! ## Partial `Primitives.Laws` witness
+/-! ## `Primitives.Laws` status for `concretePrimitives` (no full witness — by design)
 
-The eight algebraic fields above are wired in. The remaining five fields are isolated as `sorry`
-with the precise reason recorded in the module docstring: `expandMask_bound` and
-`w1Encode_injective` are **false as stated** for the concrete instance (FIPS conformance spec
-drift / non-injective packing on the full carrier), `sampleInBall_norm` / `expandS_bound` /
-`sampleInBall_smul_bound` are blocked by opaque `@[extern]` SHAKE rejection samplers, and
-`expandS_honest_sampling` / `keyVector_t0_determined` are inherent ROM modeling assumptions. -/
-theorem concretePrimitivesLaws (hp : p.isApproved) :
-    Primitives.Laws (concretePrimitives p) concreteNTTRingOps where
-  -- PROVEN algebraic fields:
-  transform := concrete_transform
-  high_low_decomp := concrete_high_low_decomp p
-  lowBits_bound := concrete_lowBits_bound p hp
-  hide_low := concrete_hide_low p hp
-  highBitsShift_injective := concrete_highBitsShift_injective p hp
-  useHint_makeHint := concrete_useHint_makeHint p hp
-  power2Round_decomp := concrete_power2Round_decomp p
-  power2Round_bound := concrete_power2Round_bound p
-  -- FALSE as stated for the concrete instance (FIPS spec drift; see module docstring):
-  expandMask_bound := sorry
-  w1Encode_injective := sorry
-  -- BLOCKED by opaque SHAKE rejection samplers (structurally true; see module docstring):
-  sampleInBall_norm := sorry
-  expandS_bound := sorry
-  sampleInBall_smul_bound := sorry
-  -- Random-oracle modeling assumptions (inherent to the model; see module docstring):
-  expandS_honest_sampling := sorry
-  keyVector_t0_determined := sorry
+The eight algebraic fields above (`concrete_transform`, `concrete_high_low_decomp`,
+`concrete_lowBits_bound`, `concrete_hide_low`, `concrete_highBitsShift_injective`,
+`concrete_useHint_makeHint`, `concrete_power2Round_decomp`, `concrete_power2Round_bound`) are
+**proven axiom-clean** for the concrete instance at any approved parameter set.
+
+We deliberately do **not** assemble a `Primitives.Laws (concretePrimitives p) …` witness, because
+the abstract `Primitives.Laws` is **not satisfiable by the concrete instance as currently stated**
+— two of its fields are *false* for `concretePrimitives` (verified counterexamples):
+
+* `expandMask_bound`: the concrete `polyZUnpack` decode range reaches the coefficient `γ₁`
+  (`centeredRepr γ₁ = γ₁` for ML-DSA-44), exceeding the stated `γ₁ − 1` bound — the FIPS-204 spec
+  drift. Fixing it requires an owner statement change (decoder range or the abstract bound).
+* `w1Encode_injective`: the 6-bit truncating packer is injective only on the FIPS-valid commitment
+  range, not on the full `Rq` carrier the abstract field quantifies over (explicit collision).
+
+The remaining gap fields are `sampleInBall_norm` / `expandS_bound` / `sampleInBall_smul_bound`
+(structurally true but blocked by opaque `@[extern]` SHAKE rejection samplers — no imperative
+verification infrastructure) and the inherent ROM modeling assumptions `expandS_honest_sampling` /
+`keyVector_t0_determined`.
+
+Providing a `sorry`-backed aggregate witness here would assert the *false* fields and could be
+misused to instantiate a concrete EUF-CMA claim unsoundly; it is intentionally omitted until the two
+false-as-stated abstract fields are restated (owner decision). The eight proven lemmas above stand
+on their own and are safe to consume. -/
 
 end MLDSA.Concrete
