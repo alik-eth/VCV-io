@@ -155,9 +155,10 @@ structure Primitives.Laws {p : Params} (prims : Primitives p) (nttOps : NTTRingO
   expandS_bound : ∀ rhoPrime,
     polyVecBounded (prims.expandS rhoPrime).1 p.eta ∧
     polyVecBounded (prims.expandS rhoPrime).2 p.eta
-  /-- `ExpandMask(ρ'', κ)` produces masking vectors bounded by `γ₁ - 1`. -/
+  /-- `ExpandMask(ρ'', κ)` produces masking vectors bounded by `γ₁`. The FIPS 204 `ExpandMask`
+  output coefficients lie in `[-γ₁ + 1, γ₁]`, so their centered infinity norm is at most `γ₁`. -/
   expandMask_bound : ∀ rhoDoublePrime kappa,
-    polyVecBounded (prims.expandMask rhoDoublePrime kappa) (p.gamma1 - 1)
+    polyVecBounded (prims.expandMask rhoDoublePrime kappa) p.gamma1
   /-- Generic transform laws for the instantiated ring backend. -/
   transform : NTTRingLaws nttOps
   /-- Decomposition identity: `highBitsShift(highBits(r)) + lowBits(r) = r`. -/
@@ -185,8 +186,13 @@ structure Primitives.Laws {p : Params} (prims : Primitives p) (nttOps : NTTRingO
   /-- The low-order remainder of `Power2Round` is bounded by `2^(d-1)`. -/
   power2Round_bound : ∀ r : Rq,
     polyNorm (prims.power2Round r).2 ≤ 2 ^ (droppedBits - 1)
-  /-- `w1Encode` is injective: distinct commitments encode to distinct byte strings. -/
-  w1Encode_injective : Function.Injective prims.w1Encode
+  /-- `w1Encode` is injective on the valid commitment range: distinct commitment vectors whose
+  every component is an actual `highBits` output encode to distinct byte strings. The commitment
+  `w₁` always arises as a vector of `highBits` representatives, so injectivity on this range is
+  exactly what the commitment-binding argument needs; the encoder is a truncating packer and is
+  not injective on the full `Vector High p.k` carrier. -/
+  w1Encode_injective : Set.InjOn prims.w1Encode
+    { w : Vector prims.High p.k | ∀ i : Fin p.k, w.get i ∈ Set.range prims.highBits }
   /-- The challenge-secret product `c · s` has infinity norm at most `β = τ·η` whenever the
   vector `s` is bounded by `η`. This reflects that `SampleInBall(c̃)` has exactly `τ` nonzero
   coefficients, each in `{-1, +1}`, so `‖c · sⱼ‖∞ ≤ τ·η = β`. -/
