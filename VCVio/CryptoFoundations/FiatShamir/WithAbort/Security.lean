@@ -4000,21 +4000,13 @@ theorem evalDist_tapePreserving_step_commute {γ Ans : Type}
           (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
               (p.1, p.2.1)) <$>
             (((fun p : Ans × DeferredReadState M Commit Chal => (p.1, (p.2, tape))) <$> step)
-              >>= fun p => tapeCont p.1 p.2)] := by
-  classical
-  -- Step 1: rewrite the continuation by `hcont` under the leading `step` bind.
-  rw [evalDist_bind_congr_left step (fun p => defCont p.1 p.2)
-    (fun p => OracleComp.drawList (ids.commit pk sk) L >>= fun tape =>
-        (fun q : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
-            (q.1, q.2.1)) <$> tapeCont p.1 (p.2, tape))
-    (fun p => hcont p.1 p.2)]
-  -- Step 2: commute the front block past the answer-irrelevant `step`.
-  rw [evalDist_bind_comm_probComp step (OracleComp.drawList (ids.commit pk sk) L)
-    (fun p tape => (fun q : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) =>
-        (q.1, q.2.1)) <$> tapeCont p.1 (p.2, tape))]
-  -- Step 3: re-associate the inner `step` bind into the mapped tape-step form.
-  refine evalDist_bind_congr_left (OracleComp.drawList (ids.commit pk sk) L) _ _ (fun tape => ?_)
-  rw [bind_map_left, map_bind]
+              >>= fun p => tapeCont p.1 p.2)] :=
+  -- A direct instance of the generic answer-irrelevant tape commute: the front draw block is the
+  -- `drawList (ids.commit pk sk) L` tape and `proj` discards the spent suffix.
+  OracleComp.DeferredSampling.evalDist_step_commute_tape step
+    (OracleComp.drawList (ids.commit pk sk) L)
+    (fun p : γ × (DeferredReadState M Commit Chal × List (Commit × PrvState)) => (p.1, p.2.1))
+    defCont tapeCont hcont
 
 omit [SampleableType Stmt] [DecidableEq Commit] [SampleableType Chal] in
 /-- **Tape-combine reconciliation.** A front block drawn in two pieces — `maxAttempts` then

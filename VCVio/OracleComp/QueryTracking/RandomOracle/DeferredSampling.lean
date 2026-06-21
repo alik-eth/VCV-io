@@ -234,4 +234,100 @@ theorem Factorizes.bind {γ τ δ : Type} {run : ProbComp γ} {tape : ProbComp �
   simp only [Factorizes, evalDist_bind] at h ⊢
   rw [h, bind_assoc]
 
+/-! ## The answer-irrelevant step commute (the framework induction step)
+
+The inductive heart of a tape factorization is: at a query whose per-step draw does *not* consult
+the tape, the front tape commutes past the step. This is the abstract, state-shape-independent form
+of that step — it takes the per-continuation factorization as a hypothesis (the inductive
+hypothesis) and concludes the factorization for one more leading answer-irrelevant step. Drawing and
+read steps are handled by their own (scheme-specific) splice/commute; this is the
+*answer-irrelevant* case, which is fully generic. -/
+
+/-- **Answer-irrelevant step commutes past the front tape.** An answer-irrelevant step
+`step : ProbComp (Ans × S)` (a query whose answer-draw does not consult the front tape) composed
+with a deferred continuation `defCont` factors as the front tape `tape : ProbComp τ` drawn first,
+followed by a tape-threaded continuation:
+
+* `defCont a s' : ProbComp (γ × S)` is the deferred continuation after the step;
+* `tapeCont a (s', t) : ProbComp (γ × ρ)` is its tape-consuming variant, threading the tape `t`;
+* `proj : γ × ρ → γ × S` discards the spent-tape suffix on output.
+
+Given the per-continuation factorization `hcont` (supplied by the inductive hypothesis), the leading
+answer-irrelevant step commutes past the front draw block: the continuation is rewritten by `hcont`
+under the step bind (`evalDist_bind_congr_left`), the front tape commutes past the answer-irrelevant
+step (`evalDist_bind_comm`), and the inner step bind is re-associated into the mapped tape-step form
+(`bind_map_left`/`map_bind`). This is the genuine framework content of a tape factorization's
+non-drawing case; see
+`FiatShamirWithAbort.evalDist_tapePreserving_step_commute` for the worked Fiat–Shamir instance
+(`tape := drawList (ids.commit pk sk) L`, `S := DeferredReadState …`). -/
+theorem evalDist_step_commute_tape {γ S Ans τ ρ : Type}
+    (step : ProbComp (Ans × S)) (tape : ProbComp τ)
+    (proj : γ × ρ → γ × S)
+    (defCont : Ans → S → ProbComp (γ × S))
+    (tapeCont : Ans → S × τ → ProbComp (γ × ρ))
+    (hcont : ∀ (a : Ans) (s' : S),
+      𝒟[defCont a s'] = 𝒟[tape >>= fun t => proj <$> tapeCont a (s', t)]) :
+    𝒟[step >>= fun p => defCont p.1 p.2] =
+      𝒟[tape >>= fun t =>
+          proj <$>
+            (((fun p : Ans × S => (p.1, (p.2, t))) <$> step) >>= fun p => tapeCont p.1 p.2)] := by
+  classical
+  rw [evalDist_bind_congr_left step (fun p => defCont p.1 p.2)
+    (fun p => tape >>= fun t => proj <$> tapeCont p.1 (p.2, t)) (fun p => hcont p.1 p.2)]
+  rw [evalDist_bind_comm step tape (fun p t => proj <$> tapeCont p.1 (p.2, t))]
+  refine evalDist_bind_congr_left tape _ _ (fun t => ?_)
+  rw [bind_map_left, map_bind]
+
+/-! ## State-relation transfer for expected output functionals
+
+The value-substitution lemmas of deferred sampling (e.g. "the recorded read list of the run is
+independent of the rejected-draw content of the start state") are instances of a single generic
+fact: an expected output functional through `simulateQ impl` of a `StateT σ ProbComp` handler is
+equal at two start states related by `Rel`, provided every query step transfers `Rel` to its
+continuation and the functional is `Rel`-invariant. -/
+
+/-- **State-relation transfer for an expected output functional.** Let
+`impl : QueryImpl spec (StateT σ ProbComp)` and let `Rel : σ → σ → Prop` be a relation on the
+handler state. Suppose:
+
+* every query step transfers `Rel`: for `Rel`-related start states and any `Rel`-invariant
+  continuation functional `K`, the per-query expected `K` agrees at the two states (`hstep`);
+* the output functional `F : γ → σ → ℝ≥0∞` is `Rel`-invariant (`hF`).
+
+Then the run-level expected output `∑' z, Pr[= z | (simulateQ impl oa).run s] * F z.1 z.2` agrees at
+`Rel`-related start states `s₁`, `s₂`. The proof inducts on `oa`: at `pure` the output is the start
+state (`hF` applies); at a query bind the step's expected continuation functional is itself
+`Rel`-invariant by the inductive hypothesis, so `hstep` closes the step.
+
+This is the generic value-substitution engine; a scheme discharges `hstep` by its per-query run
+shapes. See `FiatShamirWithAbort.deferredDrawRead_run_count_dl_invariant` for the worked instance
+(the recorded read-list multiplicity is invariant under the start drawn-list and bad-flag). -/
+theorem tsum_probOutput_simulateQ_run_mul_of_rel
+    {ι : Type} {spec : OracleSpec ι} {σ : Type}
+    (impl : QueryImpl spec (StateT σ ProbComp))
+    {γ : Type} (oa : OracleComp spec γ)
+    (Rel : σ → σ → Prop)
+    (hstep : ∀ (t : spec.Domain) (s₁ s₂ : σ), Rel s₁ s₂ →
+      ∀ (K : spec.Range t → σ → ℝ≥0∞),
+        (∀ (b : spec.Range t) (t₁ t₂ : σ), Rel t₁ t₂ → K b t₁ = K b t₂) →
+        (∑' p : spec.Range t × σ, Pr[= p | (impl t).run s₁] * K p.1 p.2)
+          = ∑' p : spec.Range t × σ, Pr[= p | (impl t).run s₂] * K p.1 p.2) :
+    ∀ (F : γ → σ → ℝ≥0∞), (∀ (g : γ) (s₁ s₂ : σ), Rel s₁ s₂ → F g s₁ = F g s₂) →
+      ∀ (s₁ s₂ : σ), Rel s₁ s₂ →
+        (∑' z : γ × σ, Pr[= z | (simulateQ impl oa).run s₁] * F z.1 z.2)
+          = ∑' z : γ × σ, Pr[= z | (simulateQ impl oa).run s₂] * F z.1 z.2 := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro F hF s₁ s₂ hs
+      simp only [simulateQ_pure, StateT.run_pure, tsum_probOutput_pure_mul]
+      exact hF a s₁ s₂ hs
+  | query_bind t ob ih =>
+      intro F hF s₁ s₂ hs
+      simp only [simulateQ_bind, simulateQ_spec_query, StateT.run_bind, tsum_probOutput_bind_mul]
+      set K : spec.Range t → σ → ℝ≥0∞ := fun b u =>
+        ∑' z : γ × σ, Pr[= z | (simulateQ impl (ob b)).run u] * F z.1 z.2 with hK
+      have hKinv : ∀ (b : spec.Range t) (t₁ t₂ : σ), Rel t₁ t₂ → K b t₁ = K b t₂ :=
+        fun b t₁ t₂ ht => ih b F hF t₁ t₂ ht
+      exact hstep t s₁ s₂ hs K hKinv
+
 end OracleComp.DeferredSampling
