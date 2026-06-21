@@ -224,6 +224,206 @@ def sampleInBall (p : Params) (seed : CommitHashBytes p) : Rq :=
       (Array.replicate ringDegree 0) 8 0
   Vector.ofFn fun i => coeffs.getD i.val 0
 
+/-! ## Structural output bounds for the rejection samplers
+
+The following lemmas extract the structural value ranges of the rejection samplers from their fuel
+recursion. They are the facts the abstract `Primitives.Laws` sampler-bound fields require, and are
+consumed by the `concrete_*` theorems in `Concrete/Laws.lean`. -/
+
+set_option maxRecDepth 4000
+
+/-- The ML-DSA centered infinity norm `polyNorm` agrees with the backend-generic
+`LatticeCrypto.cInfNorm`. -/
+private theorem polyNorm_eq_cInfNorm' (f : Rq) : polyNorm f = LatticeCrypto.cInfNorm f := by
+  unfold polyNorm normOps LatticeCrypto.cInfNorm LatticeCrypto.zmodPolyNormOps
+    LatticeCrypto.normOpsOfCenteredView
+  rfl
+
+open LatticeCrypto in
+/-- After a `set!`, the defaulted lookup at any index is either the freshly written value or the
+prior defaulted lookup. -/
+private theorem getD_set!_or {α : Type*} [Inhabited α] (a : Array α) (i : ℕ) (v d : α) (j : ℕ) :
+    (a.set! i v).getD j d = v ∨ (a.set! i v).getD j d = a.getD j d := by
+  simp only [Array.set!, Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds]
+  by_cases heq : i = j <;> by_cases hj : j < a.size <;> simp [heq, hj]
+
+/-- One `sampleInBallStep` only writes a previously stored value (`out.getD chosen 0`) and a sign
+`±1`, so if every defaulted entry of `out` lies in `{0, 1, -1}` then so does every defaulted entry
+of the updated accumulator. -/
+private theorem sampleInBallStep_mem (stream : ByteArray) (signs i : ℕ) (out : Array Coeff)
+    (pos signIdx : ℕ)
+    (hInv : ∀ j, (out.getD j 0 = 0 ∨ out.getD j 0 = 1 ∨ out.getD j 0 = -1)) (j : ℕ) :
+    (sampleInBallStep stream signs i out pos signIdx).1.getD j 0 = 0 ∨
+      (sampleInBallStep stream signs i out pos signIdx).1.getD j 0 = 1 ∨
+      (sampleInBallStep stream signs i out pos signIdx).1.getD j 0 = -1 := by
+  unfold sampleInBallStep
+  set chosen := (sampleInBallFindChosen stream i stream.size pos).1 with hc
+  set out1 := out.set! i (out.getD chosen 0) with ho1
+  set sign : Coeff := if ((signs / 2 ^ signIdx) % 2) = 0 then (1 : Coeff) else (-1 : Coeff) with hs
+  have hsignPM1 : sign = 0 ∨ sign = 1 ∨ sign = -1 := by
+    rw [hs]; split <;> tauto
+  have hout1 : ∀ j, (out1.getD j 0 = 0 ∨ out1.getD j 0 = 1 ∨ out1.getD j 0 = -1) := by
+    intro j
+    rcases getD_set!_or out i (out.getD chosen 0) 0 j with h | h
+    · rw [ho1, h]; exact hInv chosen
+    · rw [ho1, h]; exact hInv j
+  rcases getD_set!_or out1 chosen sign 0 j with h | h
+  · rw [h]; exact hsignPM1
+  · rw [h]; exact hout1 j
+
+/-- The `sampleInBall` accumulator only ever holds values in `{0, 1, -1}` (every defaulted entry),
+by fuel induction on the outer challenge loop, starting from the all-zero accumulator. -/
+private theorem sampleInBallLoop_mem (stream : ByteArray) (signs hi : ℕ) :
+    ∀ (fuel i : ℕ) (out : Array Coeff) (pos signIdx : ℕ),
+      (∀ j, (out.getD j 0 = 0 ∨ out.getD j 0 = 1 ∨ out.getD j 0 = -1)) →
+      ∀ j, (sampleInBallLoop stream signs hi fuel i out pos signIdx).getD j 0 = 0 ∨
+        (sampleInBallLoop stream signs hi fuel i out pos signIdx).getD j 0 = 1 ∨
+        (sampleInBallLoop stream signs hi fuel i out pos signIdx).getD j 0 = -1
+  | 0, _, out, _, _, hInv, j => by simpa [sampleInBallLoop] using hInv j
+  | fuel + 1, i, out, pos, signIdx, hInv, j => by
+    unfold sampleInBallLoop
+    by_cases hlt : i < hi
+    · simp only [hlt, if_true]
+      exact sampleInBallLoop_mem stream signs hi fuel (i + 1) _ _ _
+        (fun j => sampleInBallStep_mem stream signs i out pos signIdx hInv j) j
+    · simp only [hlt, if_false]
+      exact hInv j
+
+/-- Every coefficient of `sampleInBall` lies in `{0, 1, -1}`. -/
+theorem sampleInBall_coeff_mem (p : Params) (seed : CommitHashBytes p) (i : Fin ringDegree) :
+    (sampleInBall p seed).get i = 0 ∨ (sampleInBall p seed).get i = 1 ∨
+      (sampleInBall p seed).get i = -1 := by
+  unfold sampleInBall
+  simp only [Vector.get_ofFn]
+  apply sampleInBallLoop_mem
+  intro j
+  left
+  rw [Array.getD_eq_getD_getElem?]
+  by_cases hj : j < ringDegree <;> simp [hj]
+
+/-- `sampleInBall` has centered infinity norm at most `1` (coefficients in `{-1, 0, +1}`). -/
+theorem sampleInBall_norm (p : Params) (seed : CommitHashBytes p) :
+    polyNorm (sampleInBall p seed) ≤ 1 := by
+  rw [polyNorm_eq_cInfNorm', LatticeCrypto.cInfNorm_le_iff]
+  intro i
+  rcases sampleInBall_coeff_mem p seed i with h | h | h <;> rw [h] <;> decide
+
+/-- After a `push`, the defaulted lookup at any index is either the pushed value or the prior
+defaulted lookup. -/
+private theorem getD_push_or {α : Type*} [Inhabited α] (a : Array α) (v d : α) (j : ℕ) :
+    (a.push v).getD j d = v ∨ (a.push v).getD j d = a.getD j d := by
+  simp only [Array.getD_eq_getD_getElem?, Array.getElem?_push]
+  by_cases h : j < a.size <;> by_cases h2 : j = a.size <;> simp [h, h2]
+
+/-- Predicate: casting every defaulted entry of an integer array into `Coeff` yields a centered
+representative of absolute value at most `eta`. Working at the `Coeff` level here sidesteps any
+`2 * eta < modulus` side condition: in the inactive `eta ∉ {2, 4}` case the array stays all-zero and
+the cast of `0` has centered representative `0`. -/
+private def EtaInv (eta : ℕ) (c : Array ℤ) : Prop :=
+  ∀ j, (LatticeCrypto.centeredRepr (((c.getD j 0 : ℤ) : Coeff))).natAbs ≤ eta
+
+/-- A conditional push of a value whose `Coeff` cast is centered-bounded by `eta` (whenever the
+guard holds) preserves `EtaInv`. -/
+private theorem EtaInv_condPush (eta : ℕ) (c : Array ℤ) (v : ℤ) (cond : Prop) [Decidable cond]
+    (hc : EtaInv eta c)
+    (hv : cond → (LatticeCrypto.centeredRepr ((v : Coeff))).natAbs ≤ eta) :
+    EtaInv eta (if cond then c.push v else c) := by
+  intro j
+  split
+  · rename_i hcond
+    rcases getD_push_or c v 0 j with h | h
+    · rw [h]; exact hv hcond
+    · rw [h]; exact hc j
+  · exact hc j
+
+set_option maxRecDepth 4000 in
+/-- One `rejEtaStep` only pushes values whose `Coeff` cast is centered-bounded by `eta` (in the
+`eta = 2` and `eta = 4` branches; in any other case it pushes nothing). So `EtaInv eta` is preserved
+by a step. -/
+private theorem rejEtaStep_mem (eta byte : ℕ) (coeffs : Array ℤ)
+    (hInv : EtaInv eta coeffs) : EtaInv eta (rejEtaStep eta byte coeffs) := by
+  unfold rejEtaStep
+  have hb2 : ∀ (tt : ℕ), tt < 15 →
+      (LatticeCrypto.centeredRepr
+        ((((2 : ℤ) - ((tt - (Nat.shiftRight (205 * tt) 10) * 5 : ℕ) : ℤ)) : ℤ) : Coeff)).natAbs ≤ 2
+        := by decide
+  have hb4 : ∀ (tt : ℕ), tt < 9 →
+      (LatticeCrypto.centeredRepr ((((4 : ℤ) - (tt : ℤ)) : ℤ) : Coeff)).natAbs ≤ 4 := by decide
+  set t0 := byte &&& 0x0F
+  set t1 := Nat.shiftRight byte 4
+  split
+  · -- eta = 2
+    rename_i he2; subst he2
+    refine EtaInv_condPush 2 _ _ _ (EtaInv_condPush 2 _ _ _ hInv ?_) ?_
+    · exact fun hcond => hb2 t0 hcond.1
+    · exact fun hcond => hb2 t1 hcond.1
+  · split
+    · rename_i he4; subst he4
+      refine EtaInv_condPush 4 _ _ _ (EtaInv_condPush 4 _ _ _ hInv ?_) ?_
+      · exact fun hcond => hb4 t0 hcond.1
+      · exact fun hcond => hb4 t1 hcond.1
+    · exact hInv
+
+/-- `EtaInv eta` is preserved through the whole `rejEtaCoeffsAux` fuel recursion. -/
+private theorem rejEtaCoeffsAux_mem (eta : ℕ) (stream : ByteArray) :
+    ∀ (fuel : ℕ) (coeffs : Array ℤ) (pos : ℕ),
+      EtaInv eta coeffs → EtaInv eta (rejEtaCoeffsAux eta stream fuel coeffs pos)
+  | 0, coeffs, _, hInv => by simpa [rejEtaCoeffsAux] using hInv
+  | fuel + 1, coeffs, pos, hInv => by
+    unfold rejEtaCoeffsAux
+    by_cases h : coeffs.size < ringDegree ∧ pos < stream.size
+    · simp only [h]
+      exact rejEtaCoeffsAux_mem eta stream fuel _ _ (rejEtaStep_mem eta _ coeffs hInv)
+    · simp only [h, ite_false]
+      exact hInv
+
+/-- The centered representative of the `Coeff` cast of `0` has absolute value `0`. -/
+private theorem centeredRepr_zero_cast_le (eta : ℕ) :
+    (LatticeCrypto.centeredRepr (((0 : ℤ) : Coeff))).natAbs ≤ eta := by
+  have : LatticeCrypto.centeredRepr (((0 : ℤ) : Coeff)) = 0 := by decide
+  rw [this]; exact Nat.zero_le eta
+
+private theorem EtaInv_mkEmpty (eta : ℕ) : EtaInv eta (Array.mkEmpty ringDegree) := by
+  intro j
+  have hz : (Array.mkEmpty ringDegree : Array ℤ).getD j 0 = 0 := by
+    rw [Array.getD_eq_getD_getElem?]; simp
+  rw [hz]
+  exact centeredRepr_zero_cast_le eta
+
+/-- The `requireFullEtaSample` guard preserves `EtaInv`: it returns either the input array or the
+empty fallback, both `EtaInv`. -/
+private theorem requireFullEtaSample_mem (eta : ℕ) (coeffs : Array ℤ) (hInv : EtaInv eta coeffs) :
+    EtaInv eta (requireFullEtaSample coeffs) := by
+  unfold requireFullEtaSample
+  split
+  · exact hInv
+  · -- `panic!` reduces to the `Inhabited` default for `Array ℤ`, the empty array (size `0`), so
+    -- every defaulted lookup is `0`.
+    intro j
+    rw [Array.getD_eq_getD_getElem?, Array.getElem?_eq_none_iff.mpr (Nat.zero_le j),
+      Option.getD_none]
+    exact centeredRepr_zero_cast_le eta
+
+/-- Every coefficient of `sampleEtaPoly eta seed nonce` has centered infinity norm at most `eta`. -/
+theorem sampleEtaPoly_norm (eta : ℕ) (seed : Bytes 64) (nonce : ℕ) :
+    polyNorm (sampleEtaPoly eta seed nonce) ≤ eta := by
+  rw [polyNorm_eq_cInfNorm', LatticeCrypto.cInfNorm_le_iff]
+  intro i
+  unfold sampleEtaPoly
+  simp only [Vector.get_ofFn]
+  exact requireFullEtaSample_mem eta _ (rejEtaCoeffsAux_mem eta _ _ _ _ (EtaInv_mkEmpty eta)) i.val
+
+/-- `expandS` produces secret vectors with every coefficient bounded by `η`. -/
+theorem expandS_bound (rhoPrime : Bytes 64) (p : Params) :
+    polyVecBounded (expandS rhoPrime p).1 p.eta ∧
+      polyVecBounded (expandS rhoPrime p).2 p.eta := by
+  constructor <;>
+  · rw [polyVecBounded, polyVecNorm, LatticeCrypto.PolyVec.cInfNorm_le_iff]
+    intro j
+    unfold expandS
+    simp only [Vector.get_ofFn]
+    exact sampleEtaPoly_norm p.eta rhoPrime _
+
 /-! ## Hash wrappers -/
 
 /-- Hash the transcript and message into the 64-byte `μ` value used by ML-DSA. -/

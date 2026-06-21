@@ -35,22 +35,30 @@ roundtrip in `Concrete/Encoding.lean`:
   inverted by `simpleBitUnpackPoly` and `w1Encode` is injective. This matches the restated
   abstract `Set.InjOn` field, whose validity set is exactly the image of `highBits`.
 
+Two further sampler-bound fields are discharged from the fuel-recursive rejection samplers in
+`Concrete/Sampling.lean` (whose structural output ranges are now provable by fuel induction):
+
+- `sampleInBall_norm` (`concrete_sampleInBall_norm`): `SampleInBall(c̃)`'s accumulator only ever
+  holds the values `0`, `+1`, `-1`, so every coefficient has centered absolute value at most `1`.
+- `expandS_bound` (`concrete_expandS_bound`): `ExpandS(ρ')` pushes only the centered `η`-bounded
+  values (`2 - u` for `η = 2`, `4 - t` for `η = 4`; nothing otherwise), so every coefficient of
+  both secret vectors has centered absolute value at most `η`.
+
 ## What is NOT proven (and why)
 
-Five fields remain, in two honest categories — there are no longer any false-as-stated fields:
+Three fields remain, in two honest categories — there are no longer any false-as-stated fields:
 
-1. **Blocked by opaque rejection samplers** (structurally true, but not extractable here):
-   - `sampleInBall_norm`, `sampleInBall_smul_bound`: `concretePrimitives.sampleInBall` only
-     writes the values `0`, `+1`, `-1` into its accumulator, so the output is structurally
-     bounded by `1` (and has exactly `τ` nonzero `±1` coefficients). However, it does so through
-     an imperative `Id.run` block with an unbounded `while !found` rejection loop reading an
-     `@[extern]` SHAKE-256 stream and `Array.set!` updates. Establishing the invariant through
-     that do-block is a separate imperative verification effort with no supporting infrastructure
-     in the tree, so it is isolated.
-   - `expandS_bound`: `concretePrimitives.expandS` samples each coefficient through
-     `rejEtaCoeffs`, another `while`-loop rejection sampler over the SHAKE stream (with zero
-     padding on short streams). The pushed values (`2 - u`, `4 - t`) lie in `[-η, η]`, but the
-     bound is again gated behind the opaque do-block, so it is isolated for the same reason.
+1. **Blocked by missing convolution-norm infrastructure** (structurally true, but not yet
+   extractable):
+   - `sampleInBall_smul_bound`: `SampleInBall(c̃)` has at most `τ` nonzero coefficients, each `±1`,
+     so for `‖s‖∞ ≤ η` the challenge–secret product `c · s` satisfies `‖c · s‖∞ ≤ τ · η = β`. This
+     is true (it also holds trivially when `β ≥ q/2`, since a centered representative never exceeds
+     `q/2`). Proving it requires two pieces of theory not present in the tree: (a) the
+     `ℓ₁`-norm count `‖SampleInBall(c̃)‖₁ ≤ τ` (a Fisher–Yates nonzero-count invariant over the
+     τ challenge writes), and (b) a generic negacyclic-convolution bound
+     `‖f · g‖∞ ≤ ‖f‖₁ · ‖g‖∞` over centered `ZMod` representatives (whose proof must track the
+     *true integer* convolution sum to avoid modular wraparound). Both are isolated here pending
+     that convolution-norm infrastructure.
 
 2. **Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
    from any fixed deterministic instantiation — see their docstrings in `Primitives.lean`):
@@ -218,28 +226,49 @@ theorem concrete_w1Encode_injOn (hp : p.isApproved) :
     exact highBits_coeff_val_lt_width p hp r c
   · exact MLDSA.Concrete.w1Encode_injOn p
 
+/-! ## Sampler-bound fields (now provable from the fuel-recursive samplers)
+
+The `sampleInBall` and `expandS` rejection samplers are defined by fuel-bounded structural recursion
+(see `Concrete/Sampling.lean`), which exposes equation lemmas. Their structural output ranges are
+banked as `sampleInBall_norm` and `expandS_bound` there; the `concrete_*` wrappers below state them
+at the `concretePrimitives` interface. -/
+
+/-- `Primitives.Laws.sampleInBall_norm` for the concrete instance: `SampleInBall(c̃)` has centered
+infinity norm at most `1` (its coefficients lie in `{-1, 0, +1}`). -/
+theorem concrete_sampleInBall_norm (cTilde : CommitHashBytes p) :
+    polyNorm ((concretePrimitives p).sampleInBall cTilde) ≤ 1 :=
+  MLDSA.Concrete.sampleInBall_norm p cTilde
+
+/-- `Primitives.Laws.expandS_bound` for the concrete instance: `ExpandS(ρ')` produces secret vectors
+with every coefficient bounded by `η`. -/
+theorem concrete_expandS_bound (rhoPrime : Bytes 64) :
+    polyVecBounded ((concretePrimitives p).expandS rhoPrime).1 p.eta ∧
+      polyVecBounded ((concretePrimitives p).expandS rhoPrime).2 p.eta :=
+  MLDSA.Concrete.expandS_bound rhoPrime p
+
 /-! ## `Primitives.Laws` status for `concretePrimitives` (no full witness — by design)
 
-Ten `Primitives.Laws` fields are now **proven axiom-clean** for the concrete instance at any
+Twelve `Primitives.Laws` fields are now **proven axiom-clean** for the concrete instance at any
 approved parameter set: the eight algebraic fields (`concrete_transform`,
 `concrete_high_low_decomp`, `concrete_lowBits_bound`, `concrete_hide_low`,
 `concrete_highBitsShift_injective`, `concrete_useHint_makeHint`, `concrete_power2Round_decomp`,
-`concrete_power2Round_bound`) plus the two byte-encoding fields `concrete_expandMask_bound` and
-`concrete_w1Encode_injOn`. The latter two discharge the `expandMask_bound` and `w1Encode_injective`
-fields under their sound restatements (the `γ₁` mask bound and the `Set.InjOn` commitment-range
-injectivity), which hold for the concrete instance — there are no longer any false-as-stated fields.
+`concrete_power2Round_bound`); the two byte-encoding fields `concrete_expandMask_bound` and
+`concrete_w1Encode_injOn`; and the two sampler-bound fields `concrete_sampleInBall_norm` and
+`concrete_expandS_bound` (extracted by fuel induction from the structural-recursion samplers in
+`Concrete/Sampling.lean`). There are no longer any false-as-stated fields.
 
 We deliberately do **not** assemble a full `Primitives.Laws (concretePrimitives p) …` witness,
-because five fields remain undischarged here for reasons that are not statement bugs:
+because three fields remain undischarged here for reasons that are not statement bugs:
 
-* `sampleInBall_norm` / `expandS_bound` / `sampleInBall_smul_bound`: structurally true but blocked
-  by opaque `@[extern]` SHAKE rejection samplers (unbounded `while`-loop `Id.run` do-blocks), with
-  no imperative verification infrastructure in the tree.
+* `sampleInBall_smul_bound`: structurally true (and trivially true once `β ≥ q/2`), but blocked by
+  missing convolution-norm infrastructure — it needs the `ℓ₁` nonzero-count `‖SampleInBall‖₁ ≤ τ`
+  and a generic negacyclic-convolution bound `‖f · g‖∞ ≤ ‖f‖₁ · ‖g‖∞` over centered `ZMod`
+  representatives. Isolated pending that theory.
 * `expandS_honest_sampling` / `keyVector_t0_determined`: inherent ROM modeling assumptions, left
   abstract (see their docstrings in `Primitives.lean`).
 
-A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-blocked SHAKE
-and ROM fields, which is unsound to bank. The ten proven `concrete_*` lemmas above stand on their
-own and are safe to consume. -/
+A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-blocked
+convolution and ROM fields, which is unsound to bank. The twelve proven `concrete_*` lemmas above
+stand on their own and are safe to consume. -/
 
 end MLDSA.Concrete
