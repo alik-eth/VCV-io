@@ -239,6 +239,12 @@ theorem cInfNorm_le_halfq (p : Poly (ZMod q) n) : cInfNorm p ≤ q / 2 :=
   have hneg : (-f).get i = -(f.get i) := Poly.get_neg f i
   rw [hneg, centeredRepr_natAbs_neg]
 
+/-- The `ℓ₁` norm expands as the sum of the centered absolute values of the coefficients. -/
+theorem l1Norm_eq_sum (p : Poly (ZMod q) n) :
+    l1Norm p = ∑ i : Fin n, (centeredRepr (p.get i)).natAbs := by
+  unfold l1Norm l1NormOf
+  rfl
+
 theorem l1Norm_le_of_cInfNorm_le {p : Poly (ZMod q) n} {b : ℕ}
     (h : cInfNorm p ≤ b) : l1Norm p ≤ n * b := by
   unfold l1Norm l1NormOf

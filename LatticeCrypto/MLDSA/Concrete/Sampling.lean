@@ -308,6 +308,188 @@ theorem sampleInBall_norm (p : Params) (seed : CommitHashBytes p) :
   intro i
   rcases sampleInBall_coeff_mem p seed i with h | h | h <;> rw [h] <;> decide
 
+/-! ### `ℓ₁`-norm count for `sampleInBall`
+
+`SampleInBall` writes exactly `τ` nonzero `±1` coefficients (the outer loop runs `τ` Fisher–Yates
+steps), so its centered `ℓ₁` norm — the number of nonzero coefficients — is at most `τ`. The proof
+is a fuel induction tracking the nonzero count of the accumulator. Each step writes a previously
+fresh diagonal slot `i` and a sign slot `chosen ≤ i`, increasing the count by exactly one; the
+freshness invariant "all slots `≥ i` are zero" makes the per-step `+1` bound exact. -/
+
+/-- The number-of-nonzero-coefficients functional on the accumulator: the `ℓ₁` norm of the
+materialized polynomial equals `countNZ` of the underlying array. -/
+private def countNZ (out : Array Coeff) : ℕ :=
+  ∑ j ∈ Finset.range ringDegree, (LatticeCrypto.centeredRepr (out.getD j 0)).natAbs
+
+/-- A defaulted lookup at the just-written slot returns the written value. -/
+private theorem getD_set!_self (out : Array Coeff) (a : ℕ) (ha : a < out.size) (u : Coeff) :
+    (out.set! a u).getD a 0 = u := by
+  simp only [Array.set!, Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds, ha, if_true,
+    Option.getD_some]
+
+/-- A defaulted lookup away from the just-written slot is unchanged. -/
+private theorem getD_set!_ne (out : Array Coeff) (a : ℕ) (u : Coeff) (j : ℕ) (hj : j ≠ a) :
+    (out.set! a u).getD j 0 = out.getD j 0 := by
+  simp only [Array.set!, Array.getD_eq_getD_getElem?, Array.getElem?_setIfInBounds]
+  rw [if_neg (fun h => hj h.symm)]
+
+/-- Exact additive single-slot update law for `countNZ`, stated to avoid `ℕ` subtraction. -/
+private theorem countNZ_set!_eq (out : Array Coeff) (a : ℕ) (ha : a < ringDegree)
+    (hsize : out.size = ringDegree) (u : Coeff) :
+    countNZ (out.set! a u) + (LatticeCrypto.centeredRepr (out.getD a 0)).natAbs
+      = countNZ out + (LatticeCrypto.centeredRepr u).natAbs := by
+  unfold countNZ
+  have hmem : a ∈ Finset.range ringDegree := Finset.mem_range.mpr ha
+  rw [← Finset.add_sum_erase _ _ hmem, ← Finset.add_sum_erase _ _ hmem]
+  have ha' : a < out.size := by rw [hsize]; exact ha
+  rw [getD_set!_self out a ha' u]
+  have hrest : ∑ x ∈ (Finset.range ringDegree).erase a,
+        (LatticeCrypto.centeredRepr ((out.set! a u).getD x 0)).natAbs
+      = ∑ x ∈ (Finset.range ringDegree).erase a,
+          (LatticeCrypto.centeredRepr (out.getD x 0)).natAbs :=
+    Finset.sum_congr rfl (fun x hx => by
+      rw [getD_set!_ne out a u x (Finset.ne_of_mem_erase hx)])
+  rw [hrest]; ring
+
+/-- The chosen slot index returned by the find loop is always `≤ i`. -/
+private theorem findChosen_le (stream : ByteArray) (i : ℕ) :
+    ∀ (fuel pos : ℕ), (sampleInBallFindChosen stream i fuel pos).1 ≤ i := by
+  intro fuel
+  induction fuel with
+  | zero => intro pos; simp [sampleInBallFindChosen]
+  | succ f ih =>
+    intro pos; unfold sampleInBallFindChosen
+    by_cases hb : (getByteD stream pos).toNat ≤ i
+    · simp only [hb, if_true]
+    · simp only [hb, if_false]; exact ih (pos + 1)
+
+/-- One challenge step preserves the accumulator size. -/
+private theorem step_size (stream : ByteArray) (signs i : ℕ) (out : Array Coeff) (pos signIdx : ℕ)
+    (hsize : out.size = ringDegree) :
+    (sampleInBallStep stream signs i out pos signIdx).1.size = ringDegree := by
+  unfold sampleInBallStep; simp [Array.set!, hsize]
+
+/-- One challenge step preserves the freshness invariant: slots strictly above `i` stay zero. -/
+private theorem step_fresh (stream : ByteArray) (signs i : ℕ) (out : Array Coeff) (pos signIdx : ℕ)
+    (hfresh : ∀ j, i ≤ j → out.getD j 0 = 0) :
+    ∀ j, i + 1 ≤ j → (sampleInBallStep stream signs i out pos signIdx).1.getD j 0 = 0 := by
+  intro j hj
+  unfold sampleInBallStep
+  set chosen := (sampleInBallFindChosen stream i stream.size pos).1 with hc
+  have hchosen_le : chosen ≤ i := findChosen_le stream i stream.size pos
+  rw [getD_set!_ne _ chosen _ j (by omega), getD_set!_ne _ i _ j (by omega)]
+  exact hfresh j (by omega)
+
+set_option maxRecDepth 4000 in
+/-- One challenge step increases the nonzero count by at most one (in fact exactly one), given the
+freshness of slot `i`. -/
+private theorem step_countNZ_le (stream : ByteArray) (signs i : ℕ) (out : Array Coeff)
+    (pos signIdx : ℕ) (hi : i < ringDegree) (hsize : out.size = ringDegree)
+    (hfresh : (LatticeCrypto.centeredRepr (out.getD i 0)).natAbs = 0) :
+    countNZ (sampleInBallStep stream signs i out pos signIdx).1 ≤ countNZ out + 1 := by
+  have hchosen_le : (sampleInBallFindChosen stream i stream.size pos).1 ≤ i :=
+    findChosen_le stream i stream.size pos
+  unfold sampleInBallStep
+  rcases hfind : sampleInBallFindChosen stream i stream.size pos with ⟨chosen, pos'⟩
+  rw [hfind] at hchosen_le
+  simp only at hchosen_le ⊢
+  have hchosen_lt : chosen < ringDegree := lt_of_le_of_lt hchosen_le hi
+  set w := out.getD chosen 0 with hw
+  set out1 := out.set! i w with ho1
+  set sign : Coeff := if ((signs / 2 ^ signIdx) % 2) = 0 then (1 : Coeff) else (-1 : Coeff) with hs
+  have hsize1 : out1.size = ringDegree := by rw [ho1]; simp [Array.set!, hsize]
+  have hsignAbs : (LatticeCrypto.centeredRepr sign).natAbs = 1 := by rw [hs]; split <;> decide
+  have e1 : countNZ out1 = countNZ out + (LatticeCrypto.centeredRepr w).natAbs := by
+    have := countNZ_set!_eq out i hi hsize w
+    rw [hfresh, add_zero] at this; rw [ho1, this]
+  have e2 := countNZ_set!_eq out1 chosen hchosen_lt hsize1 sign
+  by_cases hic : chosen = i
+  · have hwi : w = out.getD i 0 := by rw [hw, hic]
+    have hwAbs : (LatticeCrypto.centeredRepr w).natAbs = 0 := by rw [hwi]; exact hfresh
+    have hgc : out1.getD chosen 0 = w := by
+      rw [hic, ho1]; exact getD_set!_self out i (by rw [hsize]; exact hi) w
+    rw [hgc, hwAbs, add_zero] at e2
+    rw [e2, e1, hwAbs, add_zero, hsignAbs]
+  · have hgc : out1.getD chosen 0 = w := by rw [ho1]; exact getD_set!_ne out i w chosen hic
+    rw [hgc] at e2; rw [e1, hsignAbs] at e2; omega
+
+set_option maxRecDepth 4000 in
+/-- The challenge loop increases the nonzero count by at most the number of indices it processes. -/
+private theorem loop_countNZ_le (stream : ByteArray) (signs hi : ℕ) (hhi : hi ≤ ringDegree) :
+    ∀ (fuel i : ℕ) (out : Array Coeff) (pos signIdx : ℕ),
+      out.size = ringDegree → (∀ j, i ≤ j → out.getD j 0 = 0) →
+      countNZ (sampleInBallLoop stream signs hi fuel i out pos signIdx) ≤ countNZ out + (hi - i)
+  | 0, i, out, pos, signIdx, _, _ => by simp [sampleInBallLoop]
+  | fuel + 1, i, out, pos, signIdx, hsize, hfresh => by
+    unfold sampleInBallLoop
+    by_cases hlt : i < hi
+    · simp only [hlt, if_true]
+      set stepOut := (sampleInBallStep stream signs i out pos signIdx) with hstep
+      have hi' : i < ringDegree := lt_of_lt_of_le hlt hhi
+      have hfreshi : (LatticeCrypto.centeredRepr (out.getD i 0)).natAbs = 0 := by
+        rw [hfresh i (le_refl i)]; decide
+      have hstepsize : stepOut.1.size = ringDegree := step_size stream signs i out pos signIdx hsize
+      have hstepfresh : ∀ j, i + 1 ≤ j → stepOut.1.getD j 0 = 0 :=
+        step_fresh stream signs i out pos signIdx hfresh
+      have hcount : countNZ stepOut.1 ≤ countNZ out + 1 :=
+        step_countNZ_le stream signs i out pos signIdx hi' hsize hfreshi
+      have ih := loop_countNZ_le stream signs hi hhi fuel (i + 1) stepOut.1 stepOut.2.1 stepOut.2.2
+        hstepsize hstepfresh
+      calc countNZ (sampleInBallLoop stream signs hi fuel (i + 1)
+            stepOut.1 stepOut.2.1 stepOut.2.2)
+          ≤ countNZ stepOut.1 + (hi - (i + 1)) := ih
+        _ ≤ (countNZ out + 1) + (hi - (i + 1)) := by omega
+        _ = countNZ out + (hi - i) := by omega
+    · simp only [hlt, if_false]
+      exact Nat.le_add_right _ _
+
+/-- The all-zero accumulator has nonzero count zero. -/
+private theorem countNZ_replicate_zero : countNZ (Array.replicate ringDegree (0 : Coeff)) = 0 := by
+  unfold countNZ
+  apply Finset.sum_eq_zero
+  intro j _
+  rw [Array.getD_eq_getD_getElem?]
+  simp only [Array.getElem?_replicate]
+  by_cases h : j < ringDegree <;> simp only [h, if_true, if_false, Option.getD] <;> decide
+
+/-- The `ℓ₁` norm of a polynomial materialized by `Vector.ofFn` from a defaulted-array lookup is the
+nonzero count of that array. -/
+private theorem l1Norm_ofFn_eq_countNZ (coeffs : Array Coeff) :
+    LatticeCrypto.l1Norm (Vector.ofFn (fun i : Fin ringDegree => coeffs.getD i.val 0))
+      = countNZ coeffs := by
+  rw [LatticeCrypto.l1Norm_eq_sum]
+  unfold countNZ
+  rw [Finset.sum_range (fun j => (LatticeCrypto.centeredRepr (coeffs.getD j 0)).natAbs)]
+  apply Finset.sum_congr rfl
+  intro i _
+  rw [Vector.get_ofFn]
+
+set_option maxRecDepth 4000 in
+/-- The challenge loop, run from the all-zero accumulator over `[ringDegree - τ, ringDegree)`,
+produces an array with nonzero count at most `τ`. -/
+private theorem countNZ_sampleInBallLoop_le (stream : ByteArray) (signs : ℕ) (p : Params) :
+    countNZ (sampleInBallLoop stream signs ringDegree p.tau (ringDegree - p.tau)
+      (Array.replicate ringDegree 0) 8 0) ≤ p.tau := by
+  have hsize : (Array.replicate ringDegree (0 : Coeff)).size = ringDegree :=
+    Array.size_replicate
+  have hfresh : ∀ j, ringDegree - p.tau ≤ j →
+      (Array.replicate ringDegree (0 : Coeff)).getD j 0 = 0 := by
+    intro j _
+    rw [Array.getD_eq_getD_getElem?]; simp only [Array.getElem?_replicate]
+    by_cases h : j < ringDegree <;> simp only [h, if_true, if_false, Option.getD]
+  have hloop := loop_countNZ_le stream signs ringDegree (le_refl _) p.tau (ringDegree - p.tau)
+    (Array.replicate ringDegree 0) 8 0 hsize hfresh
+  rw [countNZ_replicate_zero, zero_add] at hloop
+  exact le_trans hloop (by omega)
+
+/-- `sampleInBall` has centered `ℓ₁` norm at most `τ` (it writes at most `τ` nonzero `±1`
+coefficients). This is the count needed for the challenge-product bound `‖c · s‖∞ ≤ τ · η`. -/
+theorem sampleInBall_l1Norm (p : Params) (seed : CommitHashBytes p) :
+    LatticeCrypto.l1Norm (sampleInBall p seed) ≤ p.tau := by
+  unfold sampleInBall
+  rw [l1Norm_ofFn_eq_countNZ]
+  exact countNZ_sampleInBallLoop_le _ _ p
+
 /-- After a `push`, the defaulted lookup at any index is either the pushed value or the prior
 defaulted lookup. -/
 private theorem getD_push_or {α : Type*} [Inhabited α] (a : Array α) (v d : α) (j : ℕ) :
