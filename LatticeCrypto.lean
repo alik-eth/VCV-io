@@ -30,6 +30,7 @@ import LatticeCrypto.MLDSA.Arithmetic
 import LatticeCrypto.MLDSA.Concrete.Encoding
 import LatticeCrypto.MLDSA.Concrete.FFI
 import LatticeCrypto.MLDSA.Concrete.Instance
+import LatticeCrypto.MLDSA.Concrete.Laws
 import LatticeCrypto.MLDSA.Concrete.NTT
 import LatticeCrypto.MLDSA.Concrete.Rounding
 import LatticeCrypto.MLDSA.Concrete.Sampling
