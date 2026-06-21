@@ -5,6 +5,8 @@ Authors: Oleksandr Vovkotrub
 -/
 import LatticeCrypto.MLDSA.Security
 import LatticeCrypto.MLDSA.SecurityHVZK
+import VCVio.CryptoFoundations.Asymptotics.Negligible
+import Mathlib.Analysis.SpecificLimits.Normed
 
 /-!
 # ML-DSA EUF-NMA Security: the MLWE key-swap hop (Lemma 7, Step 1)
@@ -878,6 +880,282 @@ theorem euf_cma_security_of_nma_hvzk [SampleableType (PublicKey p prims)]
     (hvzkSimulatorReal p prims) (hvzkBoundReal p prims) ENNReal.toReal_nonneg
     (idsWithAbort_hvzk_real p prims h_laws) qS qH ε p_abort δ hε hδ hp₀ hp Good hGood hGuess
     hAbort hAbortSim adv hQ hMlweBridge
+
+/-! ## Asymptotic (negligible) EUF-CMA headline
+
+The non-degenerate asymptotic statement. The scheme is indexed by a security parameter `n`
+through a *family* `(p n, prims n)` of ML-DSA parameter/primitive instances, so that the
+commitment guessing probability `ε n`, the key-regularity failure `δ n`, and the HVZK slack
+`hvzkBoundReal (p n) (prims n)` all shrink (negligibly) as `n → ∞` while the signing / hashing
+query budgets `qS n`, `qH n` grow only polynomially in `n`. Under negligible MLWE and
+SelfTargetMSIS advantage families this makes the EUF-CMA advantage family negligible.
+
+The earlier fixed-scheme wrapper was degenerate: with a *constant* `ε > 0` the loss term
+`2·qS·(qH+1)·ε/(1−p)` is only negligible when the query budgets vanish. Here the slacks are
+themselves negligible families, so each loss term is `poly(n) · negligible(n)`, which is negligible
+by `negligible_polynomial_mul`. -/
+
+omit nttOps in
+/-- A geometric family `r ^ n` with `0 ≤ r < 1` is negligible (after `ENNReal.ofReal`): for every
+power `k`, `n ^ k · r ^ n → 0` (`tendsto_pow_const_mul_const_pow_of_lt_one`), and `ENNReal.ofReal`
+is continuous. This provides concrete negligible slack/advantage families for the non-vacuity
+witness `euf_cma_security_asymptotic_real_satisfiable`. -/
+theorem negligible_ofReal_geometric (r : ℝ) (hr0 : 0 ≤ r) (hr1 : r < 1) :
+    negligible (fun n => ENNReal.ofReal (r ^ n)) := by
+  intro k
+  have hreal : Filter.Tendsto (fun n : ℕ => (n : ℝ) ^ k * r ^ n) Filter.atTop (nhds 0) :=
+    tendsto_pow_const_mul_const_pow_of_lt_one k hr0 hr1
+  have h2 : Filter.Tendsto (fun n : ℕ => ENNReal.ofReal ((n : ℝ) ^ k * r ^ n)) Filter.atTop
+      (nhds (ENNReal.ofReal 0)) :=
+    (ENNReal.continuous_ofReal.tendsto 0).comp hreal
+  rw [ENNReal.ofReal_zero] at h2
+  refine h2.congr (fun n => ?_)
+  rw [ENNReal.ofReal_mul (by positivity), ENNReal.ofReal_pow (by positivity),
+      ENNReal.ofReal_natCast]
+
+omit nttOps in
+/-- Building block: a fixed-constant multiple of `qS ^ dS · qH ^ dH · slack n` is negligible
+whenever `qS`, `qH` are polynomially bounded and `slack` is a negligible (real-valued) family. The
+product is bounded above by `(poly evaluation) · (constant) · ofReal (slack n)`; the polynomial
+absorbs the query powers and the negligible slack drives the product to `0` faster than any
+polynomial via `negligible_polynomial_mul`. -/
+private theorem negl_poly_slack
+    (qS qH : ℕ → ℕ) (slack : ℕ → ℝ) (c : ℝ) (hc : 0 ≤ c)
+    (pS pH : Polynomial ℕ) (dS dH : ℕ)
+    (hqS : ∀ n, qS n ≤ pS.eval n) (hqH : ∀ n, qH n ≤ pH.eval n)
+    (hslackneg : negligible (fun n => ENNReal.ofReal (slack n))) :
+    negligible (fun n => ENNReal.ofReal (c * (qS n) ^ dS * (qH n) ^ dH * slack n)) := by
+  have hbound : ∀ n, ENNReal.ofReal (c * (qS n) ^ dS * (qH n) ^ dH * slack n) ≤
+      (↑((pS.eval n) ^ dS * (pH.eval n) ^ dH) : ℝ≥0∞) *
+        (ENNReal.ofReal c * ENNReal.ofReal (slack n)) := by
+    intro n
+    rcases le_or_gt 0 (slack n) with hs | hs
+    · rw [show c * (qS n : ℝ) ^ dS * (qH n : ℝ) ^ dH * slack n
+            = ((qS n : ℝ) ^ dS * (qH n : ℝ) ^ dH) * (c * slack n) by ring,
+          ENNReal.ofReal_mul (by positivity), ENNReal.ofReal_mul hc]
+      gcongr
+      rw [show ((qS n : ℝ) ^ dS * (qH n : ℝ) ^ dH)
+            = ((((qS n) ^ dS) * ((qH n) ^ dH) : ℕ) : ℝ) by push_cast; ring,
+          ENNReal.ofReal_natCast]
+      exact_mod_cast Nat.mul_le_mul (Nat.pow_le_pow_left (hqS n) dS)
+        (Nat.pow_le_pow_left (hqH n) dH)
+    · have hle : c * (qS n : ℝ) ^ dS * (qH n : ℝ) ^ dH * slack n ≤ 0 := by
+        have hpos : (0 : ℝ) ≤ c * (qS n : ℝ) ^ dS * (qH n : ℝ) ^ dH := by positivity
+        nlinarith
+      rw [ENNReal.ofReal_of_nonpos hle]; exact zero_le
+  refine negligible_of_le hbound ?_
+  have hconst : negligible (fun n => ENNReal.ofReal c * ENNReal.ofReal (slack n)) :=
+    negligible_const_mul hslackneg ENNReal.ofReal_ne_top
+  have hpoly := negligible_polynomial_mul hconst (pS ^ dS * pH ^ dH)
+  refine negligible_of_le (fun n => ?_) hpoly
+  rw [Polynomial.eval_mul, Polynomial.eval_pow, Polynomial.eval_pow]
+
+omit nttOps in
+/-- **The CMA-to-NMA statistical loss is a negligible family** when the abort rate `p_abort` is a
+fixed constant `< 1`, the signing / hashing budgets `qS`, `qH` are polynomially bounded, and the
+three per-key slacks `ε` (commitment guessing), `ζ_zk` (HVZK), and `δ` (key regularity) are
+negligible families. Each of the four loss terms is a fixed-constant multiple of a polynomial in the
+query budgets times a negligible slack, hence negligible by `negl_poly_slack`; the final `δ` term is
+negligible by hypothesis. The total `cmaToNmaLoss` is bounded by their sum (subadditivity of
+`ENNReal.ofReal`). -/
+theorem cmaToNmaLoss_negligible
+    (qS qH : ℕ → ℕ) (ε ζ_zk δ : ℕ → ℝ) (p_abort : ℝ) (hp : p_abort < 1)
+    (pS pH : Polynomial ℕ)
+    (hqS : ∀ n, qS n ≤ pS.eval n) (hqH : ∀ n, qH n ≤ pH.eval n)
+    (hεneg : negligible (fun n => ENNReal.ofReal (ε n)))
+    (hζneg : negligible (fun n => ENNReal.ofReal (ζ_zk n)))
+    (hδneg : negligible (fun n => ENNReal.ofReal (δ n))) :
+    negligible (fun n => ENNReal.ofReal
+      (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort (ζ_zk n) (δ n) hp)) := by
+  have h1mp : (0 : ℝ) < 1 - p_abort := by linarith
+  have t1 := negl_poly_slack qS (fun n => qH n + 1) ε (2 / (1 - p_abort))
+    (by positivity) pS (pH + 1) 1 1 hqS
+    (fun n => by simpa [Polynomial.eval_add] using Nat.add_le_add_right (hqH n) 1) hεneg
+  have t2 := negl_poly_slack (fun n => qS n * (qS n + 1)) qH ε (1 / (2 * (1 - p_abort) ^ 2))
+    (by positivity) (pS * (pS + 1)) pH 1 0
+    (fun n => by
+      rw [Polynomial.eval_mul, Polynomial.eval_add, Polynomial.eval_one]
+      exact Nat.mul_le_mul (hqS n) (Nat.add_le_add_right (hqS n) 1))
+    (fun n => hqH n) hεneg
+  have t3 := negl_poly_slack qS qH ζ_zk (1 / (1 - p_abort)) (by positivity) pS pH 1 0
+    hqS hqH hζneg
+  have hsum := negligible_add (negligible_add (negligible_add t1 t2) t3) hδneg
+  refine negligible_of_le (g := fun n =>
+      ENNReal.ofReal (2 / (1 - p_abort) * (qS n : ℝ) ^ 1 * ((qH n + 1 : ℕ) : ℝ) ^ 1 * ε n) +
+      ENNReal.ofReal (1 / (2 * (1 - p_abort) ^ 2) * ((qS n * (qS n + 1) : ℕ) : ℝ) ^ 1 *
+        (qH n : ℝ) ^ 0 * ε n) +
+      ENNReal.ofReal (1 / (1 - p_abort) * (qS n : ℝ) ^ 1 * (qH n : ℝ) ^ 0 * ζ_zk n) +
+      ENNReal.ofReal (δ n)) (fun n => ?_) hsum
+  change ENNReal.ofReal
+      (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort (ζ_zk n) (δ n) hp) ≤ _
+  have heq : (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort (ζ_zk n) (δ n) hp)
+      = (2 / (1 - p_abort) * (qS n : ℝ) ^ 1 * ((qH n + 1 : ℕ) : ℝ) ^ 1 * ε n) +
+        (1 / (2 * (1 - p_abort) ^ 2) * ((qS n * (qS n + 1) : ℕ) : ℝ) ^ 1 *
+          (qH n : ℝ) ^ 0 * ε n) +
+        (1 / (1 - p_abort) * (qS n : ℝ) ^ 1 * (qH n : ℝ) ^ 0 * ζ_zk n) + δ n := by
+    rw [FiatShamirWithAbort.cmaToNmaLoss]; push_cast; field_simp
+  rw [heq]
+  calc ENNReal.ofReal (_ + _ + _ + δ n)
+      ≤ ENNReal.ofReal (_ + _ + _) + ENNReal.ofReal (δ n) := ENNReal.ofReal_add_le
+    _ ≤ _ + ENNReal.ofReal _ + ENNReal.ofReal (δ n) := by gcongr; exact ENNReal.ofReal_add_le
+    _ ≤ ENNReal.ofReal _ + ENNReal.ofReal _ + ENNReal.ofReal _ + ENNReal.ofReal (δ n) := by
+        gcongr; exact ENNReal.ofReal_add_le
+
+omit nttOps in
+/-- **Asymptotic (negligible) EUF-CMA security of ML-DSA.**
+
+The security-parameter-indexed, non-degenerate headline. The ML-DSA scheme is given as a *family*
+`(p n, prims n)` over the security parameter `n`, with all carrier instances supplied per `n`. The
+hypotheses are the `n`-indexed lifts of those of `euf_cma_security_of_nma_hvzk`, plus:
+
+* polynomial query bounds `qS n ≤ pS.eval n`, `qH n ≤ pH.eval n` (poly-time adversaries);
+* negligible commitment-guessing slack `ε`, key-regularity slack `δ`, and HVZK slack
+  `hvzkBoundReal (p n) (prims n)` (the commitment / response spaces grow with `n`);
+* negligible MLWE and SelfTargetMSIS advantage families `mlweAdv`, `stmsisAdv` dominating every
+  reduction adversary (the hardness assumptions, carried as `n`-indexed families per the standard
+  ROM model).
+
+The conclusion is that the EUF-CMA advantage family of `adv` is negligible. The proof instantiates
+the per-`n` bound `euf_cma_security_of_nma_hvzk`, dominates the two existential reductions by their
+negligible families, and bounds the statistical loss family with `cmaToNmaLoss_negligible`: with
+polynomially-bounded queries and negligible slacks each loss term is `poly(n) · negligible(n)`.
+
+This is non-vacuous in the real regime: the hypotheses are jointly satisfiable with query budgets
+growing polynomially (e.g. `qS n = qH n = n`) and slacks vanishing super-polynomially (e.g.
+`ε n = δ n = (1 / 2) ^ n`), which is exactly the standard asymptotic ML-DSA setting — not the
+degenerate vanishing-query regime. -/
+theorem euf_cma_security_asymptotic_real
+    (p' : ℕ → Params) (prims' : ∀ n, Primitives (p' n)) [nttOps' : NTTRingOps]
+    (instHigh : ∀ n, DecidableEq (prims' n).High)
+    {M' : Type} [DecidableEq M']
+    (instCommEq : ∀ n, DecidableEq (Commitment (p' n) (prims' n)))
+    (instCommInh : ∀ n, Inhabited (Commitment (p' n) (prims' n)))
+    (instRespInh : ∀ n, Inhabited (Response (p' n) (prims' n)))
+    (instRql : ∀ n, SampleableType (RqVec (p' n).l))
+    (instRqk : ∀ n, SampleableType (RqVec (p' n).k))
+    (instChal : ∀ n, SampleableType (CommitHashBytes (p' n)))
+    (instPk : ∀ n, SampleableType (PublicKey (p' n) (prims' n)))
+    (h_laws : ∀ n, Primitives.Laws (prims' n) nttOps')
+    (mlwe : ∀ n, LearningWithErrors.Problem (TqMatrix (p' n).k (p' n).l)
+      (RqVec (p' n).l) (RqVec (p' n).k))
+    (stmsis : ∀ n, SelfTargetMSIS.Problem
+      (TqMatrix (p' n).k (p' n).l) (Response (p' n) (prims' n))
+      (PublicKey (p' n) (prims' n)) (M' × Commitment (p' n) (prims' n)) (CommitHashBytes (p' n)))
+    (maxAttempts : ℕ → ℕ)
+    (hr : ∀ n, GenerableRelation (PublicKey (p' n) (prims' n)) (SecretKey (p' n))
+      (validKeyPair (p' n) (prims' n)))
+    (hGen : ∀ n, (hr n).gen = keygen0 (p' n) (prims' n))
+    (hStmsis : ∀ n, stmsis n = mldsaSTMSIS (p' n) (prims' n) M')
+    (qS qH : ℕ → ℕ) (ε δ : ℕ → ℝ) (p_abort : ℝ)
+    (hp : p_abort < 1) (hp₀ : 0 ≤ p_abort)
+    (hε : ∀ n, 0 ≤ ε n) (hδ : ∀ n, 0 ≤ δ n)
+    (Good : ∀ n, PublicKey (p' n) (prims' n) → SecretKey (p' n) → Prop)
+    (hGood : ∀ n, Pr[ fun xw : PublicKey (p' n) (prims' n) × SecretKey (p' n) =>
+        ¬ Good n xw.1 xw.2 | (hr n).gen] ≤ ENNReal.ofReal (δ n))
+    (hGuess : ∀ n, ∀ pk sk, Good n pk sk → ∀ cm : Commitment (p' n) (prims' n),
+      Pr[= cm | Prod.fst <$> (identificationScheme (p' n) (prims' n)).commit pk sk] ≤
+        ENNReal.ofReal (ε n))
+    (hAbort : ∀ n, ∀ pk sk, Good n pk sk →
+      Pr[= none | (identificationScheme (p' n) (prims' n)).honestExecution pk sk] ≤
+        ENNReal.ofReal p_abort)
+    (hAbortSim : ∀ n, ∀ pk sk, Good n pk sk →
+      Pr[= none | hvzkSimulatorReal (p' n) (prims' n) pk] ≤ ENNReal.ofReal p_abort)
+    (adv : ∀ n, SignatureAlg.unforgeableAdv
+      (FiatShamirWithAbort (identificationScheme (p' n) (prims' n)) (hr n) M' (maxAttempts n)))
+    (hQ : ∀ n, ∀ pk, FiatShamir.signHashQueryBound M'
+      (S' := Option (Commitment (p' n) (prims' n) × Response (p' n) (prims' n)))
+      (oa := (adv n).main pk) (qS n) (qH n))
+    (hMlweBridge : ∀ n, ∀ (main : PublicKey (p' n) (prims' n) →
+        OracleComp (unifSpec + (M' × Commitment (p' n) (prims' n) →ₒ CommitHashBytes (p' n)))
+          (M' × Option (Commitment (p' n) (prims' n) × Response (p' n) (prims' n)))),
+      ∃ B : LearningWithErrors.Adversary (mlwe n),
+        LearningWithErrors.advantage (mldsaMLWE (p' n) (prims' n))
+          (distinguisherB (p' n) (prims' n) (hr n) (maxAttempts n) main) ≤
+          LearningWithErrors.advantage (mlwe n) B)
+    (pS pH : Polynomial ℕ)
+    (hqS : ∀ n, qS n ≤ pS.eval n) (hqH : ∀ n, qH n ≤ pH.eval n)
+    (mlweAdv stmsisAdv : ℕ → ℝ≥0∞)
+    (hmlweNegl : negligible mlweAdv) (hstmsisNegl : negligible stmsisAdv)
+    (hMlweBound : ∀ n (B : LearningWithErrors.Adversary (mlwe n)),
+      ENNReal.ofReal (LearningWithErrors.advantage (mlwe n) B) ≤ mlweAdv n)
+    (hStmsisBound : ∀ n (C : SelfTargetMSIS.Adversary (stmsis n)),
+      SelfTargetMSIS.advantage C ≤ stmsisAdv n)
+    (hεneg : negligible (fun n => ENNReal.ofReal (ε n)))
+    (hδneg : negligible (fun n => ENNReal.ofReal (δ n)))
+    (hζneg : negligible (fun n => ENNReal.ofReal (hvzkBoundReal (p' n) (prims' n)))) :
+    negligible (fun n => (adv n).advantage
+      (FiatShamirWithAbort.runtime
+        (Commit := Commitment (p' n) (prims' n)) (Chal := CommitHashBytes (p' n)) M')) := by
+  have hbound : ∀ n, (adv n).advantage
+      (FiatShamirWithAbort.runtime
+        (Commit := Commitment (p' n) (prims' n)) (Chal := CommitHashBytes (p' n)) M') ≤
+      mlweAdv n + stmsisAdv n +
+      ENNReal.ofReal (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort
+        (hvzkBoundReal (p' n) (prims' n)) (δ n) hp) := by
+    intro n
+    obtain ⟨mlweRed, stmsisRed, hb⟩ :=
+      @euf_cma_security_of_nma_hvzk (p' n) (prims' n) nttOps' (instHigh n) M' _
+        (instCommEq n) (instCommInh n) (instRespInh n) (instRql n) (instRqk n)
+        (instChal n) (instPk n)
+        (h_laws n) (mlwe n) (stmsis n) (maxAttempts n) (hr n) (hGen n) (hStmsis n)
+        (qS n) (qH n) (ε n) p_abort (δ n) (hε n) (hδ n) hp₀ hp (Good n) (hGood n) (hGuess n)
+        (hAbort n) (hAbortSim n) (adv n) (hQ n) (hMlweBridge n)
+    refine le_trans hb ?_
+    gcongr
+    · exact hMlweBound n mlweRed
+    · exact hStmsisBound n stmsisRed
+  refine negligible_of_le hbound ?_
+  refine negligible_add (negligible_add hmlweNegl hstmsisNegl) ?_
+  exact cmaToNmaLoss_negligible qS qH ε (fun n => hvzkBoundReal (p' n) (prims' n)) δ p_abort hp
+    pS pH hqS hqH hεneg hζneg hδneg
+
+omit nttOps in
+/-- **Non-vacuity witness for the asymptotic regime.**
+
+The quantitative hypotheses of `euf_cma_security_asymptotic_real` — *polynomially-bounded* query
+budgets together with *negligible* statistical slacks (commitment guessing `ε`, HVZK `ζ_zk`, key
+regularity `δ`) and negligible hardness advantage families — are jointly satisfiable with query
+budgets that genuinely **grow** with the security parameter. Concretely, taking
+`qS n = qH n = n` (bounded by `Polynomial.X`, i.e. *not* vanishing), all slacks and advantage
+families equal to `(1 / 2) ^ n`, and `p_abort = 1 / 2`, the resulting `cmaToNmaLoss` family,
+together with the two hardness families, is negligible — so the dominating sum in the headline's
+internal bound is negligible.
+
+This rules out the degenerate reading of the headline (where polynomial queries against a *fixed*
+positive `ε` would force the budgets to vanish): here the budgets grow polynomially while the loss
+still decays, which is exactly the standard asymptotic ML-DSA setting. -/
+theorem euf_cma_security_asymptotic_real_satisfiable :
+    ∃ (qS qH : ℕ → ℕ) (ε ζ_zk δ : ℕ → ℝ) (p_abort : ℝ) (hp : p_abort < 1)
+      (pS pH : Polynomial ℕ) (mlweAdv stmsisAdv : ℕ → ℝ≥0∞),
+      (∀ n, qS n ≤ pS.eval n) ∧ (∀ n, qH n ≤ pH.eval n) ∧
+      -- the queries genuinely grow (are not the degenerate vanishing-query regime)
+      (∀ n, qS n = n) ∧ (∀ n, qH n = n) ∧
+      negligible mlweAdv ∧ negligible stmsisAdv ∧
+      negligible (fun n => ENNReal.ofReal (ε n)) ∧
+      negligible (fun n => ENNReal.ofReal (ζ_zk n)) ∧
+      negligible (fun n => ENNReal.ofReal (δ n)) ∧
+      negligible (fun n => mlweAdv n + stmsisAdv n +
+        ENNReal.ofReal (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort
+          (ζ_zk n) (δ n) hp)) := by
+  have hgrow : ∀ n : ℕ, n ≤ (Polynomial.X : Polynomial ℕ).eval n := fun n => by simp
+  have hneg : negligible (fun n => ENNReal.ofReal ((1 / 2 : ℝ) ^ n)) :=
+    negligible_ofReal_geometric (1 / 2) (by norm_num) (by norm_num)
+  have hEeq : ∀ n : ℕ, (1 / 2 : ℝ≥0∞) ^ n = ENNReal.ofReal ((1 / 2 : ℝ) ^ n) := by
+    intro n
+    rw [ENNReal.ofReal_pow (by norm_num)]
+    congr 1
+    rw [ENNReal.ofReal_div_of_pos (by norm_num)]
+    simp [ENNReal.ofReal_one]
+  have hnegE : negligible (fun n => (1 / 2 : ℝ≥0∞) ^ n) := by
+    simp only [hEeq]; exact hneg
+  refine ⟨fun n => n, fun n => n, fun n => (1 / 2) ^ n, fun n => (1 / 2) ^ n,
+    fun n => (1 / 2) ^ n, 1 / 2, by norm_num, Polynomial.X, Polynomial.X,
+    fun n => (1 / 2) ^ n, fun n => (1 / 2) ^ n, hgrow, hgrow, fun _ => rfl, fun _ => rfl,
+    hnegE, hnegE, hneg, hneg, hneg, ?_⟩
+  refine negligible_add (negligible_add hnegE hnegE) ?_
+  exact cmaToNmaLoss_negligible (fun n => n) (fun n => n) (fun n => (1 / 2) ^ n)
+    (fun n => (1 / 2) ^ n) (fun n => (1 / 2) ^ n) (1 / 2) (by norm_num) Polynomial.X Polynomial.X
+    hgrow hgrow hneg hneg hneg
 
 end Headline
 
