@@ -52,18 +52,28 @@ def expandSeed (seed : Bytes 32) (p : Params) : Bytes 32 × Bytes 64 × Bytes 32
 
 /-! ## Uniform rejection sampling in `Tq` -/
 
-private def rejUniformCoeffs (stream : ByteArray) : Array Coeff := Id.run do
-  let mut coeffs : Array Coeff := Array.mkEmpty ringDegree
-  let mut pos := 0
-  while coeffs.size < ringDegree && pos + 3 ≤ stream.size do
-    let b0 := (getByteD stream pos).toNat
-    let b1 := (getByteD stream (pos + 1)).toNat
-    let b2 := (getByteD stream (pos + 2)).toNat
-    let t := (b0 + Nat.shiftLeft b1 8 + Nat.shiftLeft b2 16) &&& 0x7FFFFF
-    if t < modulus then
-      coeffs := coeffs.push (t : Coeff)
-    pos := pos + 3
-  return coeffs
+/-- Fuel-bounded structural recursion replacing the `while` rejection loop of `rejUniformCoeffs`.
+Each iteration reads three bytes at `pos`, forms the 23-bit candidate, pushes it when it is below
+the modulus, and advances `pos` by 3. The loop guard
+`coeffs.size < ringDegree ∧ pos + 3 ≤ stream.size`
+is replicated exactly; `fuel` is decremented every iteration and a safe upper bound (`stream.size`)
+guarantees the recursion never exhausts before the guard fails on valid inputs. -/
+private def rejUniformCoeffsAux (stream : ByteArray) :
+    Nat → Array Coeff → Nat → Array Coeff
+  | 0, coeffs, _ => coeffs
+  | fuel + 1, coeffs, pos =>
+    if coeffs.size < ringDegree ∧ pos + 3 ≤ stream.size then
+      let b0 := (getByteD stream pos).toNat
+      let b1 := (getByteD stream (pos + 1)).toNat
+      let b2 := (getByteD stream (pos + 2)).toNat
+      let t := (b0 + Nat.shiftLeft b1 8 + Nat.shiftLeft b2 16) &&& 0x7FFFFF
+      let coeffs := if t < modulus then coeffs.push (t : Coeff) else coeffs
+      rejUniformCoeffsAux stream fuel coeffs (pos + 3)
+    else
+      coeffs
+
+private def rejUniformCoeffs (stream : ByteArray) : Array Coeff :=
+  rejUniformCoeffsAux stream stream.size (Array.mkEmpty ringDegree) 0
 
 private def requireFullUniformSample (coeffs : Array Coeff) : Array Coeff :=
   if _h : coeffs.size = ringDegree then
@@ -89,27 +99,47 @@ def expandA (rho : Bytes 32) (p : Params) : TqMatrix p.k p.l :=
 
 /-! ## `η`-bounded secret sampling -/
 
-private def rejEtaCoeffs (eta : Nat) (stream : ByteArray) : Array ℤ := Id.run do
-  let mut coeffs : Array ℤ := Array.mkEmpty ringDegree
-  let mut pos := 0
-  while coeffs.size < ringDegree && pos < stream.size do
-    let byte := (getByteD stream pos).toNat
-    let t0 := byte &&& 0x0F
-    let t1 := Nat.shiftRight byte 4
-    if eta = 2 then
-      if t0 < 15 && coeffs.size < ringDegree then
+/-- Body of one `rejEtaCoeffs` iteration: split the byte into two nibbles and conditionally push the
+centered `η`-bounded values, re-checking the `ringDegree` capacity before each push exactly as the
+original `while` body does. -/
+private def rejEtaStep (eta : Nat) (byte : Nat) (coeffs : Array ℤ) : Array ℤ :=
+  let t0 := byte &&& 0x0F
+  let t1 := Nat.shiftRight byte 4
+  if eta = 2 then
+    let coeffs :=
+      if t0 < 15 ∧ coeffs.size < ringDegree then
         let u0 := t0 - Nat.shiftRight (205 * t0) 10 * 5
-        coeffs := coeffs.push ((2 : ℤ) - (u0 : ℤ))
-      if t1 < 15 && coeffs.size < ringDegree then
-        let u1 := t1 - Nat.shiftRight (205 * t1) 10 * 5
-        coeffs := coeffs.push ((2 : ℤ) - (u1 : ℤ))
-    else if eta = 4 then
-      if t0 < 9 && coeffs.size < ringDegree then
-        coeffs := coeffs.push ((4 : ℤ) - (t0 : ℤ))
-      if t1 < 9 && coeffs.size < ringDegree then
-        coeffs := coeffs.push ((4 : ℤ) - (t1 : ℤ))
-    pos := pos + 1
-  return coeffs
+        coeffs.push ((2 : ℤ) - (u0 : ℤ))
+      else coeffs
+    if t1 < 15 ∧ coeffs.size < ringDegree then
+      let u1 := t1 - Nat.shiftRight (205 * t1) 10 * 5
+      coeffs.push ((2 : ℤ) - (u1 : ℤ))
+    else coeffs
+  else if eta = 4 then
+    let coeffs :=
+      if t0 < 9 ∧ coeffs.size < ringDegree then
+        coeffs.push ((4 : ℤ) - (t0 : ℤ))
+      else coeffs
+    if t1 < 9 ∧ coeffs.size < ringDegree then
+      coeffs.push ((4 : ℤ) - (t1 : ℤ))
+    else coeffs
+  else coeffs
+
+/-- Fuel-bounded structural recursion replacing the `while` rejection loop of `rejEtaCoeffs`. The
+guard `coeffs.size < ringDegree ∧ pos < stream.size` and the per-iteration `pos` advance by 1 are
+replicated exactly; `fuel := stream.size` is a safe upper bound. -/
+private def rejEtaCoeffsAux (eta : Nat) (stream : ByteArray) :
+    Nat → Array ℤ → Nat → Array ℤ
+  | 0, coeffs, _ => coeffs
+  | fuel + 1, coeffs, pos =>
+    if coeffs.size < ringDegree ∧ pos < stream.size then
+      let byte := (getByteD stream pos).toNat
+      rejEtaCoeffsAux eta stream fuel (rejEtaStep eta byte coeffs) (pos + 1)
+    else
+      coeffs
+
+private def rejEtaCoeffs (eta : Nat) (stream : ByteArray) : Array ℤ :=
+  rejEtaCoeffsAux eta stream stream.size (Array.mkEmpty ringDegree) 0
 
 private def requireFullEtaSample (coeffs : Array ℤ) : Array ℤ :=
   if _h : coeffs.size = ringDegree then
@@ -141,6 +171,46 @@ def expandMask (rhoPrime : Bytes 64) (kappa : ℕ) (p : Params) : RqVec p.l :=
 private def shake256Prefix (input : ByteArray) (len : Nat) : ByteArray :=
   FFI.Hashing.shake256 input len.toUSize
 
+/-- Fuel-bounded structural recursion replacing the inner `while !found` rejection loop of
+`sampleInBall`. Each iteration reads the byte at `pos`, advances `pos` by 1, and stops as soon as a
+byte `b ≤ i` is found, returning that byte together with the next read position.
+`fuel := stream.size` is a safe upper bound; on valid SHAKE inputs a byte `≤ i` is always found
+before exhaustion. -/
+private def sampleInBallFindChosen (stream : ByteArray) (i : Nat) :
+    Nat → Nat → Nat × Nat
+  | 0, pos => (0, pos)
+  | fuel + 1, pos =>
+    let b := (getByteD stream pos).toNat
+    if b ≤ i then
+      (b, pos + 1)
+    else
+      sampleInBallFindChosen stream i fuel (pos + 1)
+
+/-- Body of one outer `sampleInBall` iteration: find a byte `≤ i`, perform the Fisher–Yates style
+swap-and-sign writes into the accumulator, and return the updated accumulator together with the
+advanced read position and sign index. This replicates the original `while` body's array updates
+exactly (`Array.set!` at index `i` then at index `chosen`). -/
+private def sampleInBallStep (stream : ByteArray) (signs : Nat) (i : Nat)
+    (out : Array Coeff) (pos signIdx : Nat) : Array Coeff × Nat × Nat :=
+  let (chosen, pos) := sampleInBallFindChosen stream i stream.size pos
+  let out := out.set! i (out.getD chosen 0)
+  let sign := if ((signs / 2 ^ signIdx) % 2) = 0 then (1 : Coeff) else (-1 : Coeff)
+  let out := out.set! chosen sign
+  (out, pos, signIdx + 1)
+
+/-- Fuel-bounded structural recursion replacing the outer `for i in [ringDegree - τ : ringDegree]`
+loop of `sampleInBall`. It walks the indices `i = lo, lo + 1, …, hi - 1` in order, threading the
+accumulator, read position, and sign index through `sampleInBallStep`. -/
+private def sampleInBallLoop (stream : ByteArray) (signs hi : Nat) :
+    Nat → Nat → Array Coeff → Nat → Nat → Array Coeff
+  | 0, _, out, _, _ => out
+  | fuel + 1, i, out, pos, signIdx =>
+    if i < hi then
+      let (out, pos, signIdx) := sampleInBallStep stream signs i out pos signIdx
+      sampleInBallLoop stream signs hi fuel (i + 1) out pos signIdx
+    else
+      out
+
 /-- FIPS 204 Algorithm 29. -/
 def sampleInBall (p : Params) (seed : CommitHashBytes p) : Rq :=
   let stream := shake256Prefix (vectorToByteArray seed) 4096
@@ -149,24 +219,9 @@ def sampleInBall (p : Params) (seed : CommitHashBytes p) : Rq :=
     for i in [0:8] do
       acc := acc + (getByteD stream i).toNat * 2 ^ (8 * i)
     return acc
-  let coeffs : Array Coeff := Id.run do
-    let mut out : Array Coeff := Array.replicate ringDegree 0
-    let mut pos := 8
-    let mut signIdx := 0
-    for i in [ringDegree - p.tau : ringDegree] do
-      let mut chosen := 0
-      let mut found := false
-      while !found do
-        let b := (getByteD stream pos).toNat
-        pos := pos + 1
-        if b ≤ i then
-          chosen := b
-          found := true
-      out := out.set! i (out.getD chosen 0)
-      let sign := if ((signs / 2 ^ signIdx) % 2) = 0 then (1 : Coeff) else (-1 : Coeff)
-      out := out.set! chosen sign
-      signIdx := signIdx + 1
-    return out
+  let coeffs : Array Coeff :=
+    sampleInBallLoop stream signs ringDegree p.tau (ringDegree - p.tau)
+      (Array.replicate ringDegree 0) 8 0
   Vector.ofFn fun i => coeffs.getD i.val 0
 
 /-! ## Hash wrappers -/
