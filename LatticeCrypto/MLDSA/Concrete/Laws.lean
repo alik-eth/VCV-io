@@ -44,26 +44,25 @@ Two further sampler-bound fields are discharged from the fuel-recursive rejectio
   values (`2 - u` for `η = 2`, `4 - t` for `η = 4`; nothing otherwise), so every coefficient of
   both secret vectors has centered absolute value at most `η`.
 
+A thirteenth field, the challenge-product bound, is also discharged from the convolution-norm
+infrastructure now present in the tree:
+
+- `sampleInBall_smul_bound` (`concrete_sampleInBall_smul_bound`): `SampleInBall(c̃)` has at most `τ`
+  nonzero `±1` coefficients, so for `‖s‖∞ ≤ η` the challenge–secret product `c · s` satisfies
+  `‖c · s‖∞ ≤ τ · η = β`. Assembled from the generic negacyclic-convolution infinity-norm bound
+  `‖f · g‖∞ ≤ ‖f‖₁ · ‖g‖∞` (`LatticeCrypto.cInfNorm_mul_le`, whose proof tracks the *true integer*
+  convolution sum to rule out modular wraparound, unconditional via a `q / 2` case split), the `ℓ₁`
+  count `‖SampleInBall(c̃)‖₁ ≤ τ` (`sampleInBall_l1Norm`, a Fisher–Yates nonzero-count fuel
+  induction), and the component law `(c • s).get j = c · sⱼ` (`coeffScalarVecMul_get`).
+
 ## What is NOT proven (and why)
 
-Three fields remain, in two honest categories — there are no longer any false-as-stated fields:
+Two fields remain, all in one honest category — there are no false-as-stated fields:
 
-1. **Blocked by missing convolution-norm infrastructure** (structurally true, but not yet
-   extractable):
-   - `sampleInBall_smul_bound`: `SampleInBall(c̃)` has at most `τ` nonzero coefficients, each `±1`,
-     so for `‖s‖∞ ≤ η` the challenge–secret product `c · s` satisfies `‖c · s‖∞ ≤ τ · η = β`. This
-     is true (it also holds trivially when `β ≥ q/2`, since a centered representative never exceeds
-     `q/2`). Proving it requires two pieces of theory not present in the tree: (a) the
-     `ℓ₁`-norm count `‖SampleInBall(c̃)‖₁ ≤ τ` (a Fisher–Yates nonzero-count invariant over the
-     τ challenge writes), and (b) a generic negacyclic-convolution bound
-     `‖f · g‖∞ ≤ ‖f‖₁ · ‖g‖∞` over centered `ZMod` representatives (whose proof must track the
-     *true integer* convolution sum to avoid modular wraparound). Both are isolated here pending
-     that convolution-norm infrastructure.
-
-2. **Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
-   from any fixed deterministic instantiation — see their docstrings in `Primitives.lean`):
-   - `expandS_honest_sampling`, `keyVector_t0_determined`: standard ROM idealizations of the
-     SHAKE XOFs (`ExpandSeed` / `ExpandS`). These are model assumptions, left abstract.
+**Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
+from any fixed deterministic instantiation — see their docstrings in `Primitives.lean`):
+- `expandS_honest_sampling`, `keyVector_t0_determined`: standard ROM idealizations of the
+  SHAKE XOFs (`ExpandSeed` / `ExpandS`). These are model assumptions, left abstract.
 
 The abstract `Primitives.Laws` statement is **not** modified by this file; the banked `concrete_*`
 theorems make explicit which concrete obligations are discharged and which remain.
@@ -246,29 +245,56 @@ theorem concrete_expandS_bound (rhoPrime : Bytes 64) :
       polyVecBounded ((concretePrimitives p).expandS rhoPrime).2 p.eta :=
   MLDSA.Concrete.expandS_bound rhoPrime p
 
+/-- `Primitives.Laws.sampleInBall_smul_bound` for the concrete instance: the challenge–secret
+product `c · sⱼ` has centered infinity norm at most `β = τ · η` whenever `‖s‖∞ ≤ η`. Assembled from
+the generic negacyclic-convolution bound `‖c · sⱼ‖∞ ≤ ‖c‖₁ · ‖sⱼ‖∞` (`cInfNorm_mul_le`), the
+challenge `ℓ₁` count `‖SampleInBall(c̃)‖₁ ≤ τ` (`sampleInBall_l1Norm`), and the component law
+`(c • s).get j = c * sⱼ` (`coeffScalarVecMul_get`). -/
+theorem concrete_sampleInBall_smul_bound
+    (cTilde : CommitHashBytes p) {k : ℕ} (s : RqVec k)
+    (hs : polyVecBounded s p.eta) :
+    polyVecNorm (concreteNTTRingOps.coeffScalarVecMul
+      ((concretePrimitives p).sampleInBall cTilde) s) ≤ p.beta := by
+  rw [polyVecNorm, LatticeCrypto.PolyVec.cInfNorm_le_iff]
+  intro j
+  rw [LatticeCrypto.TransformOps.coeffScalarVecMul_get (laws := concreteNTTRingLaws)]
+  change polyNorm _ ≤ p.beta
+  rw [polyNorm_eq_cInfNorm]
+  have hc : (concretePrimitives p).sampleInBall cTilde = MLDSA.Concrete.sampleInBall p cTilde := rfl
+  rw [hc]
+  refine le_trans
+    (LatticeCrypto.cInfNorm_mul_le (MLDSA.Concrete.sampleInBall p cTilde) (s.get j)) ?_
+  have hl1 : LatticeCrypto.l1Norm (MLDSA.Concrete.sampleInBall p cTilde) ≤ p.tau :=
+    MLDSA.Concrete.sampleInBall_l1Norm p cTilde
+  have hsj : LatticeCrypto.cInfNorm (s.get j) ≤ p.eta := by
+    have := (LatticeCrypto.PolyVec.cInfNorm_le_iff (ops := normOps)).mp hs j
+    rwa [← polyNorm_eq_cInfNorm]
+  calc LatticeCrypto.l1Norm (MLDSA.Concrete.sampleInBall p cTilde)
+        * LatticeCrypto.cInfNorm (s.get j)
+      ≤ p.tau * p.eta := Nat.mul_le_mul hl1 hsj
+    _ = p.beta := rfl
+
 /-! ## `Primitives.Laws` status for `concretePrimitives` (no full witness — by design)
 
-Twelve `Primitives.Laws` fields are now **proven axiom-clean** for the concrete instance at any
+Thirteen `Primitives.Laws` fields are now **proven axiom-clean** for the concrete instance at any
 approved parameter set: the eight algebraic fields (`concrete_transform`,
 `concrete_high_low_decomp`, `concrete_lowBits_bound`, `concrete_hide_low`,
 `concrete_highBitsShift_injective`, `concrete_useHint_makeHint`, `concrete_power2Round_decomp`,
 `concrete_power2Round_bound`); the two byte-encoding fields `concrete_expandMask_bound` and
-`concrete_w1Encode_injOn`; and the two sampler-bound fields `concrete_sampleInBall_norm` and
+`concrete_w1Encode_injOn`; the two sampler-bound fields `concrete_sampleInBall_norm` and
 `concrete_expandS_bound` (extracted by fuel induction from the structural-recursion samplers in
-`Concrete/Sampling.lean`). There are no longer any false-as-stated fields.
+`Concrete/Sampling.lean`); and the challenge-product bound `concrete_sampleInBall_smul_bound`
+(assembled from the generic negacyclic-convolution infinity-norm bound and the challenge `ℓ₁`
+count). There are no longer any false-as-stated fields.
 
 We deliberately do **not** assemble a full `Primitives.Laws (concretePrimitives p) …` witness,
-because three fields remain undischarged here for reasons that are not statement bugs:
+because two fields remain undischarged here for reasons that are not statement bugs:
 
-* `sampleInBall_smul_bound`: structurally true (and trivially true once `β ≥ q/2`), but blocked by
-  missing convolution-norm infrastructure — it needs the `ℓ₁` nonzero-count `‖SampleInBall‖₁ ≤ τ`
-  and a generic negacyclic-convolution bound `‖f · g‖∞ ≤ ‖f‖₁ · ‖g‖∞` over centered `ZMod`
-  representatives. Isolated pending that theory.
 * `expandS_honest_sampling` / `keyVector_t0_determined`: inherent ROM modeling assumptions, left
   abstract (see their docstrings in `Primitives.lean`).
 
-A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-blocked
-convolution and ROM fields, which is unsound to bank. The twelve proven `concrete_*` lemmas above
-stand on their own and are safe to consume. -/
+A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-abstract ROM
+fields, which is unsound to bank. The thirteen proven `concrete_*` lemmas above stand on their own
+and are safe to consume. -/
 
 end MLDSA.Concrete
