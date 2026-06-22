@@ -1298,6 +1298,56 @@ theorem evalDist_gpvSignBody_run_eq_gpvStepReal (pk : PK) (sk : SK) (msgs : ℕ 
   rw [map_eq_bind_pure_comp, bind_assoc]
   simp only [Function.comp_apply, pure_bind]
 
+open Classical in
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Programmed GPV signing-body cache splice (simulator signing query).** One programmed
+simulator signing-query body — the `signImpl` handler of `progGameRun`, which draws a fresh salt
+`r ← $ᵗ Salt`, forward-samples a short preimage `s ← domainSample pk`, programs the random-oracle
+cache entry `(r, msg) ↦ psf.eval pk s`, updates the preimage record, and returns `(r, s)` — has its
+recorded random-oracle *cache component* (with the salt draw front-loaded, and the returned
+signature and the auxiliary preimage record dropped) distributed exactly as the salt-prefixed
+concrete `signRunF` programmed step: draw the same fresh salt `r ← $ᵗ Salt`, then apply
+`gpvStepProg` at that `r`.
+
+This is the programmed-side dual of `evalDist_gpvSignBody_run_eq_gpvStepReal`, and the signing-step
+case of the *programmed* run-equality
+`progGameRun … = 𝒟[signRunF gpvStepProg c qSign …]` inside the residual
+`gpvRun_factorizes_signRunF`. It is *pinned* to the concrete `progGameRun` signing body and the
+concrete `gpvStepProg`: the cache transition `cache ↦ cache.cacheQuery (r, msgs n) (psf.eval pk s)`
+on both sides is the same, the salt draw is the same front-loaded `$ᵗ Salt`, and `domainSample` is
+the shared programming randomness. No probability-mass averaging is performed; the equality is the
+exact recasting of one inline simulator signing body — with its salt front-loaded — as one
+`signRunF` programmed step. The auxiliary preimage record `((Salt × M) → Option Domain)` of
+`progGameRun`'s state, which `gpvStepProg` does not carry, is dropped here (it is
+collision-extraction bookkeeping, irrelevant to the random-oracle cache distribution that the
+sign-then-hash hop compares; it is reattached at the run level, not the per-step level). -/
+theorem evalDist_gpvSignBody_run_eq_gpvStepProg (pk : PK) (domainSample : PK → ProbComp Domain)
+    (msgs : ℕ → M) (n : ℕ)
+    (cache : (Salt × M →ₒ Range).QueryCache) (pre : (Salt × M) → Option Domain) :
+    𝒟[(do
+        -- The actual `progGameRun` simulator signing body (`signImpl`), with the fresh salt draw
+        -- front-loaded, run on state `(cache, pre)`; project out the random-oracle cache component
+        -- (dropping the returned signature and the auxiliary preimage record).
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← ((do
+            let s ← (domainSample pk : ProbComp Domain)
+            let v := psf.eval pk s
+            let st ← get
+            set ((st.1.cacheQuery (r, msgs n) v,
+              fun t' => if t' = (r, msgs n) then some s else st.2 t')
+                : (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain))
+            pure (r, s) :
+              StateT ((Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain))
+                ProbComp (Salt × Domain)).run (cache, pre))
+        pure p.2.1 : ProbComp ((Salt × M →ₒ Range).QueryCache))]
+      = 𝒟[(do
+          let r ← ($ᵗ Salt : ProbComp Salt)
+          gpvStepProg psf M Salt pk domainSample msgs n cache r
+            : ProbComp ((Salt × M →ₒ Range).QueryCache))] := by
+  unfold gpvStepProg
+  simp only [StateT.run_bind, StateT.run_get, StateT.run_monadLift, StateT.run_set,
+    StateT.run_map, bind_pure_comp, map_pure, Functor.map_map, monadLift_self]
+
 /-! ## The R2 residual: front-loading the adaptive salt draws into `signRunF`
 
 The remaining content of `AdaptiveFactorizesSignRunF` against the concrete handlers above is the
