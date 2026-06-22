@@ -637,6 +637,56 @@ theorem tvDist_runtime_real_programmed_le_collisionBound [Finite Range] [Inhabit
   · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
     exact Fintype.card_ne_zero
 
+/-! ## U2 (re-stated, salt-inclusive cache-hit bad event)
+
+The headline `tvDist_runtime_real_programmed_le_collisionBound` above bounds the sign-then-hash TV
+distance by the `withProgramming` *fire-on-miss* bad event over the random-oracle-only computation
+`ob`. As the *Open sub-step* section records, that bad event is the wrong shape for GPV: it fires
+deterministically once an uncached signing point is reached, and the fresh signing salts — drawn in
+`unifSpec`, one step *before* each random-oracle query — are invisible at `ob`'s granularity, so the
+`card / |Salt|` averaging is structurally absent.
+
+`tvDist_runtime_real_programmed_le_collisionBound_saltInclusive` re-states U2 so its bad event is
+the genuine GPV salt-collision: a fresh signing salt drawn in `unifSpec` landing in the recorded
+random-oracle cache restricted to its message slice (a cache *hit* at a programmed point), modelled
+by the salt-averaged process `saltSeq c qSign` of the telescope section. The per-step caches `c j`
+are the recorded random-oracle inputs seen by the `j`-th signing query; the standard GPV
+cache-growth bound `card (c j) ≤ j + qHash` (the `j` prior signing salts plus the up to `qHash`
+adversary hash queries) is supplied as `hcache`.
+
+The connection between the run-level `withProgramming` bad event and the salt-averaged `saltSeq`
+process — a joint-distribution coupling over the interleaved salt-draw / random-oracle-query streams
+of the salt-inclusive signing run — is the genuine `#228`-class obligation, isolated here as the
+hypothesis `hcouple`. It is **true** (the programming bad event of the GPV simulator policy *is* the
+event "some fresh signing salt hits its recorded cache slice", which is exactly `saltSeq c qSign`)
+and **non-vacuous** (`saltSeq c qSign` is a genuine probabilistic process whose collision
+probability `probEvent_saltSeq_le_collisionBound` bounds strictly by `collisionBound < ⊤`, so
+`hcouple` is a real inequality between two `< ⊤` quantities, not a `≤ ⊤` triviality). Once
+`hcouple` is discharged by the coupling, this lemma yields the loss-free
+`tvDist ≤ (collisionBound Salt qSign qHash).toReal` consumed by the four GPV theorems.
+
+The proof is loss-free: chain `hcouple` (run-level bad ≤ `saltSeq` collision) with the banked
+salt-averaged telescope `probEvent_saltSeq_le_collisionBound` (`saltSeq` collision ≤
+`collisionBound`) to discharge the `hbad` hypothesis of the headline U2, then invoke the
+headline. -/
+omit [DecidableEq Range] in
+theorem tvDist_runtime_real_programmed_le_collisionBound_saltInclusive
+    [Finite Range] [Inhabited Range] [Nonempty Salt] {α : Type} (qSign qHash : ℕ)
+    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
+    (ob : OracleComp (Salt × M →ₒ Range) α)
+    (c : ℕ → Finset Salt) (hcache : ∀ j, (c j).card ≤ j + qHash)
+    (hcouple : Pr[ fun z : α × (Salt × M →ₒ Range).QueryCache × Bool => z.2.2 = true |
+        (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob).run (∅, false)]
+        ≤ Pr[(· = true) | saltSeq (Salt := Salt) c qSign]) :
+    SPMF.tvDist
+        ((runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
+        (liftM (StateT.run'
+          (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
+          : SPMF α)
+      ≤ (collisionBound Salt qSign qHash).toReal :=
+  tvDist_runtime_real_programmed_le_collisionBound M Salt qSign qHash policy ob
+    (hcouple.trans (probEvent_saltSeq_le_collisionBound Salt qSign qHash c hcache))
+
 /-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
 makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
 that it produces a fresh forgery whose preimage differs from the simulator's programmed
