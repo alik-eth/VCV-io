@@ -1179,37 +1179,38 @@ signing step handled by a bespoke per-body salt splice. -/
 
 open Classical in
 omit [DecidableEq Range] [Fintype Salt] in
-/-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs factor through
-the concrete `signRunF` handlers.**
+/-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
+`AdaptiveFactorizesSignRunF` factorization obligation, with regularity threaded in.**
 
 The two computations being factored are **not** free parameters: they are *pinned* to the actual
 GPV game runs supplied by the caller as `realRun`/`progRun`, namely the real `runtime`-evaluated and
-sign-then-hash-programmed images of `simulateQ impl (adv.main pk)` (the
+sign-then-hash-programmed images of a salt-inclusive signing run `ob` (the
 `SignatureAlg.unforgeableExp` body), *paired with the hypothesis that they ARE such game runs.*
-Concretely, the caller exhibits a salt-inclusive signing run `ob` and a programming policy `policy`
-and certifies, via `hreal_pin` / `hprog_pin`, that `realRun` is the real `runtime`-evaluated run of
-`ob` and `progRun` is the `withProgramming`-programmed run of `ob` — exactly the two distributions
-of the re-stated U2 surface
-`tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`. The conclusion asserts the
-**existence**
-of a common recorded-cache sequence `c` (`card (c j) ≤ j + qHash`) and a shared post-processor `g`
-under which those *pinned* runs equal the `signRunF` presentations over the concrete `gpvStepReal` /
-`gpvStepProg` handlers.
+Concretely, the caller exhibits the signing run `ob` and a programming policy `policy` and
+certifies, via `hreal_pin` / `hprog_pin`, that `realRun` is the real `runtime`-evaluated run of `ob`
+and `progRun` is the `withProgramming`-programmed run of `ob` — exactly the two distributions of the
+re-stated U2 surface `tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`. The PSF
+regularity witness is threaded in as `hreg` (so the produced obligation's off-collision branch
+agreement is dischargeable by `gpvStep_agree`) and the trapdoor sampler's totality as `hNF` (so the
+real step never fails). The conclusion is exactly `AdaptiveFactorizesSignRunF realRun progRun qSign
+qHash` — the obligation consumed by `factorized_advantage_le_collisionBound`.
 
-This statement is *true-as-stated* (counterexample-checked): unlike a `∀ realRun progRun g, ∃ c, …`
-universal — which is **false** (a point mass `realRun := pure a` is not any `qSign`-uniform-salt
-`signRunF` run) — here `realRun`/`progRun` range only over genuine GPV game-run distributions
-(certified by `hreal_pin`/`hprog_pin`), which do factor through `signRunF`. The witness existential
-`∃ c g, …` is exactly the content the deferred-sampling fold coupling establishes for those runs.
+This statement is *true-as-stated* (counterexample-checked): the *free-parameter* version
+`∀ realRun progRun, ∃ c …, AdaptiveFactorizesSignRunF realRun progRun qSign qHash` is **false** — a
+point mass `realRun := pure a` with `progRun` not a point mass is not any `qSign`-step `signRunF`
+run, so no `signRunF` presentation exists. Pinning `realRun`/`progRun` to genuine GPV game-run
+distributions via `hreal_pin`/`hprog_pin` excludes this counterexample: those runs *do* factor
+through `signRunF` (the phase-9 abstract `#228`-class coupling proves the factorization holds for
+them), so the existential `AdaptiveFactorizesSignRunF` is genuinely witnessed and non-vacuous.
 
 This is the **single remaining `#228`-class sub-step**: the deferred-sampling fold factorization
 front-loading the adversary's adaptively-interleaved fresh salt draws of the pinned runs into the
 fixed `qSign`-step `signRunF` sequence (see the section docstring above and the worked Fiat–Shamir
 instance `FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`). Once discharged,
-it feeds `adaptiveFactorizesSignRunF_gpv` (which supplies the structural `NeverFail`/agreement
-conjuncts) to produce `AdaptiveFactorizesSignRunF` and hence, via
-`factorized_advantage_le_collisionBound`, the salt-inclusive sign-then-hash hop of the four GPV
-theorems. -/
+it feeds (directly, via `factorized_advantage_le_collisionBound`) the salt-inclusive sign-then-hash
+hop of the four GPV theorems; the structural conjuncts (`NeverFail`, off-collision agreement) are
+supplied here from `hNF`/`hreg` so the residual's *only* remaining content is the deep run-equality
+factorization. -/
 theorem gpvRun_factorizes_signRunF [Finite Range] [Inhabited Range] [Nonempty Salt] {α : Type}
     (pk : PK) (sk : SK) (msgs : ℕ → M)
     (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
@@ -1221,38 +1222,78 @@ theorem gpvRun_factorizes_signRunF [Finite Range] [Inhabited Range] [Nonempty Sa
     (hprog_pin : progRun =
       (liftM (StateT.run'
         (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
-        : SPMF α)) :
-    ∃ (c : ℕ → Finset Salt)
-      (g : (Salt × M →ₒ Range).QueryCache × Bool → ProbComp α),
-      (∀ j, (c j).card ≤ j + qHash) ∧
-      realRun = 𝒟[signRunF (Salt := Salt)
-          (gpvStepReal psf M Salt pk sk msgs) c qSign (∅, false) >>= g] ∧
-      progRun = 𝒟[signRunF (Salt := Salt)
-          (gpvStepProg psf M Salt pk domainSample msgs) c qSign (∅, false) >>= g] := by
+        : SPMF α))
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    AdaptiveFactorizesSignRunF (Salt := Salt) realRun progRun qSign qHash := by
   -- The deferred-sampling fold factorization of the *pinned* adaptive GPV game runs `realRun` /
   -- `progRun` (the real `runtime`-evaluated and `withProgramming`-programmed images of the
-  -- salt-inclusive run `ob`).  Establishing it is the `#228`-class adaptive→`signRunF` coupling
+  -- salt-inclusive run `ob`).  The structural conjuncts of `AdaptiveFactorizesSignRunF` are already
+  -- dischargeable here (`gpvStepReal_neverFail` from `hNF`, `gpvStep_agree` from `hreg`); the ONLY
+  -- remaining content is the pair of run-equalities `realRun = 𝒟[signRunF gpvStepReal c qSign …]` /
+  -- `progRun = 𝒟[signRunF gpvStepProg c qSign …]` over a shared recorded cache sequence `c` with
+  -- `card (c j) ≤ j + qHash`.  Establishing those is the `#228`-class adaptive→`signRunF` coupling
   -- described in the section docstring: front-loading the adaptively-interleaved fresh salt
-  -- draws of `ob` into the fixed `qSign`-step `signRunF` sequence.  It is left as the one
-  -- isolated residual of the GPV campaign.  Pinned (NOT free-parameter), counterexample-checked.
+  -- draws of `ob` into the fixed `qSign`-step `signRunF` sequence.  It is the one isolated
+  -- residual of the GPV campaign.  Pinned (NOT free-parameter), counterexample-checked.
   --
   -- TRIVIAL-WITNESS DEAD-END (verified, do not retry): the natural witness
   --   `c := fun _ => ∅`, `g := fun cb => liftM (run' (simulateQ randomOracle ob) cb.1)`
-  -- typechecks and (after `runtime_evalDist_liftComp`) reduces the goal to two seeding-invariance
-  -- equalities.  The REAL side is TRUE — `gpvStepReal` seeds the lazy RO cache with *uniform* Range
-  -- values (`c ← $ᵗ Range`), and reading a uniform-valued cached entry is distributionally
-  -- identical to a fresh `simulateQ randomOracle` miss-draw, so pre-seeding the salt-keyed slots is
-  -- distribution-preserving for `ob`.  But the PROG side FAILS with this same `g`: `progRun` runs
-  -- `ob` under `withProgramming policy`, whereas this `g` replays under the bare `randomOracle` —
-  -- a genuine oracle mismatch.  No single oracle choice for `g` matches BOTH worlds: real uses
-  -- `randomOracle`, prog uses `withProgramming`.  A *table-replay* `g` (lookup-then-fresh-on-miss)
-  -- still needs world-dependent miss handling (real miss = uniform; prog miss = program), so it too
-  -- needs the worlds coupled.  The honest witness couples `g`'s miss-behaviour across worlds via
-  -- the per-step agreement — exactly the deferred-sampling coupling, which fundamentally wants the
-  -- PSF regularity `hreg` (present on the sibling `adaptiveFactorizesSignRunF_gpv`/`gpvStep_agree`,
-  -- NOT a hypothesis here).  Resolving whether `hreg` must be threaded into this statement is an
-  -- owner/redraft question; the deep coupling is the remaining multi-week `#228`-class core.
+  -- typechecks and (after `runtime_evalDist_liftComp`) reduces the run-equalities to two
+  -- seeding-invariance equalities.  The REAL side is TRUE — `gpvStepReal` seeds the lazy RO cache
+  -- with *uniform* Range values (`c ← $ᵗ Range`), and reading a uniform-valued cached entry is
+  -- distributionally identical to a fresh `simulateQ randomOracle` miss-draw, so pre-seeding the
+  -- salt-keyed slots is distribution-preserving for `ob`.  But the PROG side FAILS with this same
+  -- `g`: `progRun` runs `ob` under `withProgramming policy`, whereas this `g` replays under the
+  -- bare `randomOracle` — a genuine oracle mismatch.  No single oracle choice for `g` matches BOTH
+  -- worlds; the honest witness couples `g`'s miss-behaviour across worlds via the per-step
+  -- agreement (now available as `hreg`) — exactly the deferred-sampling coupling.  The deep
+  -- coupling is the remaining multi-week `#228`-class core.
   sorry
+
+omit [DecidableEq Range] in
+/-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the R2 residual.**
+
+This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
+factorization supplied by the re-stated residual `gpvRun_factorizes_signRunF`. Given the pins
+`hreal_pin`/`hprog_pin` identifying `realRun`/`progRun` with the real `runtime`-evaluated and
+`withProgramming`-programmed runs of a salt-inclusive signing run `ob`, together with the trapdoor
+totality `hNF` and PSF regularity `hreg`, the total-variation distance between the real and
+programmed game runs is bounded by `(collisionBound Salt qSign qHash).toReal`.
+
+The proof *consumes* the residual: it applies `gpvRun_factorizes_signRunF` (which yields the
+`AdaptiveFactorizesSignRunF` obligation for the pinned runs) and then closes with the banked
+`factorized_advantage_le_collisionBound`. This makes the re-stated residual **load-bearing**: it is
+no longer a dormant statement but is invoked in a real (non-`sorry`) proof, exactly as the design's
+Step-1 chain requires (LHS → residual → `factorized_advantage_le_collisionBound`).
+
+It is the GPV instance of the U2 surface
+`tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`, but unconditional: where that
+lemma takes the up-to-bad coupling as the hypothesis `hcouple`, here the coupling is delivered by
+the residual factorization rather than assumed. -/
+theorem gpv_tvDist_real_programmed_le_collisionBound
+    [Finite Range] [Inhabited Range] [Nonempty Salt] {α : Type}
+    (pk : PK) (sk : SK) (msgs : ℕ → M)
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
+    (ob : OracleComp (Salt × M →ₒ Range) α)
+    (realRun progRun : SPMF α)
+    (hreal_pin : realRun =
+      (runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
+    (hprog_pin : progRun =
+      (liftM (StateT.run'
+        (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
+        : SPMF α))
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    SPMF.tvDist realRun progRun ≤ (collisionBound Salt qSign qHash).toReal :=
+  factorized_advantage_le_collisionBound (Salt := Salt) realRun progRun qSign qHash
+    (gpvRun_factorizes_signRunF psf M Salt pk sk msgs domainSample qSign qHash policy ob
+      realRun progRun hreal_pin hprog_pin hNF hreg)
 
 open Classical in
 omit [DecidableEq Range] [Fintype Salt] in
@@ -1476,6 +1517,41 @@ theorem tvDist_runtime_real_programmed_le_collisionBound_saltInclusive
       · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
         exact Fintype.card_ne_zero)
     (probEvent_saltSeq_le_collisionBound Salt qSign qHash c hcache))
+
+/-! ## Step 1 (consumed) and the Step-2 / headline-wiring frontier
+
+**Step 1 (sign-then-hash ≡ real) is done and load-bearing.** The proven
+`gpv_tvDist_real_programmed_le_collisionBound` *consumes* the re-stated R2 residual
+`gpvRun_factorizes_signRunF` in a real (non-`sorry`) proof: it produces the
+`AdaptiveFactorizesSignRunF` obligation for the *pinned* GPV game runs and discharges the
+salt-inclusive sign-then-hash hop `tvDist realRun progRun ≤ collisionBound` via
+`factorized_advantage_le_collisionBound`. The residual is therefore no longer dormant — it is
+invoked on the Step-1 path, exactly as the campaign's Step-1 chain requires.
+
+**What still gates the four GPV theorems (the *adaptive game identification* and Step 2).** Two
+facts remain between `gpv_tvDist_real_programmed_le_collisionBound` and the headline bounds, both of
+which would change statements *other than* the authorized residual and so are recorded here rather
+than asserted:
+
+1. *Game identification (a second `#228`-class fact).* The headline LHS `adv.advantage (runtime)` is
+   `Pr[= true | unforgeableExp (runtime) adv]`, whose body runs `simulateQ impl (adv.main pk)` — the
+   signing oracle draws each fresh salt *internally* at an adversary-chosen point over the sum spec
+   `unifSpec + (Salt × M →ₒ Range)`. Connecting this to the *pinned* hash-only run `ob` of
+   `gpv_tvDist_real_programmed_le_collisionBound` (so that `abs_probOutput_toReal_sub_le_tvDist`
+   converts the run-level `tvDist ≤ collisionBound` into `realAdv ≤ progAdv + collisionBound`) is
+   the same deferred-sampling factorization as the residual, now over the adversary's *adaptive*
+   control flow rather than a fixed `ob`. It is not a separate probability fact but a second
+   instance of the
+   isolated `#228`-class coupling, and is not expressible as a change to the residual statement
+   alone.
+2. *Step 2 (collision extraction).* In the programmed sign-then-hash game every random-oracle entry
+   carries the simulator's hidden short preimage; a fresh forgery on a programmed point with a
+   *distinct* preimage is a collision under `psf.eval`, bounding `progAdv` by
+   `collisionFindingAdvantage (reduction …)`. Stating this *pinned and true* requires the concrete
+   programmed forgery game and the concrete `reduction` body (`reduction`, line ~295, is itself an
+   open constructor `sorry`); a free-parameter or reduction-agnostic isolation would be a vacuous
+   stub feeding a headline, which the campaign discipline forbids. It is therefore left open
+   together with the reduction constructor rather than isolated as a speculative lemma. -/
 
 /-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
 makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
