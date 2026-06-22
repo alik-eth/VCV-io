@@ -1694,6 +1694,150 @@ theorem realGameRun_eq_withStateOracle_implNoLog
   rw [realGameRun_eq_simulateQ_run, ← SPMFSemantics.withStateOracle_evalDist_map,
     realGameRun_writerLog_discard]
 
+/-! ### Round-6 normalization: dropping the preimage-record component of `progGameRun`
+
+`progGameRun` simulates `adv.main pk` under a handler stack whose state is the product
+`QueryCache × ((Salt × M) → Option Domain)`. The second component is the *preimage record*: it
+records, for each programmed random-oracle point, the domain element forward-sampled to produce the
+answer. That record is bookkeeping for the collision reduction's extraction only — it is written by
+every programming step (and read solely to update *itself*), but it never influences the
+random-oracle cache, the output, or any other branch. Hence the forgery distribution `progGameRun`
+(the `Prod.fst` of the run) is unchanged by dropping the record component, leaving a single
+`simulateQ` over the bare
+`StateT QueryCache ProbComp` random-oracle surface — the *same* state shape carried by
+`realGameRunImplNoLog` under the runtime `withStateOracle` bundle. The lemma below performs exactly
+that drop (no distributional coupling). -/
+
+/-- **The record-free `progGameRun` handler stack.**
+
+The same programmed random-oracle / simulator-signing handler stack as `progGameRun`, but with the
+preimage-record component removed: its state is just the random-oracle `QueryCache`. The
+random-oracle handler programs a miss with `psf.eval pk (domainSample pk)`; the signing handler
+draws a fresh salt, forward-samples, programs the cache point, and returns `(r, s)`. This carries
+the same
+`StateT QueryCache ProbComp` random-oracle surface as `realGameRunImplNoLog` (observed through the
+runtime `withStateOracle` bundle), the shared shape required before the fold coupling. -/
+noncomputable def progGameRunImplNoRec (domainSample : PK → ProbComp Domain) (pk : PK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+  let roImpl : QueryImpl (Salt × M →ₒ Range)
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+    fun t => do
+      let st ← get
+      match st t with
+      | some v => pure v
+      | none => do
+          let s ← (domainSample pk : ProbComp Domain)
+          let v := psf.eval pk s
+          set (st.cacheQuery t v)
+          pure v
+  let unifImpl : QueryImpl unifSpec (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      set (st.cacheQuery (r, msg) v)
+      pure (r, s)
+  (unifImpl + roImpl) + signImpl
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Round-6 prog-side normalization (pinned): `progGameRun` with the preimage record dropped.**
+
+`progGameRun … adv domainSample pk` equals the random-oracle `SPMF` semantics of the *single*
+`simulateQ (progGameRunImplNoRec …) (adv.main pk)` over the bare `StateT QueryCache ProbComp` state,
+observed by `StateT.run'` from the empty cache. The preimage-record component of `progGameRun`'s
+state is genuinely passive: it is written by the programming steps but never read by the cache, the
+output, or the control flow, so projecting it away (`proj = Prod.fst`) commutes with every oracle
+step and hence with the whole simulation (`map_run_simulateQ_eq_of_query_map_eq`).
+
+It is *pinned* to the concrete `progGameRun` and is a pure structural state-projection (no salt
+front-loading, no distributional coupling). Together with `realGameRun_eq_withStateOracle_implNoLog`
+this puts **both** game runs on the same `StateT QueryCache ProbComp` random-oracle surface — the
+prerequisite for the `OracleComp.inductionOn` fold coupling. -/
+theorem progGameRun_eq_run'_implNoRec
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (pk : PK) :
+    progGameRun psf hr M Salt adv domainSample pk =
+      𝒟[(simulateQ (progGameRunImplNoRec psf M Salt domainSample pk)
+          (adv.main pk)).run' (∅ : (Salt × M →ₒ Range).QueryCache)] := by
+  unfold progGameRun
+  simp only [evalDist]
+  refine congrArg _ ?_
+  -- LHS is `Prod.fst <$> run = run'`; the record component (initially `fun _ => none`) is the
+  -- passive auxiliary, so the state projection `proj = Prod.fst` commutes with every step.
+  rw [show ((∅ : (Salt × M →ₒ Range).QueryCache)) = Prod.fst
+      (((∅ : (Salt × M →ₒ Range).QueryCache), (fun _ => none : (Salt × M) → Option Domain))) from
+        rfl]
+  rw [← StateT.run']
+  refine run'_simulateQ_eq_of_query_map_eq _
+    (progGameRunImplNoRec psf M Salt domainSample pk) Prod.fst ?_ (adv.main pk)
+    (∅, fun _ => none)
+  -- For each oracle (uniform / random-oracle / signing) the cache update depends only on the
+  -- cache component, so projecting away the preimage record commutes with the step.
+  rintro ((t | t) | t) ⟨st, rec⟩ <;>
+    simp only [HAdd.hAdd, QueryImpl.add, progGameRunImplNoRec]
+  · -- uniform-sampling query: state untouched by either handler
+    simp [StateT.run_monadLift, Prod.map]
+  · -- random-oracle query: the cache hit/miss is determined by the cache component `st t`
+    rcases h : st t with _ | v <;>
+      simp [StateT.run_bind, StateT.run_get, StateT.run_set, StateT.run_monadLift, Prod.map, h]
+  · -- signing query: cache update depends only on the cache component
+    simp [StateT.run_bind, StateT.run_get, StateT.run_set, StateT.run_monadLift, Prod.map]
+
+/-- **The composed single-impl real GPV handler stack.**
+
+The two-layer real-side simulation of `realGameRun` — `simulateQ realGameRunImplNoLog (adv.main pk)`
+producing an `OracleComp (unifSpec + (Salt × M →ₒ Range))`, then observed by the runtime's
+public-randomness-lift `+ randomOracle` `StateT QueryCache ProbComp` simulation — fused into a
+*single* `StateT QueryCache ProbComp`-valued handler via `QueryImpl.compose` (`∘ₛ`). This carries
+the same bare `StateT QueryCache ProbComp` random-oracle surface as `progGameRunImplNoRec`, the
+shared shape the fold coupling consumes. -/
+noncomputable def gpvRealImpl (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+  (((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) +
+      (randomOracle : QueryImpl (Salt × M →ₒ Range)
+        (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp))) ∘ₛ
+    realGameRunImplNoLog psf hr M Salt pk sk)
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Round-6 real-side single-impl normalization (pinned): `realGameRun` as one bundled `simulateQ`
+over the composed real handler `gpvRealImpl`.**
+
+This collapses the two-layer real-side simulation of `realGameRun` into a single `simulateQ` over
+the composed handler `gpvRealImpl` (`= outerLift ∘ₛ realGameRunImplNoLog`), observed by
+`StateT.run'` from the empty cache:
+`realGameRun … = 𝒟[(simulateQ (gpvRealImpl …) (adv.main pk)).run' ∅]`. It
+chains `realGameRun_eq_withStateOracle_implNoLog` (the round-5 peeling of the runtime indirection to
+a single `simulateQ realGameRunImplNoLog` observed through `withStateOracle`),
+`withStateOracle_evalDist_eq` (unfolding the `withStateOracle` bundle to an explicit
+`StateT.run'`-of-`simulateQ` of the public-randomness lift `+ randomOracle`), and
+`QueryImpl.simulateQ_compose` (fusing the two `simulateQ` layers into the single composed handler).
+
+It is *pinned* to the concrete `realGameRun` and is a pure structural normalization — no salt
+front-loading, no distributional coupling. Together with `progGameRun_eq_run'_implNoRec` this puts
+**both** game runs in the identical `𝒟[(simulateQ · (adv.main pk)).run' ∅]` shape over the *same*
+`StateT QueryCache ProbComp` random-oracle surface, the prerequisite for attempting the
+`OracleComp.inductionOn` fold coupling on a common vehicle. -/
+theorem realGameRun_eq_run'_implReal
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (pk : PK) (sk : SK) :
+    realGameRun psf hr M Salt adv pk sk =
+      𝒟[(simulateQ (gpvRealImpl psf hr M Salt pk sk)
+          (adv.main pk)).run' (∅ : (Salt × M →ₒ Range).QueryCache)] := by
+  rw [realGameRun_eq_withStateOracle_implNoLog, withStateOracle_evalDist_eq]
+  rw [← QueryImpl.simulateQ_compose]
+  rfl
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
