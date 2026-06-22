@@ -681,6 +681,44 @@ noncomputable def signRunF {St : Type} (step : ℕ → St → Salt → ProbComp 
       let st' ← step n sb.1 r
       signRunF step c n (st', sb.2 || decide (r ∈ c n))
 
+omit [Fintype Salt] in
+/-- **`signRunF` never fails when its step never fails.** If every per-step handler `step n s r`
+never fails, the whole `qSign`-step `signRunF` recursion never fails: the leading uniform salt draw
+is total, the step is total by hypothesis, and the tail never fails by induction. Consequently its
+output distribution has total mass one, so it can be discarded as a value-irrelevant never-failing
+prefix (`evalDist_bind_const_neverFails`) — the tape-suffix-discard step of a fold factorization. -/
+theorem signRunF_neverFail {St : Type} [Nonempty Salt]
+    (step : ℕ → St → Salt → ProbComp St) (c : ℕ → Finset Salt)
+    [hstep : ∀ n s r, NeverFail (step n s r)] :
+    ∀ (n : ℕ) (sb : St × Bool), NeverFail (signRunF (Salt := Salt) step c n sb) := by
+  intro n
+  induction n with
+  | zero => intro sb; exact inferInstanceAs (NeverFail (pure sb))
+  | succ n ih =>
+      intro sb
+      refine (neverFail_bind_iff _ _).2 ⟨inferInstance, fun r _ => ?_⟩
+      exact (neverFail_bind_iff _ _).2 ⟨hstep n sb.1 r, fun st' _ => ih _⟩
+
+omit [Fintype Salt] in
+/-- **Discarding the `signRunF` salt prefix.** When the per-step handler never fails, the entire
+`signRunF` recursion never fails (`signRunF_neverFail`), so binding a *value-irrelevant*
+continuation `k` after it contributes only `signRunF`'s total mass one: the salt-draw prefix is
+discarded from the output distribution. This is the GPV `signRunF` instance of the generic
+never-failing-prefix discard `evalDist_bind_const_neverFails`; it is the move that drops the
+over-provisioned front salt tape once the genuine content has been spliced out, the analogue of the
+`drawList` suffix discard in the worked Fiat–Shamir factorization. -/
+theorem evalDist_signRunF_bind_const {St γ : Type} [Nonempty Salt]
+    (step : ℕ → St → Salt → ProbComp St) (c : ℕ → Finset Salt)
+    [∀ n s r, NeverFail (step n s r)] (n : ℕ) (sb : St × Bool) (k : ProbComp γ) :
+    𝒟[signRunF (Salt := Salt) step c n sb >>= fun _ => k] = 𝒟[k] := by
+  haveI := signRunF_neverFail (Salt := Salt) step c n sb
+  refine SPMF.ext fun x => ?_
+  set sr := signRunF (Salt := Salt) step c n sb with hsr
+  rw [show 𝒟[sr >>= fun _ => k] x = Pr[= x | sr >>= fun _ => k] from (probOutput_def _ _).symm,
+    show 𝒟[k] x = Pr[= x | k] from (probOutput_def _ _).symm,
+    probOutput_bind_const, probFailure_eq_zero]
+  simp
+
 omit [DecidableEq Salt] [SampleableType Salt] [Fintype Salt] in
 /-- **Uniform per-fibre TV bound for a shared base.** If two continuations are pointwise at
 total-variation distance at most `δ` (with `δ ≥ 0`), then binding them over a common base
