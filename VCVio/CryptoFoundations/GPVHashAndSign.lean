@@ -484,7 +484,7 @@ theorem probEvent_saltSeq_le_collisionBound (qSign qHash : ℕ)
   gcongr
   exact_mod_cast hcache j
 
-/-! ## Open sub-step: connecting `hbad` to the salt-averaged telescope
+/-! ## Open sub-step: the salt-collision coupling `hcouple`
 
 The salt-averaged telescope above (`probEvent_saltSeq_le_collisionBound`) is the honest, axiom-clean
 bound on the GPV salt-collision event: a sequence of `qSign` fresh uniform salt draws, the `j`-th
@@ -513,14 +513,24 @@ reasons, both of which are genuine and isolated here (no false bridge is asserte
    absent from `ob`'s granularity. The averaging cannot be recovered without exposing the salt
    draws.
 
-Closing this sub-step therefore requires re-stating U2 over the *salt-inclusive* signing run — so
-the fresh salt draws are visible to the bad event — and instrumenting the bad event as a
-salt-collision
-(cache-hit-at-programmed-point) flag rather than the fire-on-miss flag. That is a statement-level
-change to the U2 surface (and a joint distribution / coupling argument over the interleaved draw and
-query streams), in the same difficulty class as the `#228` averaged-vs-pointwise coupling. The
-salt-averaged telescope banked above is the reusable analytic core that such a re-statement will
-consume; only the structural re-instrumentation of the bad event remains. -/
+The U2 *re-statement* `tvDist_runtime_real_programmed_le_collisionBound_saltInclusive` (below)
+carries out the first half of the closure: it re-states U2 over the salt-inclusive signing run with
+the bad event instrumented as the cache-HIT salt collision `saltSeq c qSign`, and discharges the
+loss-free `tvDist ≤ collisionBound.toReal` conclusion *given* the genuine up-to-bad coupling
+`hcouple : tvDist(real, programmed) ≤ Pr[saltSeq c qSign = true]`. It deliberately does **not**
+route through the fire-on-miss `hbad` (which, per reason 1 above, would require the false inequality
+"fire-on-miss ≤ salt-collision").
+
+What remains open is **exactly** `hcouple`: the identical-until-bad coupling between the real GPV
+run (lazy random oracle, fresh uniform answer at each `(r, m)`) and the programmed run (answer
+`psf.eval pk s`), whose only divergence is a fresh signing salt colliding with a recorded cache
+slice — precisely the `saltSeq` event. Discharging it is a `#228`-class joint-distribution over
+the interleaved `unifSpec` salt-draw / `(Salt × M →ₒ Range)` random-oracle-query streams of the
+salt-inclusive signing program. The salt-averaged telescope banked above is the reusable analytic
+core the coupling lands on; the remaining work is the joint-distribution coupling itself, which —
+because the salt draws live in the caller of the hash-only `ob` (reason 2) — cannot be expressed at
+the current `runtime` / `ob` interface without exposing the signing program's salt draws to the
+coupling, a deeper structural change tracked separately. -/
 
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
