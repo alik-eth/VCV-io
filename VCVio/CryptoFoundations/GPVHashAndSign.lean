@@ -1024,6 +1024,191 @@ theorem factorized_advantage_le_collisionBound [Finite Salt] [Nonempty Salt] {α
   exact signRunF_tvDist_le_collisionBound (Salt := Salt) (St := St)
     stepReal stepProg c hstep qSign qHash hcache st
 
+/-! ## Concrete GPV `signRunF` handlers (the R2 construction)
+
+The obligation `AdaptiveFactorizesSignRunF` is an existential over a handler-state type `St`,
+real/programmed per-step handlers, a recorded-cache sequence `c`, a start state, and a shared
+post-processor `g`. This section pins the GPV-concrete witnesses for the handler-state and step
+handlers, and proves the two *structurally provable* conjuncts of the obligation against them — the
+`NeverFail` of the real step and the off-collision branch agreement under regularity. What remains
+purely deep — the two run-equalities `realRun = 𝒟[signRunF stepReal c qSign …]` /
+`progRun = 𝒟[signRunF stepProg c qSign …]` together with the cache-growth bound on the *adaptive*
+run's recorded slices — is the front-loading fold factorization, isolated as the single residual
+`gpvRun_factorizes_signRunF` below.
+
+The handler state is the lazy random-oracle cache `(Salt × M →ₒ Range).QueryCache`; both step
+handlers update it at the freshly drawn salt `r` and the `n`-th signing message `msgs n`. The
+`stepReal` handler mirrors the real signing oracle's *cache-miss* branch: draw a uniform target
+`c ← $ᵗ Range`, draw the trapdoor preimage, and cache `c`. The `stepProg` handler mirrors the
+sign-then-hash simulator: forward-sample a short preimage `s ← domainSample pk` and program the
+cache entry to `psf.eval pk s`. -/
+
+open Classical in
+/-- **Real GPV signing step (cache-miss branch).** At signing step `n` with random-oracle cache
+`cache` and freshly drawn salt `r`, draw a uniform target `c ← $ᵗ Range`, draw a trapdoor preimage
+of `c`, and record `(r, msgs n) ↦ c` in the cache. This is the per-step handler used as `stepReal`
+in the GPV `signRunF` presentation of the real game run. -/
+noncomputable def gpvStepReal (pk : PK) (sk : SK) (msgs : ℕ → M) :
+    ℕ → (Salt × M →ₒ Range).QueryCache → Salt → ProbComp ((Salt × M →ₒ Range).QueryCache) :=
+  fun n cache r => do
+    let c ← ($ᵗ Range)
+    let _s ← psf.trapdoorSample pk sk c
+    pure (cache.cacheQuery (r, msgs n) c)
+
+open Classical in
+/-- **Programmed GPV signing step (sign-then-hash branch).** At signing step `n` with random-oracle
+cache `cache` and freshly drawn salt `r`, forward-sample a short preimage `s ← domainSample pk` and
+record `(r, msgs n) ↦ psf.eval pk s` in the cache. This is the per-step handler used as `stepProg`
+in the GPV `signRunF` presentation of the programmed (simulator) run. -/
+noncomputable def gpvStepProg (pk : PK) (domainSample : PK → ProbComp Domain) (msgs : ℕ → M) :
+    ℕ → (Salt × M →ₒ Range).QueryCache → Salt → ProbComp ((Salt × M →ₒ Range).QueryCache) :=
+  fun n cache r => do
+    let s ← domainSample pk
+    pure (cache.cacheQuery (r, msgs n) (psf.eval pk s))
+
+omit [DecidableEq Range] [SampleableType Salt] [Fintype Salt] in
+/-- **Real GPV step never fails.** Given that the trapdoor sampler never fails (a mild
+side-condition satisfied by any total preimage sampler — e.g. Falcon's `ffSampling` loop, which
+always returns), the real per-step handler `gpvStepReal` never fails: the uniform target draw is
+total, the trapdoor draw is total by hypothesis, and the final cache update is a `pure`. This
+discharges the `NeverFail (stepReal n s r)` conjunct of the obligation against the concrete
+`stepReal := gpvStepReal`. -/
+theorem gpvStepReal_neverFail (pk : PK) (sk : SK) (msgs : ℕ → M)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (n : ℕ) (cache : (Salt × M →ₒ Range).QueryCache) (r : Salt) :
+    NeverFail (gpvStepReal psf M Salt pk sk msgs n cache r) := by
+  unfold gpvStepReal
+  rw [neverFail_bind_iff]
+  refine ⟨inferInstance, fun c _ => ?_⟩
+  rw [neverFail_bind_iff]
+  exact ⟨hNF c, fun _ _ => inferInstance⟩
+
+omit [DecidableEq Range] [SampleableType Salt] [Fintype Salt] in
+/-- **Real/programmed GPV step distributional agreement.** Under PSF regularity (witnessed by the
+forward sampler `domainSample` of `psf.Regularity`), the real and programmed per-step handlers agree
+as output distributions at every step `n`, cache, and salt `r`.
+
+Both handlers update the same cache slot `(r, msgs n)` with the first component of a `(target,
+preimage)` pair; the real handler draws that pair as `(c, s)` with `c ← $ᵗ Range`, `s ←
+trapdoorSample pk sk c`, while the programmed handler draws it as `(eval pk s, s)` with `s ←
+domainSample pk`. PSF regularity equates exactly these two joint distributions, so projecting onto
+the cache update preserves the equality. This agreement is in fact *unconditional* in `r` (it does
+not require `r ∉ c n`), which is stronger than the obligation's off-collision conjunct demands. -/
+theorem gpvStep_agree (pk : PK) (sk : SK) (msgs : ℕ → M)
+    (domainSample : PK → ProbComp Domain)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (n : ℕ) (cache : (Salt × M →ₒ Range).QueryCache) (r : Salt) :
+    𝒟[gpvStepReal psf M Salt pk sk msgs n cache r]
+      = 𝒟[gpvStepProg psf M Salt pk domainSample msgs n cache r] := by
+  unfold gpvStepReal gpvStepProg
+  set proj : Range × Domain → (Salt × M →ₒ Range).QueryCache :=
+    fun cs => cache.cacheQuery (r, msgs n) cs.1 with hproj
+  have hR : (($ᵗ Range) >>= fun c => psf.trapdoorSample pk sk c >>=
+              fun _s => (pure (cache.cacheQuery (r, msgs n) c) : ProbComp _))
+        = ((($ᵗ Range) >>= fun c => psf.trapdoorSample pk sk c >>= fun s => pure (c, s)) >>=
+            fun cs => pure (proj cs)) := by simp [hproj]
+  have hP : (domainSample pk >>=
+              fun s => (pure (cache.cacheQuery (r, msgs n) (psf.eval pk s)) : ProbComp _))
+        = ((domainSample pk >>= fun s => pure (psf.eval pk s, s)) >>=
+            fun cs => pure (proj cs)) := by simp [hproj]
+  change 𝒟[(($ᵗ Range) >>= fun c => psf.trapdoorSample pk sk c >>=
+              fun _s => pure (cache.cacheQuery (r, msgs n) c))] = _
+  rw [hR, hP]
+  simp only [evalDist_bind, hreg]
+
+/-! ## The R2 residual: front-loading the adaptive salt draws into `signRunF`
+
+The remaining content of `AdaptiveFactorizesSignRunF` against the concrete handlers above is the
+pair of run-equalities together with the cache-growth bound on the recorded slices. These facts are
+*not* structural: they assert that the adaptive real / programmed game runs
+`simulateQ impl (adv.main pk)` (where each signing query draws a fresh salt at an
+adversary-chosen point and queries the random oracle at it) factor through the *fixed* `qSign`-step
+`signRunF` recursion with the concrete `gpvStepReal` / `gpvStepProg` handlers and a common recorded
+cache sequence `c` with `card (c j) ≤ j + qHash`.
+
+Establishing this is the deferred-sampling fold-level coupling: every fresh salt draw, currently
+issued inside the signing oracle at an adversarially-chosen point in an adaptively-interleaved query
+stream, must be *commuted to the front* of a clean `qSign`-step draw sequence (the salts are fresh
+uniform and independent of the adversary view until revealed; the interleaved hash queries are
+answer-irrelevant w.r.t. the salt draws and so commute). This is the GPV instance of the worked
+Fiat–Shamir factorization
+`FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`: an induction on
+`adv.main pk` via `OracleComp.inductionOn`, with the uniform / hash-read steps handled by the
+generic `OracleComp.DeferredSampling.evalDist_step_commute_tape` answer-irrelevant commute and the
+signing step handled by a bespoke per-body salt splice. -/
+
+open Classical in
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **The R2 residual (the single open sub-step): the adaptive GPV game runs factor through the
+concrete `signRunF` handlers.**
+
+For any GPV unforgeability adversary `adv` and any forward sampler `domainSample`, there is a common
+recorded-cache sequence `c` with `card (c j) ≤ j + qHash` such that the real and programmed adaptive
+game runs equal — in distribution — the `signRunF` runs over the concrete `gpvStepReal` /
+`gpvStepProg` handlers followed by a shared post-processor `g`. The two computations
+`realRun`/`progRun` are abstracted as parameters here; at the call sites they are the real
+(`runtime`-evaluated) and sign-then-hash-programmed images of `simulateQ impl (adv.main pk)` inside
+`SignatureAlg.unforgeableExp`.
+
+This is the **single remaining `#228`-class sub-step**: the deferred-sampling fold factorization
+front-loading the adversary's adaptively-interleaved fresh salt draws into the fixed `qSign`-step
+`signRunF` sequence (see the section docstring above and the worked Fiat–Shamir instance
+`FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`). Once discharged, it feeds
+`adaptiveFactorizesSignRunF_gpv` (which supplies the structural `NeverFail`/agreement conjuncts) to
+produce `AdaptiveFactorizesSignRunF` and hence, via `factorized_advantage_le_collisionBound`, the
+salt-inclusive sign-then-hash hop of the four GPV theorems. -/
+theorem gpvRun_factorizes_signRunF {α : Type} (pk : PK) (sk : SK) (msgs : ℕ → M)
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (realRun progRun : SPMF α) (g : (Salt × M →ₒ Range).QueryCache × Bool → ProbComp α) :
+    ∃ c : ℕ → Finset Salt,
+      (∀ j, (c j).card ≤ j + qHash) ∧
+      realRun = 𝒟[signRunF (Salt := Salt)
+          (gpvStepReal psf M Salt pk sk msgs) c qSign (∅, false) >>= g] ∧
+      progRun = 𝒟[signRunF (Salt := Salt)
+          (gpvStepProg psf M Salt pk domainSample msgs) c qSign (∅, false) >>= g] := by
+  -- The deferred-sampling fold factorization of the adaptive GPV game runs.  Establishing it is the
+  -- `#228`-class adaptive→`signRunF` coupling described in the section docstring: it is left as the
+  -- one isolated residual of the GPV campaign.
+  sorry
+
+open Classical in
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Discharging `AdaptiveFactorizesSignRunF` from the R2 residual (proven reduction).**
+
+Given the trapdoor sampler's totality (`hNF`), the regularity witness (`hreg`), and the fold
+factorization `gpvRun_factorizes_signRunF` (`hfac`) for the concrete GPV handlers, the obligation
+`AdaptiveFactorizesSignRunF realRun progRun qSign qHash` holds: the concrete `gpvStepReal` /
+`gpvStepProg` handlers, the factorization's recorded-cache sequence, the empty start cache, and the
+shared post-processor witness the existential, with the structural conjuncts supplied by
+`gpvStepReal_neverFail` and `gpvStep_agree`.
+
+This isolates exactly the deep content into `gpvRun_factorizes_signRunF`: everything *else* the
+obligation requires (the never-failing real step and the off-collision branch agreement) is proven
+here unconditionally from regularity and trapdoor totality. -/
+theorem adaptiveFactorizesSignRunF_gpv [Nonempty Salt] {α : Type}
+    (pk : PK) (sk : SK) (msgs : ℕ → M) (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (realRun progRun : SPMF α) (g : (Salt × M →ₒ Range).QueryCache × Bool → ProbComp α)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hfac : ∃ c : ℕ → Finset Salt,
+      (∀ j, (c j).card ≤ j + qHash) ∧
+      realRun = 𝒟[signRunF (Salt := Salt)
+          (gpvStepReal psf M Salt pk sk msgs) c qSign (∅, false) >>= g] ∧
+      progRun = 𝒟[signRunF (Salt := Salt)
+          (gpvStepProg psf M Salt pk domainSample msgs) c qSign (∅, false) >>= g]) :
+    AdaptiveFactorizesSignRunF (Salt := Salt) realRun progRun qSign qHash := by
+  obtain ⟨c, hcache, hreal, hprog⟩ := hfac
+  exact ⟨(Salt × M →ₒ Range).QueryCache,
+    gpvStepReal psf M Salt pk sk msgs, gpvStepProg psf M Salt pk domainSample msgs,
+    c, ∅, g,
+    fun n s r => gpvStepReal_neverFail psf M Salt pk sk msgs hNF n s r,
+    fun n s r _ => gpvStep_agree psf M Salt pk sk msgs domainSample hreg n s r,
+    hcache, hreal, hprog⟩
+
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
 The GPV `runtime` interprets the surface program over the *sum* spec
