@@ -1838,6 +1838,203 @@ theorem realGameRun_eq_run'_implReal
   rw [← QueryImpl.simulateQ_compose]
   rfl
 
+/-! ### GPV tape-consuming impls (the Fiat–Shamir-template first block)
+
+The fold coupling discharging `gpvRun_factorizes_signRunF` follows the worked Fiat–Shamir instance
+`FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`: an
+`OracleComp.inductionOn`
+over `adv.main pk` that front-loads every signing query's fresh salt draw into a single front draw
+block `OracleComp.drawList ($ᵗ Salt) qSign`, leaving a *tape-consuming* run whose signing steps read
+their salt off the pre-drawn tape rather than drawing it inline.
+
+This block builds the GPV tape-consuming handlers — the analogues of Fiat–Shamir's
+`tapeDrawReadImpl` — and their per-query `.run` unfolding lemmas (the analogues of
+`tapeDrawReadImpl_run_unif` / `_read` / `_sign`). Each handler carries the random-oracle
+`QueryCache` *plus a salt tape* `List Salt` in its state: a signing query consumes the head salt of
+the tape (running the rest of the inline signing body on it) instead of drawing `r ← $ᵗ Salt`, while
+uniform and random-oracle-read queries leave the tape untouched. These are concrete definitions and
+their structural per-query unfoldings; the full `inductionOn` factorization (relating
+`simulateQ gpvRealImpl` to the front-tape `drawList ($ᵗ Salt) qSign >>= simulateQ gpvRealImplTape`)
+and the `drawList`↔`signRunF` bridge remain the deep open core of the residual. -/
+
+/-- **The real GPV tape-consuming handler.**
+
+The salt-tape analogue of `gpvRealImpl`: its state is the random-oracle `QueryCache` paired with a
+*salt tape* `List Salt`. A signing query consumes the head salt `r` of the tape (instead of drawing
+`r ← $ᵗ Salt` inline), queries the random oracle at `(r, msg)`, trapdoor-samples a preimage, and
+returns `(r, s)` while advancing the tape by one; uniform and random-oracle-read queries behave
+exactly as the real handler and leave the tape untouched. The tape is over-provisioned (length
+`qSign`, one salt per signing query); a missing head (empty tape) defaults to the inline draw so the
+handler is total. This is the GPV analogue of Fiat–Shamir's `tapeDrawReadImpl`; its per-query
+unfoldings are recorded by `gpvRealImplTape_run_unif` / `_read` / `_sign` below. -/
+noncomputable def gpvRealImplTape (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × List Salt) ProbComp) :=
+  fun t => match t with
+  | .inl (.inl n) => StateT.mk fun s =>
+      (fun u => (u, s)) <$> (unifSpec.query n : ProbComp _)
+  | .inl (.inr mc) => StateT.mk fun s =>
+      (fun p : Range × (Salt × M →ₒ Range).QueryCache => (p.1, (p.2, s.2))) <$>
+        (randomOracle (spec := (Salt × M →ₒ Range)) mc).run s.1
+  | .inr msg => StateT.mk fun s =>
+      match s.2 with
+      | [] =>
+          (fun rsc : (Salt × Domain) × (Salt × M →ₒ Range).QueryCache =>
+              (rsc.1, (rsc.2, ([] : List Salt)))) <$>
+            (do
+              let r ← ($ᵗ Salt : ProbComp Salt)
+              let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+              let sgn ← psf.trapdoorSample pk sk p.1
+              pure ((r, sgn), p.2))
+      | r :: tl =>
+          (fun rsc : (Salt × Domain) × (Salt × M →ₒ Range).QueryCache => (rsc.1, (rsc.2, tl))) <$>
+            (do
+              let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+              let sgn ← psf.trapdoorSample pk sk p.1
+              pure ((r, sgn), p.2))
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **One-step unfolding of `gpvRealImplTape` on a uniform query.** The tape is untouched. -/
+lemma gpvRealImplTape_run_unif (pk : PK) (sk : SK) (n : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inl n))).run s =
+      (fun u => (u, s)) <$> (unifSpec.query n : ProbComp _) := rfl
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **One-step unfolding of `gpvRealImplTape` on a random-oracle read query.** The tape is
+untouched; the cache component runs the lazy `randomOracle` step. -/
+lemma gpvRealImplTape_run_read (pk : PK) (sk : SK) (mc : Salt × M)
+    (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inr mc))).run s =
+      (fun p : Range × (Salt × M →ₒ Range).QueryCache => (p.1, (p.2, s.2))) <$>
+        (randomOracle (spec := (Salt × M →ₒ Range)) mc).run s.1 := rfl
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **One-step unfolding of `gpvRealImplTape` on a signing query with a non-empty tape.** The head
+salt `r` is consumed off the tape (the tape advances to its tail `tl`), the random oracle is queried
+at `(r, msg)`, a trapdoor preimage is drawn, and `(r, s)` is returned. This is the GPV analogue of
+`tapeDrawReadImpl_run_sign`: the inline salt draw `r ← $ᵗ Salt` is *replaced* by consuming the
+pre-drawn tape head. -/
+lemma gpvRealImplTape_run_sign_cons (pk : PK) (sk : SK) (msg : M) (r : Salt) (tl : List Salt)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (gpvRealImplTape psf M Salt pk sk (.inr msg)).run (cache, r :: tl) =
+      (fun rsc : (Salt × Domain) × (Salt × M →ₒ Range).QueryCache => (rsc.1, (rsc.2, tl))) <$>
+        (do
+          let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+          let sgn ← psf.trapdoorSample pk sk p.1
+          pure ((r, sgn), p.2)) := rfl
+
+/-- **The programmed (simulator) GPV tape-consuming handler.**
+
+The salt-tape analogue of `progGameRunImplNoRec`: its state is the random-oracle `QueryCache` paired
+with a salt tape `List Salt`. A signing query consumes the head salt `r` of the tape (instead of
+drawing `r ← $ᵗ Salt` inline), forward-samples a short preimage `s ← domainSample pk`, programs the
+cache point `(r, msg) ↦ psf.eval pk s`, and returns `(r, s)` while advancing the tape; the
+random-oracle handler programs a miss with `psf.eval pk (domainSample pk)` and the uniform handler
+is the bare sample, both leaving the tape untouched. This is the programmed dual of
+`gpvRealImplTape`; its per-query unfoldings are recorded by `progGameRunImplTape_run_unif` /
+`_read` / `_sign` below. -/
+noncomputable def progGameRunImplTape (domainSample : PK → ProbComp Domain) (pk : PK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × List Salt) ProbComp) :=
+  fun t => match t with
+  | .inl (.inl n) => StateT.mk fun s =>
+      (fun u => (u, s)) <$> (unifSpec.query n : ProbComp _)
+  | .inl (.inr mc) => StateT.mk fun s =>
+      match s.1 mc with
+      | some v => pure (v, s)
+      | none =>
+          (fun sd : Domain => (psf.eval pk sd, (s.1.cacheQuery mc (psf.eval pk sd), s.2))) <$>
+            (domainSample pk : ProbComp Domain)
+  | .inr msg => StateT.mk fun s =>
+      match s.2 with
+      | [] =>
+          (do
+            let r ← ($ᵗ Salt : ProbComp Salt)
+            let sd ← (domainSample pk : ProbComp Domain)
+            pure ((r, sd), (s.1.cacheQuery (r, msg) (psf.eval pk sd), ([] : List Salt))))
+      | r :: tl =>
+          (fun sd : Domain => ((r, sd), (s.1.cacheQuery (r, msg) (psf.eval pk sd), tl))) <$>
+            (domainSample pk : ProbComp Domain)
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
+/-- **One-step unfolding of `progGameRunImplTape` on a uniform query.** The tape is untouched. -/
+lemma progGameRunImplTape_run_unif (domainSample : PK → ProbComp Domain) (pk : PK)
+    (n : unifSpec.Domain) (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    (progGameRunImplTape psf M Salt domainSample pk (.inl (.inl n))).run s =
+      (fun u => (u, s)) <$> (unifSpec.query n : ProbComp _) := rfl
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
+/-- **One-step unfolding of `progGameRunImplTape` on a random-oracle read query.** The tape is
+untouched; on a cache hit the recorded value is returned, on a miss the answer is programmed to
+`psf.eval pk (domainSample pk)`. -/
+lemma progGameRunImplTape_run_read (domainSample : PK → ProbComp Domain) (pk : PK) (mc : Salt × M)
+    (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    (progGameRunImplTape psf M Salt domainSample pk (.inl (.inr mc))).run s =
+      (match s.1 mc with
+        | some v => pure (v, s)
+        | none =>
+            (fun sd : Domain => (psf.eval pk sd, (s.1.cacheQuery mc (psf.eval pk sd), s.2))) <$>
+              (domainSample pk : ProbComp Domain)) := rfl
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
+/-- **One-step unfolding of `progGameRunImplTape` on a signing query with a non-empty tape.** The
+head salt `r` is consumed off the tape (the tape advances to its tail `tl`), a short preimage is
+forward-sampled, the cache point `(r, msg) ↦ psf.eval pk s` is programmed, and `(r, s)` is returned.
+This is the programmed analogue of `gpvRealImplTape_run_sign_cons`: the inline salt draw is replaced
+by consuming the pre-drawn tape head. -/
+lemma progGameRunImplTape_run_sign_cons (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (r : Salt) (tl : List Salt) (cache : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run (cache, r :: tl) =
+      (fun sd : Domain => ((r, sd), (cache.cacheQuery (r, msg) (psf.eval pk sd), tl))) <$>
+        (domainSample pk : ProbComp Domain) := rfl
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **Real tape signing-step cache bridge.** The cache component of one `gpvRealImplTape` signing
+step on a consed tape `r :: tl`, at a *missing* cache key `(r, msgs n) = none`, is distributed
+exactly as the concrete `signRunF` real step `gpvStepReal` at the consumed head salt `r`.
+
+This is the GPV analogue of Fiat–Shamir's per-body splice (the signing-step case of the fold
+factorization): it relates the tape-consuming signing step to the `signRunF` handler the residual
+`gpvRun_factorizes_signRunF` factors through. It is *pinned* to the concrete `gpvRealImplTape` and
+`gpvStepReal`, and reduces (via `gpvRealImplTape_run_sign_cons`) to the banked inline splice
+`evalDist_gpvSignBody_run_eq_gpvStepReal`: with the head salt `r` already supplied (front-loaded out
+of the tape), the tape signing step is exactly one real signing body run through the lazy random
+oracle, whose recorded cache transition is `gpvStepReal n cache r`. The only side condition is the
+fresh-salt cache miss `hmiss`. -/
+lemma evalDist_gpvRealImplTape_sign_cache_eq_gpvStepReal (pk : PK) (sk : SK) (msgs : ℕ → M) (n : ℕ)
+    (r : Salt) (tl : List Salt) (cache : (Salt × M →ₒ Range).QueryCache)
+    (hmiss : cache (r, msgs n) = none) :
+    𝒟[(fun p : (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × List Salt) => p.2.1) <$>
+        (gpvRealImplTape psf M Salt pk sk (.inr (msgs n))).run (cache, r :: tl)]
+      = 𝒟[gpvStepReal psf M Salt pk sk msgs n cache r] := by
+  rw [gpvRealImplTape_run_sign_cons]
+  simp only [Functor.map_map]
+  rw [← evalDist_gpvSignBody_run_eq_gpvStepReal psf M Salt pk sk msgs n cache r hmiss]
+  simp [map_bind]
+
+open Classical in
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
+/-- **Programmed tape signing-step cache bridge.** The cache component of one
+`progGameRunImplTape` signing step on a consed tape `r :: tl` is distributed exactly as the concrete
+`signRunF` programmed step `gpvStepProg` at the consumed head salt `r`.
+
+This is the programmed dual of `evalDist_gpvRealImplTape_sign_cache_eq_gpvStepReal`, and the
+signing-step case of the *programmed* run-equality the residual factors through. It is *pinned* to
+the concrete `progGameRunImplTape` and `gpvStepProg`: both forward-sample `s ← domainSample pk` and
+record the cache transition `cache ↦ cache.cacheQuery (r, msgs n) (psf.eval pk s)` at the consumed
+head salt `r`, so projecting the random-oracle cache component yields exactly `gpvStepProg`. No
+side condition is required (the programmed step caches unconditionally). -/
+lemma evalDist_progGameRunImplTape_sign_cache_eq_gpvStepProg (domainSample : PK → ProbComp Domain)
+    (pk : PK) (msgs : ℕ → M) (n : ℕ) (r : Salt) (tl : List Salt)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    𝒟[(fun p : (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × List Salt) => p.2.1) <$>
+        (progGameRunImplTape psf M Salt domainSample pk (.inr (msgs n))).run (cache, r :: tl)]
+      = 𝒟[gpvStepProg psf M Salt pk domainSample msgs n cache r] := by
+  rw [progGameRunImplTape_run_sign_cons]
+  unfold gpvStepProg
+  simp [map_eq_bind_pure_comp, Function.comp]
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
