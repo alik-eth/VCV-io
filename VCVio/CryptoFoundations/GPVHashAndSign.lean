@@ -2035,6 +2035,118 @@ lemma evalDist_progGameRunImplTape_sign_cache_eq_gpvStepProg (domainSample : PK 
   unfold gpvStepProg
   simp [map_eq_bind_pure_comp, Function.comp]
 
+/-! ### Per-query tape↔unified-impl bridges (the Fiat–Shamir-template second block)
+
+These lemmas relate one query-step of the tape-consuming impls `gpvRealImplTape` /
+`progGameRunImplTape` (round-8 block) to one query-step of the unified impls `gpvRealImpl` /
+`progGameRunImplNoRec` (round-6 block), all on a common per-query `.run`. They are the analogues of
+Fiat–Shamir's per-query relating lemmas. The full `inductionOn (adv.main pk)` factorization
+(relating `simulateQ gpvRealImpl` to the front-tape
+`drawList ($ᵗ Salt) qSign >>= simulateQ gpvRealImplTape`) and the `drawList`↔`signRunF` step bridge
+remain the deep open core of the residual.
+
+First the per-query `.run` unfoldings of the *unified* impls on non-signing queries (the unified
+analogues of `gpvRealImplTape_run_unif` / `_read`). Unlike the tape lemmas these are not `rfl`: the
+unified real handler is the `∘ₛ`-composition `gpvRealImpl = (outerLift + randomOracle) ∘ₛ
+realGameRunImplNoLog`, so each non-signing query reduces through `QueryImpl.compose` /
+`realGameRunImplNoLog`'s query re-emission. -/
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImpl` on a uniform query.** The cache is untouched: the unified
+real handler re-emits the public-randomness query through `realGameRunImplNoLog` and the outer
+public-randomness lift forwards it to the bare `unifSpec.query n`, pairing the cache back unchanged.
+-/
+lemma gpvRealImpl_run_unif (pk : PK) (sk : SK) (n : unifSpec.Domain)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (gpvRealImpl psf hr M Salt pk sk (.inl (.inl n))).run cache =
+      (fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _) := rfl
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImpl` on a random-oracle read query.** The unified real handler
+re-emits the random-oracle query through `realGameRunImplNoLog`, and the outer `randomOracle`
+summand runs the lazy random-oracle step on the cache component. -/
+lemma gpvRealImpl_run_read (pk : PK) (sk : SK) (mc : Salt × M)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (gpvRealImpl psf hr M Salt pk sk (.inl (.inr mc))).run cache =
+      (randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache := by
+  simp [gpvRealImpl, QueryImpl.compose, realGameRunImplNoLog, HAdd.hAdd, QueryImpl.add]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRec` on a uniform query.** The cache is untouched. -/
+lemma progGameRunImplNoRec_run_unif (domainSample : PK → ProbComp Domain) (pk : PK)
+    (n : unifSpec.Domain) (cache : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inl n))).run cache =
+      (fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _) := rfl
+
+open Classical in
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRec` on a random-oracle read query.** On a cache hit
+the recorded value is returned; on a miss the answer is programmed to
+`psf.eval pk (domainSample pk)` and recorded in the cache. The tape (in the tape impl) is replaced
+here by the bare cache. -/
+lemma progGameRunImplNoRec_run_read (domainSample : PK → ProbComp Domain) (pk : PK) (mc : Salt × M)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inr mc))).run cache =
+      (match cache mc with
+        | some v => pure (v, cache)
+        | none =>
+            (fun sd : Domain => (psf.eval pk sd, cache.cacheQuery mc (psf.eval pk sd))) <$>
+              (domainSample pk : ProbComp Domain)) := by
+  cases h : cache mc <;>
+    simp [progGameRunImplNoRec, HAdd.hAdd, QueryImpl.add, StateT.run_bind, StateT.run_get,
+      StateT.run_set, StateT.run_monadLift, h, map_eq_bind_pure_comp, Function.comp]
+
+omit [Fintype Salt] in
+/-- **Tier-1 (uniform) tape↔unified bridge — real side.** One uniform query-step of the tape impl
+`gpvRealImplTape` equals the corresponding `gpvRealImpl` step with the salt tape carried through
+unchanged: both forward the bare `unifSpec.query n` and leave the cache (resp. cache and tape)
+untouched. This is the FS template's trivial per-query relating lemma; the tape is a passive
+passenger on a uniform query. -/
+lemma gpvRealImplTape_run_unif_eq_gpvRealImpl (pk : PK) (sk : SK) (n : unifSpec.Domain)
+    (cache : (Salt × M →ₒ Range).QueryCache) (tape : List Salt) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inl n))).run (cache, tape) =
+      (fun p => (p.1, (p.2, tape))) <$>
+        (gpvRealImpl psf hr M Salt pk sk (.inl (.inl n))).run cache := by
+  rw [gpvRealImplTape_run_unif, gpvRealImpl_run_unif]; rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Tier-1 (uniform) tape↔unified bridge — programmed side.** One uniform query-step of the
+programmed tape impl `progGameRunImplTape` equals the corresponding `progGameRunImplNoRec` step with
+the salt tape carried through unchanged. -/
+lemma progGameRunImplTape_run_unif_eq_progGameRunImplNoRec (domainSample : PK → ProbComp Domain)
+    (pk : PK) (n : unifSpec.Domain) (cache : (Salt × M →ₒ Range).QueryCache) (tape : List Salt) :
+    (progGameRunImplTape psf M Salt domainSample pk (.inl (.inl n))).run (cache, tape) =
+      (fun p => (p.1, (p.2, tape))) <$>
+        (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inl n))).run cache := by
+  rw [progGameRunImplTape_run_unif, progGameRunImplNoRec_run_unif]; rfl
+
+omit [Fintype Salt] in
+/-- **Tier-2 (random-oracle read) tape↔unified bridge — real side.** One random-oracle read
+query-step of the tape impl `gpvRealImplTape` equals the corresponding `gpvRealImpl` step with the
+salt tape carried through unchanged: both run the *same* lazy `randomOracle` step on the cache
+component (`gpvRealImpl` re-emits the read query through `realGameRunImplNoLog` and the outer
+`randomOracle` summand answers it), leaving the tape a passive passenger. -/
+lemma gpvRealImplTape_run_read_eq_gpvRealImpl (pk : PK) (sk : SK) (mc : Salt × M)
+    (cache : (Salt × M →ₒ Range).QueryCache) (tape : List Salt) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inr mc))).run (cache, tape) =
+      (fun p => (p.1, (p.2, tape))) <$>
+        (gpvRealImpl psf hr M Salt pk sk (.inl (.inr mc))).run cache := by
+  rw [gpvRealImplTape_run_read, gpvRealImpl_run_read]; rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Tier-2 (random-oracle read) tape↔unified bridge — programmed side.** One random-oracle read
+query-step of the programmed tape impl `progGameRunImplTape` equals the corresponding
+`progGameRunImplNoRec` step with the salt tape carried through unchanged: on a cache hit both return
+the recorded value, on a miss both program `psf.eval pk (domainSample pk)` and record it, leaving
+the tape untouched. -/
+lemma progGameRunImplTape_run_read_eq_progGameRunImplNoRec (domainSample : PK → ProbComp Domain)
+    (pk : PK) (mc : Salt × M) (cache : (Salt × M →ₒ Range).QueryCache) (tape : List Salt) :
+    (progGameRunImplTape psf M Salt domainSample pk (.inl (.inr mc))).run (cache, tape) =
+      (fun p => (p.1, (p.2, tape))) <$>
+        (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inr mc))).run cache := by
+  rw [progGameRunImplTape_run_read, progGameRunImplNoRec_run_read]
+  cases h : cache mc <;> simp [h, Functor.map_map]
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
