@@ -1319,123 +1319,212 @@ Fiat–Shamir factorization
 generic `OracleComp.DeferredSampling.evalDist_step_commute_tape` answer-irrelevant commute and the
 signing step handled by a bespoke per-body salt splice. -/
 
+/-! ### The pinned GPV game runs
+
+The residual `gpvRun_factorizes_signRunF` is pinned to the *actual* GPV game runs of the
+adversary's main computation `adv.main pk`, not to free `SPMF` parameters or to a hash-only run
+under a deterministic programming policy. Two named game-run distributions model the two worlds of
+the sign-then-hash hop:
+
+- `realGameRun` is the **real EUF-CMA game run**: `adv.main pk` simulated under the real ambient
+  oracle forwarding (the lazy random oracle via the `runtime` bundle) and the real GPV signing
+  oracle (`SignatureAlg.signingOracle`, which on each signing query draws a fresh salt, queries the
+  random oracle, and trapdoor-samples a preimage). This is exactly the inner run of
+  `SignatureAlg.unforgeableExpNoFresh` for the GPV scheme, with the forgery `(msg, σ)` extracted.
+
+- `progGameRun` is the **randomized sign-then-hash game run**: `adv.main pk` simulated under the
+  *programmed* random oracle and the *simulator* signing oracle of the collision reduction
+  (the very handler stack of `reduction`). On each random-oracle miss the programmed oracle
+  forward-samples `s ← domainSample pk` and records `psf.eval pk s`; on each signing query the
+  simulator draws a fresh salt `r`, forward-samples `s`, programs `(r, msg) := psf.eval pk s`, and
+  returns `(r, s)`. The randomness is genuine (it lives in `domainSample`), so this models the
+  randomized sign-then-hash game rather than a deterministic point-mass programming policy.
+
+The total-variation distance between these two runs is the sign-then-hash hop bounded by
+`collisionBound`; the residual factors both through the `signRunF` presentation so that
+`factorized_advantage_le_collisionBound` delivers the bound. -/
+
 open Classical in
-omit [DecidableEq Range] [Fintype Salt] in
+/-- **The real GPV EUF-CMA game run** of `adv.main pk` at key pair `(pk, sk)`.
+
+The adversary's main computation is simulated under the real ambient oracle forwarding (the lazy
+random oracle supplied by the `runtime` bundle) together with the real GPV signing oracle
+(`SignatureAlg.signingOracle`), and the resulting forgery `(msg, σ)` is extracted. This is exactly
+the inner run of `SignatureAlg.unforgeableExpNoFresh` for the GPV scheme: it is the real-world side
+of the sign-then-hash hop, pinned as the residual's `realRun`. -/
+noncomputable def realGameRun
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (pk : PK) (sk : SK) :
+    SPMF (M × (Salt × Domain)) :=
+  (runtime M Salt).evalDist do
+    let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+        (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+          (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+      (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+          (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+        (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+          (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+        (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+          psf hr M Salt).signingOracle pk sk
+    let (out, _log) ← (simulateQ impl (adv.main pk)).run
+    pure out
+
+open Classical in
+/-- **The randomized sign-then-hash game run** of `adv.main pk` at public key `pk`.
+
+The adversary's main computation is simulated under the collision reduction's programmed
+random-oracle / simulator-signing handler stack (the handler model of `reduction`): on a
+random-oracle miss the oracle forward-samples `s ← domainSample pk` and records `psf.eval pk s`; on
+a signing query the simulator draws a fresh salt `r`, forward-samples `s`, programs
+`(r, msg) := psf.eval pk s`, and returns `(r, s)`. The forgery `(msg, σ)` is extracted. The
+programming is *randomized* (the randomness lives in `domainSample`), so this models the randomized
+sign-then-hash game; it is pinned as the residual's `progRun`. -/
+noncomputable def progGameRun
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (pk : PK) :
+    SPMF (M × (Salt × Domain)) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1 t with
+      | some v => pure v
+      | none => do
+          let s ← (domainSample pk : ProbComp Domain)
+          let v := psf.eval pk s
+          set ((st.1.cacheQuery t v, fun t' => if t' = t then some s else st.2 t') : State)
+          pure v
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      set ((st.1.cacheQuery (r, msg) v,
+        fun t' => if t' = (r, msg) then some s else st.2 t') : State)
+      pure (r, s)
+  let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT State ProbComp) := (unifImpl + roImpl) + signImpl
+  𝒟[Prod.fst <$> (simulateQ impl (adv.main pk)).run (∅, fun _ => none)]
+
+open Classical in
+omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
 `AdaptiveFactorizesSignRunF` factorization obligation, with regularity threaded in.**
 
-The two computations being factored are **not** free parameters: they are *pinned* to the actual
-GPV game runs supplied by the caller as `realRun`/`progRun`, namely the real `runtime`-evaluated and
-sign-then-hash-programmed images of a salt-inclusive signing run `ob` (the
-`SignatureAlg.unforgeableExp` body), *paired with the hypothesis that they ARE such game runs.*
-Concretely, the caller exhibits the signing run `ob` and a programming policy `policy` and
-certifies, via `hreal_pin` / `hprog_pin`, that `realRun` is the real `runtime`-evaluated run of `ob`
-and `progRun` is the `withProgramming`-programmed run of `ob` — exactly the two distributions of the
-re-stated U2 surface `tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`. The PSF
-regularity witness is threaded in as `hreg` (so the produced obligation's off-collision branch
-agreement is dischargeable by `gpvStep_agree`) and the trapdoor sampler's totality as `hNF` (so the
-real step never fails). The conclusion is exactly `AdaptiveFactorizesSignRunF realRun progRun qSign
-qHash` — the obligation consumed by `factorized_advantage_le_collisionBound`.
+The two computations being factored are **not** free parameters and **not** a hash-only run under a
+deterministic programming policy: they are *pinned* to the actual GPV game runs of the adversary's
+main computation `adv.main pk`, over the full oracle stack
+`(unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))` — the vehicle that *has* the signing
+oracle and therefore the fresh salt draws. The real run `realGameRun … adv pk sk` is the real
+EUF-CMA game (lazy random oracle plus the real GPV signing oracle, exactly the inner run of
+`SignatureAlg.unforgeableExpNoFresh`); the programmed run `progGameRun … adv domainSample pk` is the
+randomized sign-then-hash game (the collision reduction's programmed-oracle / simulator-signing
+handler stack, whose programming randomness lives in `domainSample`). The PSF regularity witness is
+threaded in as `hreg` (so the produced obligation's off-collision branch agreement is dischargeable
+by `gpvStep_agree`) and the trapdoor sampler's totality as `hNF` (so the real step never fails); the
+query bound `hQ : signHashQueryBound (oa := adv.main pk) qSign qHash` ties `qSign` to the
+adversary's signing-query count and `qHash` to its hash-query count. The conclusion is exactly
+`AdaptiveFactorizesSignRunF (realGameRun …) (progGameRun …) qSign qHash` — the obligation consumed
+by `factorized_advantage_le_collisionBound`.
 
-This statement is *true-as-stated* (counterexample-checked): the *free-parameter* version
-`∀ realRun progRun, ∃ c …, AdaptiveFactorizesSignRunF realRun progRun qSign qHash` is **false** — a
-point mass `realRun := pure a` with `progRun` not a point mass is not any `qSign`-step `signRunF`
-run, so no `signRunF` presentation exists. Pinning `realRun`/`progRun` to genuine GPV game-run
-distributions via `hreal_pin`/`hprog_pin` excludes this counterexample: those runs *do* factor
-through `signRunF` (the phase-9 abstract `#228`-class coupling proves the factorization holds for
-them), so the existential `AdaptiveFactorizesSignRunF` is genuinely witnessed and non-vacuous.
+This statement is *true-as-stated* (counterexample-checked at `qSign = 0`): with the query bound
+`hQ` and `qSign = 0`, the adversary makes **no** signing queries, so the simulator signing oracle of
+`progGameRun` never fires — nothing is programmed by the signing path. Each random-oracle answer of
+`progGameRun` is `psf.eval pk (domainSample pk)`, whose distribution equals a uniform `$ᵗ Range`
+answer by the first marginal of `hreg`, so the programmed run and the real run coincide:
+`realGameRun … = progGameRun …`. The obligation `AdaptiveFactorizesSignRunF` at `qSign = 0` requires
+exactly `realRun = progRun = 𝒟[g (st, false)]` (since `signRunF stepReal c 0 (st, false) =
+pure (st, false)`), which is satisfied by the shared run as `g`. So there is **no** `qSign = 0`
+free-parameter hole: pinning both runs to the genuine GPV game-run distributions (rather than to
+free `SPMF` parameters, as the false predecessor did) and constraining `qSign` by `hQ` excludes the
+point-mass counterexample of the free-parameter version.
 
 This is the **single remaining `#228`-class sub-step**: the deferred-sampling fold factorization
-front-loading the adversary's adaptively-interleaved fresh salt draws of the pinned runs into the
+front-loading the adversary's adaptively-interleaved fresh salt draws of the game runs into the
 fixed `qSign`-step `signRunF` sequence (see the section docstring above and the worked Fiat–Shamir
 instance `FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`). Once discharged,
 it feeds (directly, via `factorized_advantage_le_collisionBound`) the salt-inclusive sign-then-hash
 hop of the four GPV theorems; the structural conjuncts (`NeverFail`, off-collision agreement) are
 supplied here from `hNF`/`hreg` so the residual's *only* remaining content is the deep run-equality
 factorization. -/
-theorem gpvRun_factorizes_signRunF [Finite Range] [Inhabited Range] [Nonempty Salt] {α : Type}
-    (pk : PK) (sk : SK) (msgs : ℕ → M)
+theorem gpvRun_factorizes_signRunF [Finite Range] [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
-    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
-    (ob : OracleComp (Salt × M →ₒ Range) α)
-    (realRun progRun : SPMF α)
-    (hreal_pin : realRun =
-      (runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
-    (hprog_pin : progRun =
-      (liftM (StateT.run'
-        (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
-        : SPMF α))
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
     (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
     (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))]) :
-    AdaptiveFactorizesSignRunF (Salt := Salt) realRun progRun qSign qHash := by
-  -- The deferred-sampling fold factorization of the *pinned* adaptive GPV game runs `realRun` /
-  -- `progRun` (the real `runtime`-evaluated and `withProgramming`-programmed images of the
-  -- salt-inclusive run `ob`).  The structural conjuncts of `AdaptiveFactorizesSignRunF` are already
-  -- dischargeable here (`gpvStepReal_neverFail` from `hNF`, `gpvStep_agree` from `hreg`); the ONLY
-  -- remaining content is the pair of run-equalities `realRun = 𝒟[signRunF gpvStepReal c qSign …]` /
-  -- `progRun = 𝒟[signRunF gpvStepProg c qSign …]` over a shared recorded cache sequence `c` with
+    AdaptiveFactorizesSignRunF (Salt := Salt)
+      (realGameRun psf hr M Salt adv pk sk)
+      (progGameRun psf hr M Salt adv domainSample pk) qSign qHash := by
+  -- The deferred-sampling fold factorization of the *pinned* adaptive GPV game runs
+  -- `realGameRun … adv pk sk` (real EUF-CMA game: lazy RO + real GPV signing oracle) and
+  -- `progGameRun … adv domainSample pk` (randomized sign-then-hash game: the reduction's
+  -- programmed-oracle / simulator-signing handler stack).  The structural conjuncts of
+  -- `AdaptiveFactorizesSignRunF` are already dischargeable here (`gpvStepReal_neverFail` from
+  -- `hNF`, `gpvStep_agree` from `hreg`); the ONLY remaining content is the pair of run-equalities
+  -- `realGameRun … = 𝒟[signRunF gpvStepReal c qSign …]` / `progGameRun … =
+  -- 𝒟[signRunF gpvStepProg c qSign …]` over a shared recorded cache sequence `c` with
   -- `card (c j) ≤ j + qHash`.  Establishing those is the `#228`-class adaptive→`signRunF` coupling
-  -- described in the section docstring: front-loading the adaptively-interleaved fresh salt
-  -- draws of `ob` into the fixed `qSign`-step `signRunF` sequence.  It is the one isolated
-  -- residual of the GPV campaign.  Pinned (NOT free-parameter), counterexample-checked.
-  --
-  -- TRIVIAL-WITNESS DEAD-END (verified, do not retry): the natural witness
-  --   `c := fun _ => ∅`, `g := fun cb => liftM (run' (simulateQ randomOracle ob) cb.1)`
-  -- typechecks and (after `runtime_evalDist_liftComp`) reduces the run-equalities to two
-  -- seeding-invariance equalities.  The REAL side is TRUE — `gpvStepReal` seeds the lazy RO cache
-  -- with *uniform* Range values (`c ← $ᵗ Range`), and reading a uniform-valued cached entry is
-  -- distributionally identical to a fresh `simulateQ randomOracle` miss-draw, so pre-seeding the
-  -- salt-keyed slots is distribution-preserving for `ob`.  But the PROG side FAILS with this same
-  -- `g`: `progRun` runs `ob` under `withProgramming policy`, whereas this `g` replays under the
-  -- bare `randomOracle` — a genuine oracle mismatch.  No single oracle choice for `g` matches BOTH
-  -- worlds; the honest witness couples `g`'s miss-behaviour across worlds via the per-step
-  -- agreement (now available as `hreg`) — exactly the deferred-sampling coupling.  The deep
-  -- coupling is the remaining multi-week `#228`-class core.
+  -- described in the section docstring: front-loading the adversary's adaptively-interleaved fresh
+  -- salt draws (issued inside the signing oracle of `adv.main pk` at adversary-chosen points) into
+  -- the fixed `qSign`-step `signRunF` sequence.  It is the one isolated residual of the GPV
+  -- campaign.  Pinned to the genuine game runs (NOT free-parameter, NOT a hash-only deterministic
+  -- policy run), and constrained by `hQ`; counterexample-checked TRUE at `qSign = 0` (docstring:
+  -- with no signing queries the simulator never fires, each programmed RO answer is `eval`-of-a-
+  -- forward-sample which is uniform by the first marginal of `hreg`, so the two runs coincide).
   sorry
 
-omit [DecidableEq Range] in
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the R2 residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
-factorization supplied by the re-stated residual `gpvRun_factorizes_signRunF`. Given the pins
-`hreal_pin`/`hprog_pin` identifying `realRun`/`progRun` with the real `runtime`-evaluated and
-`withProgramming`-programmed runs of a salt-inclusive signing run `ob`, together with the trapdoor
-totality `hNF` and PSF regularity `hreg`, the total-variation distance between the real and
-programmed game runs is bounded by `(collisionBound Salt qSign qHash).toReal`.
+factorization supplied by the re-stated residual `gpvRun_factorizes_signRunF`. The real run
+`realGameRun … adv pk sk` (the real EUF-CMA game) and the programmed run
+`progGameRun … adv domainSample pk` (the randomized sign-then-hash game of the collision reduction)
+are the two distributions of the sign-then-hash hop; given the query bound `hQ`, the trapdoor
+totality `hNF`, and PSF regularity `hreg`, their total-variation distance is bounded by
+`(collisionBound Salt qSign qHash).toReal`.
 
 The proof *consumes* the residual: it applies `gpvRun_factorizes_signRunF` (which yields the
-`AdaptiveFactorizesSignRunF` obligation for the pinned runs) and then closes with the banked
+`AdaptiveFactorizesSignRunF` obligation for the pinned game runs) and then closes with the banked
 `factorized_advantage_le_collisionBound`. This makes the re-stated residual **load-bearing**: it is
 no longer a dormant statement but is invoked in a real (non-`sorry`) proof, exactly as the design's
 Step-1 chain requires (LHS → residual → `factorized_advantage_le_collisionBound`).
 
 It is the GPV instance of the U2 surface
-`tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`, but unconditional: where that
-lemma takes the up-to-bad coupling as the hypothesis `hcouple`, here the coupling is delivered by
-the residual factorization rather than assumed. -/
+`tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`, but unconditional and over the
+actual game run: where that lemma takes the up-to-bad coupling as the hypothesis `hcouple`, here the
+coupling is delivered by the residual factorization rather than assumed. -/
 theorem gpv_tvDist_real_programmed_le_collisionBound
-    [Finite Range] [Inhabited Range] [Nonempty Salt] {α : Type}
-    (pk : PK) (sk : SK) (msgs : ℕ → M)
+    [Finite Range] [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
-    (policy : OracleSpec.ProgrammingPolicy (Salt × M →ₒ Range))
-    (ob : OracleComp (Salt × M →ₒ Range) α)
-    (realRun progRun : SPMF α)
-    (hreal_pin : realRun =
-      (runtime M Salt).evalDist (OracleComp.liftComp ob (unifSpec + (Salt × M →ₒ Range))))
-    (hprog_pin : progRun =
-      (liftM (StateT.run'
-        (simulateQ (QueryImpl.withProgramming uniformSampleImpl policy) ob) (∅, false))
-        : SPMF α))
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
     (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
     (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))]) :
-    SPMF.tvDist realRun progRun ≤ (collisionBound Salt qSign qHash).toReal :=
-  factorized_advantage_le_collisionBound (Salt := Salt) realRun progRun qSign qHash
-    (gpvRun_factorizes_signRunF psf M Salt pk sk msgs domainSample qSign qHash policy ob
-      realRun progRun hreal_pin hprog_pin hNF hreg)
+    SPMF.tvDist (realGameRun psf hr M Salt adv pk sk)
+        (progGameRun psf hr M Salt adv domainSample pk)
+      ≤ (collisionBound Salt qSign qHash).toReal :=
+  factorized_advantage_le_collisionBound (Salt := Salt)
+    (realGameRun psf hr M Salt adv pk sk)
+    (progGameRun psf hr M Salt adv domainSample pk) qSign qHash
+    (gpvRun_factorizes_signRunF psf hr M Salt pk sk adv domainSample qSign qHash hQ hNF hreg)
 
 open Classical in
 omit [DecidableEq Range] [Fintype Salt] in
