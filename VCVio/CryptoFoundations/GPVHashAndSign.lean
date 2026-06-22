@@ -2664,6 +2664,81 @@ theorem evalDist_progGameRunImplNoRec_eq_drawList_progGameRunImplTape {γ : Type
 
 open Classical in
 omit [Fintype Salt] in
+/-- **Real game-run front-tape factorization (banked bridge, TRUE + PINNED).**
+
+The *pinned* real EUF-CMA game run `realGameRun … adv pk sk` equals a front salt-tape draw
+`drawList ($ᵗ Salt) qSign` followed by the tape-consuming real run of `adv.main pk`, with the salt
+tape projected away. This is the genuine, fully-proven bridge from the actual game run to the
+tape-consuming `gpvRealImplTape` vehicle: it chains the round-6 single-impl normalization
+`realGameRun_eq_run'_implReal` (`realGameRun … = 𝒟[(simulateQ gpvRealImpl (adv.main pk)).run' ∅]`)
+with the round-11 front-tape factorization
+`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`
+(instantiated at the empty cache, with the signing-query bound supplied by `hQ.1`).
+
+The `StateT.run'` of the round-6 form is `Prod.fst <$> StateT.run`, so the round-11 factorization —
+whose tape side is `(·.1, ·.2.1) <$> (… .run (∅, tape))` — composes to the same `Prod.fst`
+projection once the (discarded) salt-tape component is dropped. This bridge front-loads every
+adaptively-issued signing salt of the real game into one front block, leaving a tape-consuming run;
+it is the FS-template factorization pinned to the *actual* game run, and is the prerequisite
+for the `drawList`↔`signRunF` step bridge that discharges the residual. -/
+theorem realGameRun_eq_drawList_gpvRealImplTape (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    realGameRun psf hr M Salt adv pk sk =
+      𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign >>= fun tape =>
+          (fun p : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+            (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
+              ((∅ : (Salt × M →ₒ Range).QueryCache), tape)] := by
+  classical
+  rw [realGameRun_eq_run'_implReal]
+  rw [StateT.run']
+  refine (evalDist_map_eq_of_evalDist_eq
+    (evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape psf hr M Salt pk sk (adv.main pk) qSign hQ.1
+      (∅ : (Salt × M →ₒ Range).QueryCache)) Prod.fst).trans ?_
+  rw [map_bind]
+  simp only [Functor.map_map]
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Programmed game-run front-tape factorization (banked bridge, TRUE + PINNED).**
+
+The *pinned* randomized sign-then-hash game run `progGameRun … adv domainSample pk` equals a front
+salt-tape draw `drawList ($ᵗ Salt) qSign` followed by the tape-consuming programmed run of
+`adv.main pk`, with the salt tape projected away. The programmed dual of
+`realGameRun_eq_drawList_gpvRealImplTape`: it chains the round-6 record-free normalization
+`progGameRun_eq_run'_implNoRec` with the round-11 programmed front-tape factorization
+`evalDist_progGameRunImplNoRec_eq_drawList_progGameRunImplTape`
+(signing bound from `hQ.1`). Together
+the two bridges put both pinned game runs into the identical front-tape
+`drawList ($ᵗ Salt) qSign >>= (tape-consuming run)` shape, the prerequisite for the
+`drawList`↔`signRunF` step bridge. -/
+theorem progGameRun_eq_drawList_progGameRunImplTape (pk : PK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    progGameRun psf hr M Salt adv domainSample pk =
+      𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign >>= fun tape =>
+          (fun p : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+            (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
+              ((∅ : (Salt × M →ₒ Range).QueryCache), tape)] := by
+  classical
+  rw [progGameRun_eq_run'_implNoRec]
+  rw [StateT.run']
+  refine (evalDist_map_eq_of_evalDist_eq
+    (evalDist_progGameRunImplNoRec_eq_drawList_progGameRunImplTape psf M Salt domainSample pk
+      (adv.main pk) qSign hQ.1 (∅ : (Salt × M →ₒ Range).QueryCache)) Prod.fst).trans ?_
+  rw [map_bind]
+  simp only [Functor.map_map]
+
+open Classical in
+omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
 `AdaptiveFactorizesSignRunF` factorization obligation, with regularity threaded in.**
 
