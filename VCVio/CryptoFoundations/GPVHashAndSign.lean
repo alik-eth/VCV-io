@@ -1235,6 +1235,23 @@ theorem gpvRun_factorizes_signRunF [Finite Range] [Inhabited Range] [Nonempty Sa
   -- described in the section docstring: front-loading the adaptively-interleaved fresh salt
   -- draws of `ob` into the fixed `qSign`-step `signRunF` sequence.  It is left as the one
   -- isolated residual of the GPV campaign.  Pinned (NOT free-parameter), counterexample-checked.
+  --
+  -- TRIVIAL-WITNESS DEAD-END (verified, do not retry): the natural witness
+  --   `c := fun _ => ∅`, `g := fun cb => liftM (run' (simulateQ randomOracle ob) cb.1)`
+  -- typechecks and (after `runtime_evalDist_liftComp`) reduces the goal to two seeding-invariance
+  -- equalities.  The REAL side is TRUE — `gpvStepReal` seeds the lazy RO cache with *uniform* Range
+  -- values (`c ← $ᵗ Range`), and reading a uniform-valued cached entry is distributionally
+  -- identical to a fresh `simulateQ randomOracle` miss-draw, so pre-seeding the salt-keyed slots is
+  -- distribution-preserving for `ob`.  But the PROG side FAILS with this same `g`: `progRun` runs
+  -- `ob` under `withProgramming policy`, whereas this `g` replays under the bare `randomOracle` —
+  -- a genuine oracle mismatch.  No single oracle choice for `g` matches BOTH worlds: real uses
+  -- `randomOracle`, prog uses `withProgramming`.  A *table-replay* `g` (lookup-then-fresh-on-miss)
+  -- still needs world-dependent miss handling (real miss = uniform; prog miss = program), so it too
+  -- needs the worlds coupled.  The honest witness couples `g`'s miss-behaviour across worlds via
+  -- the per-step agreement — exactly the deferred-sampling coupling, which fundamentally wants the
+  -- PSF regularity `hreg` (present on the sibling `adaptiveFactorizesSignRunF_gpv`/`gpvStep_agree`,
+  -- NOT a hypothesis here).  Resolving whether `hreg` must be threaded into this statement is an
+  -- owner/redraft question; the deep coupling is the remaining multi-week `#228`-class core.
   sorry
 
 open Classical in
