@@ -2073,6 +2073,43 @@ lemma gpvRealImpl_run_read (pk : PK) (sk : SK) (mc : Salt × M)
       (randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache := by
   simp [gpvRealImpl, QueryImpl.compose, realGameRunImplNoLog, HAdd.hAdd, QueryImpl.add]
 
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImpl` on a signing query (the `∘ₛ`/`liftM` unfold).** The
+unified real handler runs the real GPV signing body of `realGameRunImplNoLog` — `do r ← $ᵗ Salt; c ←
+query (r, msg); s ← trapdoorSample c; pure (r, s)` — through the outer public-randomness-lift `+
+randomOracle` simulation. The inline salt draw `r ← $ᵗ Salt` and the trapdoor draw pass through the
+left (public-randomness) lift unchanged, and the random-oracle query `query (r, msg)` is answered by
+the outer lazy `randomOracle` on the cache component, yielding the explicit inline sign body: draw a
+fresh salt `r`, run the lazy random-oracle step at `(r, msg)`, draw the trapdoor preimage, and
+return `((r, s), cache')`.
+
+This is the GPV analogue of the FS deferred-sign-step body unfolding; it cracks the `∘ₛ`/`liftM`
+indirection of `gpvRealImpl = (outerLift + randomOracle) ∘ₛ realGameRunImplNoLog` on the signing
+query (the round-10 blocker). It is *pinned* to the concrete `gpvRealImpl` and is a pure structural
+unfold (no salt front-loading, no distributional coupling), via the per-action `simulateQ` rungs
+(`simulateQ_add_liftM_left` / `simulateQ_liftTarget` / `ofLift_eq_id'` for the lifted draws) and the
+banked `gpvRealImpl_run_read` for the random-oracle query. -/
+lemma gpvRealImpl_run_sign (pk : PK) (sk : SK) (msg : M)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (gpvRealImpl psf hr M Salt pk sk (Sum.inr msg)).run cache =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+        let s ← psf.trapdoorSample pk sk p.1
+        pure ((r, s), p.2)) := by
+  change (simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) +
+      (randomOracle : QueryImpl (Salt × M →ₒ Range)
+        (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)))
+      ((GPVHashAndSign psf hr M Salt).sign pk sk msg)).run cache = _
+  simp only [GPVHashAndSign, simulateQ_bind, StateT.run_bind,
+    QueryImpl.simulateQ_add_liftM_left, simulateQ_liftTarget, QueryImpl.ofLift_eq_id',
+    simulateQ_id', StateT.run_monadLift, simulateQ_pure, StateT.run_pure,
+    bind_assoc, pure_bind]
+  refine bind_congr (fun x => ?_)
+  congr 1
+  exact gpvRealImpl_run_read psf hr M Salt pk sk (x, msg) cache
+
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
 /-- **One-step unfolding of `progGameRunImplNoRec` on a uniform query.** The cache is untouched. -/
 lemma progGameRunImplNoRec_run_unif (domainSample : PK → ProbComp Domain) (pk : PK)
@@ -2097,6 +2134,28 @@ lemma progGameRunImplNoRec_run_read (domainSample : PK → ProbComp Domain) (pk 
   cases h : cache mc <;>
     simp [progGameRunImplNoRec, HAdd.hAdd, QueryImpl.add, StateT.run_bind, StateT.run_get,
       StateT.run_set, StateT.run_monadLift, h, map_eq_bind_pure_comp, Function.comp]
+
+open Classical in
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRec` on a signing query.** The programmed (simulator)
+signing handler draws a fresh salt `r ← $ᵗ Salt`, forward-samples a short preimage `s ← domainSample
+pk`, programs the random-oracle cache point `(r, msg) ↦ psf.eval pk s`, and returns `(r, s)` (the
+preimage record is dropped in the record-free `progGameRunImplNoRec` model). The `.run cache` thus
+yields the explicit inline programmed sign body: draw `r`, draw `s`, and pair `(r, s)` with the
+programmed cache `cache.cacheQuery (r, msg) (psf.eval pk s)`.
+
+This is the programmed dual of `gpvRealImpl_run_sign`; it is *pinned* to the concrete
+`progGameRunImplNoRec` signing handler and is a pure structural unfold. -/
+lemma progGameRunImplNoRec_run_sign (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (cache : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplNoRec psf M Salt domainSample pk (Sum.inr msg)).run cache =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let s ← (domainSample pk : ProbComp Domain)
+        pure ((r, s), cache.cacheQuery (r, msg) (psf.eval pk s))) := by
+  simp [progGameRunImplNoRec, HAdd.hAdd, QueryImpl.add, StateT.run_bind, StateT.run_get,
+    StateT.run_set, StateT.run_monadLift, map_eq_bind_pure_comp, Function.comp, bind_assoc,
+    pure_bind]
 
 omit [Fintype Salt] in
 /-- **Tier-1 (uniform) tape↔unified bridge — real side.** One uniform query-step of the tape impl
@@ -2213,7 +2272,78 @@ theorem evalDist_gpvSignStep_commute_real {γ : Type} (pk : PK) (sk : SK) (msg :
           (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
             ((gpvRealImplTape psf M Salt pk sk (Sum.inr msg)).run (cache, tape) >>= fun p =>
               (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2)] := by
-  sorry
+  -- Peel the leading salt off both sides: the LHS inline sign body (via `gpvRealImpl_run_sign`)
+  -- and the RHS front draw block (via `drawList_salt_succ`) both begin with `r ← $ᵗ Salt`.
+  rw [gpvRealImpl_run_sign, drawList_salt_succ]
+  simp only [bind_assoc, map_bind, pure_bind]
+  refine OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun r => ?_)
+  -- Both sides reduce to a common middle form: draw the `qSrem` salt tape, then the random-oracle
+  -- answer and the trapdoor preimage `s`, then run the tape continuation `ob (r, s)`.
+  -- LHS reaches it by applying `hcont` under the two leading draws and commuting the front block to
+  -- the head; RHS by flattening the consumed tape head (`hflat`, no reordering).
+  trans 𝒟[do
+      let tl ← OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem
+      let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+      let s ← psf.trapdoorSample pk sk p.1
+      (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+        (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)]
+  · -- LHS → middle: rewrite the unified continuation by `hcont` under the two leading draws, then
+    -- commute the resulting `drawList qSrem` block to the front past the answer-irrelevant draws.
+    rw [show 𝒟[(randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache >>= fun p =>
+          psf.trapdoorSample pk sk p.1 >>= fun s =>
+            (simulateQ (gpvRealImpl psf hr M Salt pk sk) (ob (r, s))).run p.2]
+        = 𝒟[(randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache >>= fun p =>
+          psf.trapdoorSample pk sk p.1 >>= fun s =>
+            OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tl =>
+              (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+                (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)]
+      from OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun p =>
+        OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun s => hcont (r, s) p.2))]
+    -- Commute the innermost `drawList qSrem` past the trapdoor draw (under the random-oracle bind).
+    rw [show 𝒟[(randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache >>= fun p =>
+          psf.trapdoorSample pk sk p.1 >>= fun s =>
+            OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tl =>
+              (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+                (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)]
+        = 𝒟[(randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache >>= fun p =>
+          OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tl =>
+            psf.trapdoorSample pk sk p.1 >>= fun s =>
+              (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+                (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)]
+      from OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun p =>
+        OracleComp.DeferredSampling.evalDist_bind_comm
+          (psf.trapdoorSample pk sk p.1)
+          (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+          (fun s tl =>
+            (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+              (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)))]
+    -- Commute the `drawList qSrem` past the random-oracle draw to the front.
+    rw [OracleComp.DeferredSampling.evalDist_bind_comm
+      ((randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache)
+      (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+      (fun p tl => psf.trapdoorSample pk sk p.1 >>= fun s =>
+        (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+          (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl))]
+  · -- middle → RHS: flatten the consumed tape head `r :: tl` (no reordering needed).
+    symm
+    have hflat : ∀ (tl : List Salt),
+        ((do
+            let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+            let s ← psf.trapdoorSample pk sk p.1
+            pure (((r, s), p.2, tl) :
+              (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × List Salt))) >>=
+          fun a => (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) =>
+              (pp.1, pp.2.1)) <$>
+            (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob a.1)).run a.2)
+          = (do
+            let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+            let s ← psf.trapdoorSample pk sk p.1
+            (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+              (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob (r, s))).run (p.2, tl)) := by
+      intro tl; simp only [bind_assoc, pure_bind]
+    simp only [gpvRealImplTape_run_sign_cons, map_bind, map_pure]
+    exact OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _
+      (fun tl => congrArg _ (hflat tl))
 
 omit [Fintype Salt] in
 /-- **Real-side front salt-tape factorization (the Fiat–Shamir-template headline, real side).** By
@@ -2338,7 +2468,7 @@ theorem evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape {γ : Type} (pk : PK) (
         exact evalDist_gpvSignStep_commute_real psf hr M Salt pk sk msg cache (qSrem - 1) ob
           (fun a c' => ih a (qSrem - 1) (hQ2 a) c')
 
-omit [Fintype Salt] [DecidableEq Range] in
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
 /-- **Programmed-side signing-step front-tape commute (the crux inductive step, programmed dual).**
 One programmed signing query-step of the unified handler `progGameRunImplNoRec`, composed with the
 deferred continuation, factors as a single front draw block `drawList ($ᵗ Salt) (qSrem + 1)` of
@@ -2373,9 +2503,50 @@ theorem evalDist_gpvSignStep_commute_prog {γ : Type} (domainSample : PK → Pro
             ((progGameRunImplTape psf M Salt domainSample pk (Sum.inr msg)).run (cache, tape)
               >>= fun p =>
               (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2)] := by
-  sorry
+  -- Peel the leading salt off both sides: the LHS inline sign body (via
+  -- `progGameRunImplNoRec_run_sign`) and the RHS front draw block (via `drawList_salt_succ`).
+  rw [progGameRunImplNoRec_run_sign, drawList_salt_succ]
+  simp only [bind_assoc, map_bind, pure_bind]
+  refine OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun r => ?_)
+  -- Both sides reduce to the drawList-outermost middle form. LHS: apply `hcont` under the
+  -- `domainSample` draw, then commute the resulting `drawList qSrem` block to the front. RHS:
+  -- flatten the consumed tape head (no reordering).
+  trans 𝒟[do
+      let tl ← OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem
+      let s ← (domainSample pk : ProbComp Domain)
+      (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+        (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob (r, s))).run
+          (cache.cacheQuery (r, msg) (psf.eval pk s), tl)]
+  · -- LHS → middle: rewrite the unified continuation by `hcont` under the `domainSample` draw,
+    -- then commute the `drawList qSrem` block to the front past the `domainSample` draw.
+    rw [show 𝒟[(domainSample pk : ProbComp Domain) >>= fun s =>
+          (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (ob (r, s))).run
+            (cache.cacheQuery (r, msg) (psf.eval pk s))]
+        = 𝒟[(domainSample pk : ProbComp Domain) >>= fun s =>
+          OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tl =>
+            (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+              (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob (r, s))).run
+                (cache.cacheQuery (r, msg) (psf.eval pk s), tl)]
+      from OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _
+        (fun s => hcont (r, s) (cache.cacheQuery (r, msg) (psf.eval pk s)))]
+    rw [OracleComp.DeferredSampling.evalDist_bind_comm
+      (domainSample pk : ProbComp Domain)
+      (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+      (fun s tl =>
+        (fun pp : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (pp.1, pp.2.1)) <$>
+          (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob (r, s))).run
+            (cache.cacheQuery (r, msg) (psf.eval pk s), tl))]
+  · -- middle → RHS: flatten the consumed tape head `r :: tl` (no reordering needed).
+    symm
+    refine OracleComp.DeferredSampling.evalDist_bind_congr_left _ _ _ (fun tl => ?_)
+    rw [progGameRunImplTape_run_sign_cons]
+    exact congrArg _ (bind_map_left
+      (fun sd => ((r, sd), cache.cacheQuery (r, msg) (psf.eval pk sd), tl))
+      (domainSample pk)
+      (fun a => (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+        (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob a.1)).run a.2))
 
-omit [Fintype Salt] [DecidableEq Range] in
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
 /-- **Prog-side front salt-tape factorization (the Fiat–Shamir-template headline, prog side).**
 By `OracleComp.inductionOn` on the adversary computation `oa`, the unified programmed run
 distributes as a single front draw block `drawList ($ᵗ Salt) qSrem` of fresh signing salts followed
