@@ -484,6 +484,82 @@ theorem probEvent_saltSeq_le_collisionBound (qSign qHash : ℕ)
   gcongr
   exact_mod_cast hcache j
 
+open Classical in
+/-- **Salt-split tsum identity.** Weighting the uniform-draw distribution by `1` on a finite cache
+`s` and by a constant `q` off it sums to `p + (1 - p) · q`, where `p = card s / |Salt|` is the
+probability of landing in `s`. This is the inclusion-exclusion kernel underlying both the
+salt-collision recursion `probEvent_saltSeq_succ` and the per-step charge of the salt-inclusive
+coupling induction. -/
+theorem tsum_probOutput_uniformSample_ite (s : Finset Salt) (q : ℝ≥0∞) :
+    (∑' x : Salt, Pr[= x | ($ᵗ Salt : ProbComp Salt)] * (if x ∈ s then 1 else q))
+      = ((s.card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞))
+        + (1 - ((s.card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞))) * q := by
+  classical
+  set p : ℝ≥0∞ := ((s.card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞)) with hp
+  have hp_le : p ≤ 1 := by
+    rw [hp, ← probEvent_mem_uniformSample (Salt := Salt) s]
+    exact probEvent_le_one
+  have hmem : Pr[(· ∈ s) | ($ᵗ Salt : ProbComp Salt)] = p := by
+    rw [hp]; exact probEvent_mem_uniformSample (Salt := Salt) s
+  have hcompl : Pr[(· ∉ s) | ($ᵗ Salt : ProbComp Salt)] = 1 - p := by
+    have hsum := probEvent_compl (mx := ($ᵗ Salt : ProbComp Salt)) (· ∈ s)
+    rw [hmem] at hsum
+    have hbot : Pr[⊥ | ($ᵗ Salt : ProbComp Salt)] = 0 := by simp
+    rw [hbot, tsub_zero] at hsum
+    exact ENNReal.eq_sub_of_add_eq (ne_top_of_le_ne_top one_ne_top hp_le) (by
+      rw [add_comm]; exact hsum)
+  have hsplit : ∀ x : Salt,
+      Pr[= x | ($ᵗ Salt : ProbComp Salt)] * (if x ∈ s then 1 else q)
+        = (if x ∈ s then Pr[= x | ($ᵗ Salt : ProbComp Salt)] else 0)
+          + (if x ∈ s then 0 else Pr[= x | ($ᵗ Salt : ProbComp Salt)] * q) := by
+    intro x; by_cases hx : x ∈ s <;> simp [hx]
+  simp_rw [hsplit]
+  rw [ENNReal.tsum_add]
+  congr 1
+  · rw [← probEvent_eq_tsum_ite]; exact hmem
+  · have hre : ∀ x : Salt,
+        (if x ∈ s then 0 else Pr[= x | ($ᵗ Salt : ProbComp Salt)] * q)
+          = (if x ∉ s then Pr[= x | ($ᵗ Salt : ProbComp Salt)] else 0) * q := by
+      intro x; by_cases hx : x ∈ s <;> simp [hx]
+    simp_rw [hre]
+    rw [ENNReal.tsum_mul_right, ← probEvent_eq_tsum_ite (p := (· ∉ s)), hcompl]
+
+open Classical in
+/-- **Exact one-step recursion of the salt-collision probability.** The probability that the
+combined draw-then-check process `saltSeq c (n + 1)` reports a collision decomposes by independence
+of the fresh head draw `r ← $ᵗ Salt` from the remaining `n` draws: with `p = card (c n) / |Salt|`
+the head-collision probability, the head fires with probability `p`, and otherwise (probability
+`1 - p`) the tail `saltSeq c n` must fire. Hence
+`Pr[saltSeq c (n + 1)] = p + (1 - p) · Pr[saltSeq c n]`.
+
+This is the tight inclusion-exclusion identity (the head draw and the tail are independent), which
+is exactly the per-step charge produced by the salt-inclusive coupling induction
+`signRunF_tvDist_le_saltSeq`. -/
+theorem probEvent_saltSeq_succ (c : ℕ → Finset Salt) (n : ℕ) :
+    Pr[(· = true) | saltSeq (Salt := Salt) c (n + 1)]
+      = ((c n).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞)
+        + (1 - ((c n).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞))
+          * Pr[(· = true) | saltSeq (Salt := Salt) c n] := by
+  classical
+  set q : ℝ≥0∞ := Pr[(· = true) | saltSeq (Salt := Salt) c n] with hq
+  -- Expand the head draw.
+  conv_lhs => rw [saltSeq]
+  rw [probEvent_bind_eq_tsum]
+  -- Per-`r` inner probability: `1` if `r ∈ c n`, else `q`.
+  have hinner : ∀ r : Salt,
+      Pr[(· = true) | (saltSeq (Salt := Salt) c n >>=
+            fun rest => (pure (decide (r ∈ c n) || rest) : ProbComp Bool))]
+        = (if r ∈ c n then 1 else q) := by
+    intro r
+    by_cases hr : r ∈ c n
+    · simp only [hr, if_true, decide_true, Bool.true_or]
+      simp
+    · simp only [hr, if_false, decide_false, Bool.false_or]
+      rw [hq]
+      simp
+  simp_rw [hinner]
+  exact tsum_probOutput_uniformSample_ite (Salt := Salt) (c n) q
+
 /-! ## Open sub-step: the salt-collision coupling `hcouple`
 
 The salt-averaged telescope above (`probEvent_saltSeq_le_collisionBound`) is the honest, axiom-clean
@@ -605,8 +681,166 @@ noncomputable def signRunF {St : Type} (step : ℕ → St → Salt → ProbComp 
       let st' ← step n sb.1 r
       signRunF step c n (st', sb.2 || decide (r ∈ c n))
 
+omit [DecidableEq Salt] [SampleableType Salt] [Fintype Salt] in
+/-- **Uniform per-fibre TV bound for a shared base.** If two continuations are pointwise at
+total-variation distance at most `δ` (with `δ ≥ 0`), then binding them over a common base
+computation is also within `δ`. The base only needs to be a sub-probability computation; the mass
+`∑' Pr[= a] ≤ 1` absorbs the constant fibre bound. -/
+theorem tvDist_bind_le_of_forall_le {α β : Type} (mx : ProbComp α) (f g : α → ProbComp β)
+    (δ : ℝ) (hδ : 0 ≤ δ) (h : ∀ a, tvDist (f a) (g a) ≤ δ) :
+    tvDist (mx >>= f) (mx >>= g) ≤ δ := by
+  refine le_trans (tvDist_bind_left_le mx f g) ?_
+  have hbase : Summable (fun a : α => Pr[= a | mx].toReal) :=
+    ENNReal.summable_toReal (ne_top_of_le_ne_top one_ne_top tsum_probOutput_le_one)
+  have hsum_le_one : ∑' a : α, Pr[= a | mx].toReal ≤ 1 := by
+    have h1 : (∑' a : α, Pr[= a | mx].toReal) = (∑' a : α, Pr[= a | mx]).toReal :=
+      (ENNReal.tsum_toReal_eq (fun a => ne_top_of_le_ne_top one_ne_top probOutput_le_one)).symm
+    rw [h1, ← ENNReal.toReal_one]
+    exact (ENNReal.toReal_le_toReal (ne_top_of_le_ne_top one_ne_top tsum_probOutput_le_one)
+      one_ne_top).2 tsum_probOutput_le_one
+  calc ∑' a, Pr[= a | mx].toReal * tvDist (f a) (g a)
+        ≤ ∑' a, Pr[= a | mx].toReal * δ :=
+        Summable.tsum_le_tsum
+          (fun a => mul_le_mul_of_nonneg_left (h a) ENNReal.toReal_nonneg)
+          (Summable.of_nonneg_of_le (fun a => mul_nonneg ENNReal.toReal_nonneg (tvDist_nonneg _ _))
+            (fun a => mul_le_mul_of_nonneg_left (h a) ENNReal.toReal_nonneg) (hbase.mul_right δ))
+          (hbase.mul_right δ)
+    _ = (∑' a, Pr[= a | mx].toReal) * δ := by rw [tsum_mul_right]
+    _ ≤ 1 * δ := mul_le_mul_of_nonneg_right hsum_le_one hδ
+    _ = δ := one_mul δ
+
+open Classical in
 omit [Fintype Salt] in
-/-- **Salt-inclusive identical-until-bad coupling (the one open residual).**
+/-- **Stateful identical-until-bad telescoping (generalized over the initial flag and state).**
+
+This is the inductive heart of the salt-inclusive coupling. For any initial flag `b` and state
+`st`, the total-variation distance between the real and programmed sequenced runs is bounded by the
+salt-averaged collision probability `Pr[saltSeq c n = true]`, *independently of `b` and `st`* (the
+flag only accumulates the collision disjunction and the RHS does not depend on the threaded state).
+
+The successor step shares the fresh salt draw `r ← $ᵗ Salt` and splits per-`r`:
+* On the per-step collision `r ∈ c n` the step is charged its full mass (`tvDist ≤ 1`), contributing
+  the head term `card (c n) / |Salt|`.
+* Off the collision (`r ∉ c n`) the head handlers agree in distribution (`h_step`), so by the
+  triangle inequality the step contributes only the tail, bounded by the induction hypothesis at the
+  advanced state and flag. The `NeverFail` hypothesis keeps the state-marginal mass equal to one.
+
+The per-`r` charges accumulate to exactly `card (c n) / |Salt| + (1 - card (c n) / |Salt|) ·
+Pr[saltSeq c n]`, which equals `Pr[saltSeq c (n + 1)]` by the independence identity
+`probEvent_saltSeq_succ`. This realizes design L3a: a stateful telescoping accepting
+state-dependent per-step costs. -/
+theorem signRunF_tvDist_le_saltSeq_aux {St : Type} [Finite Salt]
+    (stepReal stepProg : ℕ → St → Salt → ProbComp St)
+    (c : ℕ → Finset Salt) [∀ n st r, NeverFail (stepReal n st r)]
+    (h_step : ∀ n st r, r ∉ c n → 𝒟[stepReal n st r] = 𝒟[stepProg n st r])
+    (n : ℕ) (st : St) (b : Bool) :
+    tvDist (signRunF (Salt := Salt) stepReal c n (st, b))
+        (signRunF (Salt := Salt) stepProg c n (st, b))
+      ≤ (Pr[(· = true) | saltSeq (Salt := Salt) c n]).toReal := by
+  classical
+  haveI : Fintype Salt := Fintype.ofFinite Salt
+  induction n generalizing st b with
+  | zero =>
+      simp only [signRunF]
+      rw [tvDist_self]
+      exact ENNReal.toReal_nonneg
+  | succ n ih =>
+      -- Notation for the per-step head-collision probability `p` and tail probability `q`.
+      set q : ℝ≥0∞ := Pr[(· = true) | saltSeq (Salt := Salt) c n] with hq
+      set p : ℝ≥0∞ := ((c n).card : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞) with hp
+      have hp_le : p ≤ 1 := by
+        rw [hp, ← probEvent_mem_uniformSample (Salt := Salt) (c n)]
+        exact probEvent_le_one
+      have hq_le : q ≤ 1 := by rw [hq]; exact probEvent_le_one
+      -- Unfold one step on both sides; the salt draw `r ← $ᵗ Salt` is shared.
+      rw [signRunF, signRunF]
+      -- Per-`r` continuation bound.
+      refine le_trans (tvDist_bind_left_le ($ᵗ Salt : ProbComp Salt) _ _) ?_
+      -- Bound each per-`r` term by `if r ∈ c n then 1 else q.toReal`.
+      have hterm : ∀ r : Salt,
+          tvDist (stepReal n st r >>= fun st' =>
+              signRunF (Salt := Salt) stepReal c n (st', b || decide (r ∈ c n)))
+            (stepProg n st r >>= fun st' =>
+              signRunF (Salt := Salt) stepProg c n (st', b || decide (r ∈ c n)))
+            ≤ (if r ∈ c n then 1 else q.toReal) := by
+        intro r
+        by_cases hr : r ∈ c n
+        · rw [if_pos hr]; exact tvDist_le_one _ _
+        · rw [if_neg hr]
+          -- Triangle through the real head with the programmed tail.
+          refine le_trans (tvDist_triangle _
+            (stepReal n st r >>= fun st' =>
+              signRunF (Salt := Salt) stepProg c n (st', b || decide (r ∈ c n))) _) ?_
+          have htail : tvDist (stepReal n st r >>= fun st' =>
+                signRunF (Salt := Salt) stepReal c n (st', b || decide (r ∈ c n)))
+              (stepReal n st r >>= fun st' =>
+                signRunF (Salt := Salt) stepProg c n (st', b || decide (r ∈ c n)))
+              ≤ q.toReal :=
+            tvDist_bind_le_of_forall_le (stepReal n st r) _ _ q.toReal ENNReal.toReal_nonneg
+              (fun st' => ih st' (b || decide (r ∈ c n)))
+          have hhead : tvDist (stepReal n st r >>= fun st' =>
+                signRunF (Salt := Salt) stepProg c n (st', b || decide (r ∈ c n)))
+              (stepProg n st r >>= fun st' =>
+                signRunF (Salt := Salt) stepProg c n (st', b || decide (r ∈ c n)))
+              = 0 := by
+            rw [tvDist_eq_zero_iff, evalDist_bind, evalDist_bind, h_step n st r hr]
+          rw [hhead, add_zero]
+          exact htail
+      -- Normalize the product projections `(st, b).1`, `(st, b).2` to `st`, `b`.
+      change (∑' a : Salt, Pr[= a | ($ᵗ Salt : ProbComp Salt)].toReal *
+          tvDist (stepReal n st a >>= fun st' =>
+              signRunF (Salt := Salt) stepReal c n (st', b || decide (a ∈ c n)))
+            (stepProg n st a >>= fun st' =>
+              signRunF (Salt := Salt) stepProg c n (st', b || decide (a ∈ c n))))
+        ≤ (Pr[(· = true) | saltSeq (Salt := Salt) c (n + 1)]).toReal
+      -- `q.toReal ≤ 1` and base summability.
+      have hq_toReal_le : q.toReal ≤ 1 := by
+        rw [← ENNReal.toReal_one]
+        exact (ENNReal.toReal_le_toReal probEvent_ne_top one_ne_top).2 hq_le
+      have hbase : Summable (fun a : Salt => Pr[= a | ($ᵗ Salt : ProbComp Salt)].toReal) :=
+        ENNReal.summable_toReal (ne_top_of_le_ne_top one_ne_top tsum_probOutput_le_one)
+      have hcap : ∀ a : Salt, (if a ∈ c n then (1 : ℝ) else q.toReal) ≤ 1 := by
+        intro a; split_ifs with ha
+        · exact le_refl 1
+        · exact hq_toReal_le
+      have hcap_nonneg : ∀ a : Salt, (0 : ℝ) ≤ (if a ∈ c n then (1 : ℝ) else q.toReal) := by
+        intro a; split_ifs <;> [norm_num; exact ENNReal.toReal_nonneg]
+      -- Summability of the salt-split bounding sum.
+      have hsummable_term : Summable (fun a : Salt =>
+          Pr[= a | ($ᵗ Salt : ProbComp Salt)].toReal * (if a ∈ c n then 1 else q.toReal)) :=
+        Summable.of_nonneg_of_le
+          (fun a => mul_nonneg ENNReal.toReal_nonneg (hcap_nonneg a))
+          (fun a => mul_le_of_le_one_right ENNReal.toReal_nonneg (hcap a)) hbase
+      -- Summability of the actual tvDist-weighted sum.
+      have hsummable_tv : Summable (fun a : Salt =>
+          Pr[= a | ($ᵗ Salt : ProbComp Salt)].toReal *
+            tvDist (stepReal n st a >>= fun st' =>
+                signRunF (Salt := Salt) stepReal c n (st', b || decide (a ∈ c n)))
+              (stepProg n st a >>= fun st' =>
+                signRunF (Salt := Salt) stepProg c n (st', b || decide (a ∈ c n)))) :=
+        Summable.of_nonneg_of_le
+          (fun a => mul_nonneg ENNReal.toReal_nonneg (tvDist_nonneg _ _))
+          (fun a => mul_le_of_le_one_right ENNReal.toReal_nonneg
+            ((hterm a).trans (hcap a))) hbase
+      refine le_trans (Summable.tsum_le_tsum (fun a =>
+        mul_le_mul_of_nonneg_left (hterm a) ENNReal.toReal_nonneg)
+        hsummable_tv hsummable_term) ?_
+      -- Identify the salt-split sum with `Pr[saltSeq c (n+1)].toReal`.
+      -- Each real term is the `toReal` of the corresponding `ℝ≥0∞` term.
+      have hterm_toReal : ∀ i : Salt,
+          Pr[= i | ($ᵗ Salt : ProbComp Salt)].toReal * (if i ∈ c n then (1 : ℝ) else q.toReal)
+            = (Pr[= i | ($ᵗ Salt : ProbComp Salt)] * (if i ∈ c n then 1 else q)).toReal := by
+        intro i
+        by_cases hi : i ∈ c n <;> simp [hi]
+      simp_rw [hterm_toReal]
+      -- Pull the `toReal` out of the sum (each term is finite), evaluate, and identify.
+      rw [← ENNReal.tsum_toReal_eq (fun i => ENNReal.mul_ne_top
+        (ne_top_of_le_ne_top one_ne_top probOutput_le_one) (by
+          split_ifs <;> [exact one_ne_top; exact probEvent_ne_top])),
+        tsum_probOutput_uniformSample_ite (Salt := Salt) (c n) q, ← probEvent_saltSeq_succ]
+
+omit [Fintype Salt] in
+/-- **Salt-inclusive identical-until-bad coupling.**
 
 The total-variation distance between the real sequenced signing run `signRunF stepReal c n` and the
 programmed sequenced signing run `signRunF stepProg c n` is bounded by the salt-averaged collision
@@ -614,42 +848,32 @@ probability `Pr[saltSeq c n = true]`, provided the two per-step handlers agree i
 the per-step salt collision `r ∈ c j` (`h_step`, supplied for GPV by regularity `hreg`). The
 `NeverFail` hypothesis on the real handler keeps probability mass during the state marginalization.
 
-This is the genuine `#228`-class multi-step joint coupling — the sole remaining open sub-coupling of
-the GPV proof, isolated here precisely and never asserted via a false bridge. It decomposes into two
-true parts, both already scaffolded by the banked pieces of this section:
+This is the `#228`-class multi-step joint coupling that gates the GPV proof, threaded through the
+recursion by `signRunF_tvDist_le_saltSeq_aux` (the generalization over the initial flag and state).
+It decomposes into two true parts, both banked in this section:
 
 * **Per-step charge.** Off `r ∈ c j` the two combined "draw salt, then answer" steps agree in
   distribution, so each step contributes only its salt-collision mass `card (c j) / |Salt|`. This is
-  exactly the proven per-step primitive `tvDist_signStep_real_programmed_le_collision`.
+  the proven per-step primitive `tvDist_signStep_real_programmed_le_collision`, applied per fibre
+  via `tvDist_bind_le_of_forall_le`.
 * **Accumulation to `saltSeq`.** The per-step charges accumulate along the recursion to the
-  run-level collision-flag probability of the real run, which in turn equals the salt-averaged
-  `saltSeq` disjunction once the threaded state is marginalized out (the flag depends only on the
-  salt draws and the slices `c j`, not on the state advanced by `stepReal`).
+  run-level collision-flag probability, which equals the salt-averaged `saltSeq` disjunction once
+  the threaded state is marginalized out — the inclusion-exclusion identity
+  `probEvent_saltSeq_succ`.
 
-The content that resists a one-line assembly is the threading: off the bad event only the *current*
-step distributions agree, while the two runs recurse with *different* per-step handlers, so the
-off-bad agreement must be carried through the recursion together with the accumulating flag (the
-tails differ, so a single application of the per-step primitive does not suffice). Chaining this
-result with the banked telescope `probEvent_saltSeq_le_collisionBound`
+Chaining this result with the banked telescope `probEvent_saltSeq_le_collisionBound`
 (`Pr[saltSeq] ≤ collisionBound`) yields the salt-inclusive coupling that discharges the U2
 hypothesis `hcouple`, once the GPV reduction handlers and per-step caches `c j` are instantiated. -/
-theorem signRunF_tvDist_le_saltSeq {St : Type} (stepReal stepProg : ℕ → St → Salt → ProbComp St)
+theorem signRunF_tvDist_le_saltSeq {St : Type} [Finite Salt]
+    (stepReal stepProg : ℕ → St → Salt → ProbComp St)
     (c : ℕ → Finset Salt) [∀ n st r, NeverFail (stepReal n st r)]
     (h_step : ∀ n st r, r ∉ c n → 𝒟[stepReal n st r] = 𝒟[stepProg n st r])
     (n : ℕ) (st : St) :
     tvDist (signRunF (Salt := Salt) stepReal c n (st, false))
         (signRunF (Salt := Salt) stepProg c n (st, false))
-      ≤ (Pr[(· = true) | saltSeq (Salt := Salt) c n]).toReal := by
-  -- Residual: induction on `n` threading the accumulating collision flag. The base case is
-  -- `tvDist_self`/`tvDist_nonneg`. The successor step shares the salt draw `r ← $ᵗ Salt`; off
-  -- `r ∈ c n` the head handlers agree (`h_step`, the per-step primitive
-  -- `tvDist_signStep_real_programmed_le_collision`) and the tails are coupled by the induction
-  -- hypothesis with the accumulated flag, while on `r ∈ c n` the step is charged to the salt
-  -- collision; the per-step charges accumulate to the `saltSeq` disjunction (the flag is
-  -- state-independent, `NeverFail` keeps the mass). The tails recurse with different handlers, so
-  -- the off-bad agreement must be threaded through the recursion — the genuine joint-coupling
-  -- content.
-  sorry
+      ≤ (Pr[(· = true) | saltSeq (Salt := Salt) c n]).toReal :=
+  signRunF_tvDist_le_saltSeq_aux (Salt := Salt) (St := St)
+    stepReal stepProg c h_step n st false
 
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
