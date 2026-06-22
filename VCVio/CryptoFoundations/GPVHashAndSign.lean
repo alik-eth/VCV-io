@@ -7,6 +7,8 @@ Authors: Quang Dao
 import VCVio.CryptoFoundations.SignatureAlg
 import VCVio.CryptoFoundations.HardnessAssumptions.HardRelation
 import VCVio.OracleComp.QueryTracking.RandomOracle.Basic
+import VCVio.OracleComp.QueryTracking.RandomOracle.DeferredSampling
+import VCVio.OracleComp.QueryTracking.RandomOracle.ProbeEps
 import VCVio.OracleComp.Coercions.Add
 import VCVio.OracleComp.SimSemantics.StateT.BundledSemantics
 import VCVio.ProgramLogic.Relational.ProgrammingOracle
@@ -2146,6 +2148,348 @@ lemma progGameRunImplTape_run_read_eq_progGameRunImplNoRec (domainSample : PK �
         (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inr mc))).run cache := by
   rw [progGameRunImplTape_run_read, progGameRunImplNoRec_run_read]
   cases h : cache mc <;> simp [h, Functor.map_map]
+
+/-! ### Front salt-tape factorization (the Fiat–Shamir-template third block)
+
+With the per-query tape↔unified bridges banked (second block), the front-tape factorization of each
+game run is the `OracleComp.inductionOn (adv.main pk)` mirroring the worked Fiat–Shamir headline
+`FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`. Each game run distributes
+as a single front draw block `OracleComp.drawList ($ᵗ Salt) qSign` of fresh signing salts followed
+by the corresponding *tape-consuming* run (`gpvRealImplTape` / `progGameRunImplTape`) reading each
+signing query's salt off the tape head, with the spent tape suffix projected away on output.
+
+Unlike the Fiat–Shamir instance (where each signing query consumes a `maxAttempts`-block), every GPV
+signing query consumes *exactly one* salt off the tape head, so the front block has length `qSign`
+and the per-signing-query split peels off a single leading salt (`drawList ($ᵗ Salt) 1`). The
+non-signing (uniform / random-oracle-read) steps consume *zero* tape and commute trivially past the
+front block (the generic answer-irrelevant commute
+`OracleComp.DeferredSampling.evalDist_step_commute_tape`, fed by the round-9 tape↔unified
+bridges). -/
+
+omit [Fintype Salt] [DecidableEq Salt] in
+/-- **Front salt-tape splits as a leading salt followed by the remaining block.** Drawing a
+`drawList ($ᵗ Salt) (n + 1)` front block is the same as drawing one leading salt and then the
+remaining `n`-block, consing the leading salt onto the front. This is the GPV (one-salt-per-signing
+step) analogue of `FiatShamirWithAbort.drawList_commit_add` at `m = 1`; it peels the head salt that
+a single signing query consumes off the over-provisioned front tape. -/
+lemma drawList_salt_succ (n : ℕ) :
+    OracleComp.drawList ($ᵗ Salt : ProbComp Salt) (n + 1) =
+      (do let r ← ($ᵗ Salt : ProbComp Salt)
+          let tl ← OracleComp.drawList ($ᵗ Salt : ProbComp Salt) n
+          pure (r :: tl)) := by
+  rfl
+
+omit [Fintype Salt] in
+/-- **Real-side signing-step front-tape commute (the crux inductive step).** One real signing
+query-step of the unified handler `gpvRealImpl`, composed with the deferred continuation, factors as
+a single front draw block `drawList ($ᵗ Salt) (qSrem + 1)` of fresh salts followed by the
+tape-consuming `gpvRealImplTape` signing step (reading the head salt) and the tape-threaded
+continuation.
+
+The genuine framework content: the leading salt is peeled off the front block by
+`drawList_salt_succ` and fed to the tape signing step (consuming the tape head `r :: tl`); the
+per-body cache transition of that tape step is exactly the unified `gpvRealImpl` signing step at the
+front-loaded salt `r` (the per-body splice `evalDist_gpvRealImplTape_sign_cache_eq_gpvStepReal`
+reformulated against `gpvRealImpl`); and the continuation's `qSrem`-block (supplied by the inductive
+hypothesis `hcont`) commutes past the body via the i.i.d. resampling commute `evalDist_bind_comm`.
+
+It is *pinned* to the concrete `gpvRealImpl` / `gpvRealImplTape` handlers and is the signing case of
+the real-side front-tape factorization headline
+`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`. -/
+theorem evalDist_gpvSignStep_commute_real {γ : Type} (pk : PK) (sk : SK) (msg : M)
+    (cache : (Salt × M →ₒ Range).QueryCache) (qSrem : ℕ)
+    (ob : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range (Sum.inr msg) →
+      OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ)
+    (hcont : ∀ (a : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range
+          (Sum.inr msg))
+        (c' : (Salt × M →ₒ Range).QueryCache),
+      𝒟[(simulateQ (gpvRealImpl psf hr M Salt pk sk) (ob a)).run c'] =
+        𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tape =>
+            (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob a)).run (c', tape)]) :
+    𝒟[(gpvRealImpl psf hr M Salt pk sk (Sum.inr msg)).run cache >>= fun p =>
+        (simulateQ (gpvRealImpl psf hr M Salt pk sk) (ob p.1)).run p.2] =
+      𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) (qSrem + 1) >>= fun tape =>
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+            ((gpvRealImplTape psf M Salt pk sk (Sum.inr msg)).run (cache, tape) >>= fun p =>
+              (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2)] := by
+  sorry
+
+omit [Fintype Salt] in
+/-- **Real-side front salt-tape factorization (the Fiat–Shamir-template headline, real side).** By
+`OracleComp.inductionOn` on the adversary computation `oa`, the unified real run distributes as a
+single front draw block `drawList ($ᵗ Salt) qSrem` of fresh signing salts followed by the
+tape-consuming real run `gpvRealImplTape`, the spent-tape suffix projected away on output:
+
+`𝒟[(simulateQ gpvRealImpl oa).run cache]`
+`  = 𝒟[drawList ($ᵗ Salt) qSrem >>= fun tape => (·.1, ·.2.1) <$> (simulateQ gpvRealImplTape oa).run`
+`        (cache, tape)]`,
+
+where `qSrem` bounds the number of signing queries of `oa` (the `(· matches .inr _)` component of
+`signHashQueryBound`). At a **pure** step the front block is value-irrelevant and discarded
+(never-failing-prefix discard via `OracleComp.probFailure_drawList`); at a **uniform /
+random-oracle-read** step the answer is independent of the tape so the front block commutes
+trivially past the step (`OracleComp.DeferredSampling.evalDist_step_commute_tape`, fed by the
+round-9 tape↔unified bridges); at a **signing** step the leading salt is peeled off and consumed by
+the tape head (`evalDist_gpvSignStep_commute_real`).
+
+It is *pinned* to the concrete `gpvRealImpl` / `gpvRealImplTape` handlers; together with the
+prog-side dual it puts both game runs in the front-tape form the residual factors through. -/
+theorem evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape {γ : Type} (pk : PK) (sk : SK)
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ) :
+    ∀ (qSrem : ℕ), oa.IsQueryBoundP (· matches Sum.inr _) qSrem →
+      ∀ (cache : (Salt × M →ₒ Range).QueryCache),
+        𝒟[(simulateQ (gpvRealImpl psf hr M Salt pk sk) oa).run cache] =
+          𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tape =>
+              (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+                (simulateQ (gpvRealImplTape psf M Salt pk sk) oa).run (cache, tape)] := by
+  classical
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qSrem _ cache
+      simp only [simulateQ_pure, StateT.run_pure, map_pure]
+      rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+        (OracleComp.probFailure_drawList _ _)]
+  | query_bind t ob ih =>
+      intro qSrem hQ cache
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: answer independent of the tape; commute the front block past the step.
+        have hqs : (if (match (Sum.inl (Sum.inl n) :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show (gpvRealImpl psf hr M Salt pk sk (Sum.inl (Sum.inl n))).run cache
+              = (fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _)
+            from gpvRealImpl_run_unif psf hr M Salt pk sk n cache]
+        rw [show (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              ((gpvRealImplTape psf M Salt pk sk (Sum.inl (Sum.inl n))).run (cache, tape)
+                >>= fun p =>
+                  (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (((fun p : unifSpec.Range n × (Salt × M →ₒ Range).QueryCache =>
+                  (p.1, (p.2, tape))) <$>
+                  ((fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _)))
+                >>= fun p =>
+                  (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2))
+            from by
+              funext tape
+              rw [gpvRealImplTape_run_unif_eq_gpvRealImpl psf hr M Salt pk sk n cache tape,
+                gpvRealImpl_run_unif]
+              rfl]
+        exact OracleComp.DeferredSampling.evalDist_step_commute_tape
+          ((fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _))
+          (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1))
+          (fun a c' => (simulateQ (gpvRealImpl psf hr M Salt pk sk) (ob a)).run c')
+          (fun a st => (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob a)).run st)
+          (fun a c' => ih a qSrem (hQ2 a) c')
+      · -- READ: answer is the lazy RO step, independent of the tape; same commute.
+        have hqs : (if (match (Sum.inl (Sum.inr mc) :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show (gpvRealImpl psf hr M Salt pk sk (Sum.inl (Sum.inr mc))).run cache
+              = (randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache
+            from gpvRealImpl_run_read psf hr M Salt pk sk mc cache]
+        rw [show (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              ((gpvRealImplTape psf M Salt pk sk (Sum.inl (Sum.inr mc))).run (cache, tape)
+                >>= fun p =>
+                  (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (((fun p : Range × (Salt × M →ₒ Range).QueryCache => (p.1, (p.2, tape))) <$>
+                  (randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache)
+                >>= fun p =>
+                  (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob p.1)).run p.2))
+            from by
+              funext tape
+              rw [gpvRealImplTape_run_read_eq_gpvRealImpl psf hr M Salt pk sk mc cache tape,
+                gpvRealImpl_run_read]
+              rfl]
+        exact OracleComp.DeferredSampling.evalDist_step_commute_tape
+          ((randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache)
+          (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1))
+          (fun a c' => (simulateQ (gpvRealImpl psf hr M Salt pk sk) (ob a)).run c')
+          (fun a st => (simulateQ (gpvRealImplTape psf M Salt pk sk) (ob a)).run st)
+          (fun a c' => ih a qSrem (hQ2 a) c')
+      · -- SIGN: peel the leading salt; consume the tape head.
+        have hpos : 0 < qSrem := by
+          rcases hQ1 with h | h
+          · exact absurd rfl h
+          · exact h
+        clear hQ1
+        have hqs : (if (match (Sum.inr msg :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem - 1 := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show qSrem = (qSrem - 1) + 1 from by omega]
+        exact evalDist_gpvSignStep_commute_real psf hr M Salt pk sk msg cache (qSrem - 1) ob
+          (fun a c' => ih a (qSrem - 1) (hQ2 a) c')
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **Programmed-side signing-step front-tape commute (the crux inductive step, programmed dual).**
+One programmed signing query-step of the unified handler `progGameRunImplNoRec`, composed with the
+deferred continuation, factors as a single front draw block `drawList ($ᵗ Salt) (qSrem + 1)` of
+fresh salts followed by the tape-consuming `progGameRunImplTape` signing step (reading the head
+salt) and the tape-threaded continuation.
+
+This is the programmed dual of `evalDist_gpvSignStep_commute_real`: the leading salt is peeled off
+the front block and fed to the tape signing step (consuming the tape head `r :: tl`); the per-body
+cache transition of that tape step is the unified `progGameRunImplNoRec` signing step at the
+front-loaded salt `r` (the per-body splice `evalDist_progGameRunImplTape_sign_cache_eq_gpvStepProg`
+reformulated against `progGameRunImplNoRec`); and the continuation's `qSrem`-block commutes past the
+body via the i.i.d. resampling commute `evalDist_bind_comm`.
+
+It is *pinned* to the concrete `progGameRunImplNoRec` / `progGameRunImplTape` handlers and is the
+signing case of the prog-side headline
+`evalDist_progGameRunImplNoRec_eq_drawList_progGameRunImplTape`. -/
+theorem evalDist_gpvSignStep_commute_prog {γ : Type} (domainSample : PK → ProbComp Domain)
+    (pk : PK) (msg : M) (cache : (Salt × M →ₒ Range).QueryCache) (qSrem : ℕ)
+    (ob : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range (Sum.inr msg) →
+      OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ)
+    (hcont : ∀ (a : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range
+          (Sum.inr msg))
+        (c' : (Salt × M →ₒ Range).QueryCache),
+      𝒟[(simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (ob a)).run c'] =
+        𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tape =>
+            (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob a)).run (c', tape)]) :
+    𝒟[(progGameRunImplNoRec psf M Salt domainSample pk (Sum.inr msg)).run cache >>= fun p =>
+        (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (ob p.1)).run p.2] =
+      𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) (qSrem + 1) >>= fun tape =>
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+            ((progGameRunImplTape psf M Salt domainSample pk (Sum.inr msg)).run (cache, tape)
+              >>= fun p =>
+              (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2)] := by
+  sorry
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **Prog-side front salt-tape factorization (the Fiat–Shamir-template headline, prog side).**
+By `OracleComp.inductionOn` on the adversary computation `oa`, the unified programmed run
+distributes as a single front draw block `drawList ($ᵗ Salt) qSrem` of fresh signing salts followed
+by the tape-consuming programmed run `progGameRunImplTape`, the spent-tape suffix projected away on
+output.
+
+This is the programmed dual of `evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`: pure step
+discards the value-irrelevant front block; uniform / random-oracle-read steps commute the front
+block past the answer-irrelevant step (via the round-9 tape↔unified bridges and
+`OracleComp.DeferredSampling.evalDist_step_commute_tape`); the signing step peels off and consumes
+the leading salt (`evalDist_gpvSignStep_commute_prog`). It is *pinned* to the concrete
+`progGameRunImplNoRec` / `progGameRunImplTape` handlers. -/
+theorem evalDist_progGameRunImplNoRec_eq_drawList_progGameRunImplTape {γ : Type}
+    (domainSample : PK → ProbComp Domain) (pk : PK)
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ) :
+    ∀ (qSrem : ℕ), oa.IsQueryBoundP (· matches Sum.inr _) qSrem →
+      ∀ (cache : (Salt × M →ₒ Range).QueryCache),
+        𝒟[(simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) oa).run cache] =
+          𝒟[OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem >>= fun tape =>
+            (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (simulateQ (progGameRunImplTape psf M Salt domainSample pk) oa).run
+                (cache, tape)] := by
+  classical
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro qSrem _ cache
+      simp only [simulateQ_pure, StateT.run_pure, map_pure]
+      rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+        (OracleComp.probFailure_drawList _ _)]
+  | query_bind t ob ih =>
+      intro qSrem hQ cache
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ1, hQ2⟩ := hQ
+      rcases t with (n | mc) | msg
+      · -- UNIFORM: answer independent of the tape; commute the front block past the step.
+        have hqs : (if (match (Sum.inl (Sum.inl n) :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show (progGameRunImplNoRec psf M Salt domainSample pk (Sum.inl (Sum.inl n))).run cache
+              = (fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _)
+            from progGameRunImplNoRec_run_unif psf M Salt domainSample pk n cache]
+        rw [show (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              ((progGameRunImplTape psf M Salt domainSample pk (Sum.inl (Sum.inl n))).run
+                  (cache, tape) >>= fun p =>
+                  (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (((fun p : unifSpec.Range n × (Salt × M →ₒ Range).QueryCache =>
+                  (p.1, (p.2, tape))) <$>
+                  ((fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _)))
+                >>= fun p =>
+                  (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2))
+            from by
+              funext tape
+              rw [progGameRunImplTape_run_unif_eq_progGameRunImplNoRec psf M Salt domainSample pk n
+                  cache tape,
+                progGameRunImplNoRec_run_unif]
+              rfl]
+        exact OracleComp.DeferredSampling.evalDist_step_commute_tape
+          ((fun u => (u, cache)) <$> (unifSpec.query n : ProbComp _))
+          (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1))
+          (fun a c' => (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (ob a)).run c')
+          (fun a st => (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob a)).run st)
+          (fun a c' => ih a qSrem (hQ2 a) c')
+      · -- READ: answer is the programmed RO step, independent of the tape; same commute.
+        have hqs : (if (match (Sum.inl (Sum.inr mc) :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              ((progGameRunImplTape psf M Salt domainSample pk (Sum.inl (Sum.inr mc))).run
+                  (cache, tape) >>= fun p =>
+                  (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2))
+            = (fun tape => (fun p :
+                γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1)) <$>
+              (((fun p : Range × (Salt × M →ₒ Range).QueryCache => (p.1, (p.2, tape))) <$>
+                (progGameRunImplNoRec psf M Salt domainSample pk (Sum.inl (Sum.inr mc))).run cache)
+                >>= fun p =>
+                  (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob p.1)).run p.2))
+            from by
+              funext tape
+              rw [progGameRunImplTape_run_read_eq_progGameRunImplNoRec psf M Salt domainSample pk mc
+                  cache tape]
+              rfl]
+        exact OracleComp.DeferredSampling.evalDist_step_commute_tape
+          ((progGameRunImplNoRec psf M Salt domainSample pk (Sum.inl (Sum.inr mc))).run cache)
+          (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSrem)
+          (fun p : γ × ((Salt × M →ₒ Range).QueryCache × List Salt) => (p.1, p.2.1))
+          (fun a c' => (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (ob a)).run c')
+          (fun a st => (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (ob a)).run st)
+          (fun a c' => ih a qSrem (hQ2 a) c')
+      · -- SIGN: peel the leading salt; consume the tape head.
+        have hpos : 0 < qSrem := by
+          rcases hQ1 with h | h
+          · exact absurd rfl h
+          · exact h
+        clear hQ1
+        have hqs : (if (match (Sum.inr msg :
+              ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain) with
+            | Sum.inr _ => true | _ => false) = true then qSrem - 1 else qSrem) = qSrem - 1 := rfl
+        rw [hqs] at hQ2
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rw [show qSrem = (qSrem - 1) + 1 from by omega]
+        exact evalDist_gpvSignStep_commute_prog psf M Salt domainSample pk msg cache (qSrem - 1)
+          ob (fun a c' => ih a (qSrem - 1) (hQ2 a) c')
 
 open Classical in
 omit [Fintype Salt] in
