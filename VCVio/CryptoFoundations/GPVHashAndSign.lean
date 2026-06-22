@@ -875,6 +875,49 @@ theorem signRunF_tvDist_le_saltSeq {St : Type} [Finite Salt]
   signRunF_tvDist_le_saltSeq_aux (Salt := Salt) (St := St)
     stepReal stepProg c h_step n st false
 
+/-- **U2, re-stated over the salt-inclusive signing run (unconditional).**
+
+This is the salt-inclusive U2: it bounds the total-variation distance between the real and
+programmed *signing runs* directly by `collisionBound`, with **no coupling hypothesis**. Unlike the
+hash-only `tvDist_runtime_real_programmed_le_collisionBound_saltInclusive` (which takes the
+`#228`-class coupling as the typed hypothesis `hcouple`), this lemma is phrased over the
+salt-inclusive vehicle `signRunF` — where each of the `qSign` fresh signing salts `r ← $ᵗ Salt` is
+an explicit step of the recursion — so the salt-collision averaging is *structurally visible* and
+the proven coupling discharges it outright.
+
+The proof chains the two banked, axiom-clean results with no loss:
+* the proven multi-step coupling `signRunF_tvDist_le_saltSeq`
+  (`tvDist (signRunF stepReal …) (signRunF stepProg …) ≤ Pr[saltSeq c qSign = true]`), and
+* the salt-averaged telescope `probEvent_saltSeq_le_collisionBound`
+  (`Pr[saltSeq c qSign = true] ≤ collisionBound Salt qSign qHash`),
+moved to `ℝ` by `ENNReal.toReal_mono` (using `collisionBound < ⊤`).
+
+`stepReal`/`stepProg` are the per-signing-step answer handlers (real lazy random oracle vs the
+regularity-supplied programmed answer); `h_step` is the off-collision branch agreement supplied by
+PSF regularity (`psf.Regularity`); `c j` is the recorded random-oracle cache slice seen by the
+`j`-th signing query, with the standard growth bound `card (c j) ≤ j + qHash` (`hcache`).
+
+The remaining structural work to feed the four GPV theorems is *not* a probability fact but the
+adaptive→`signRunF` factorization: matching the real adversary run
+`simulateQ impl (adv.main pk)` — which interleaves the `qSign` signing queries (each drawing a
+fresh salt) with up to `qHash` adversary hash queries *adaptively* — to this fixed `qSign`-step
+`signRunF` recursion. That factorization is the `#228`-class deferred-sampling joint coupling (see
+the *Adaptive→signRunF factorization* section below). -/
+theorem signRunF_tvDist_le_collisionBound {St : Type} [Finite Salt] [Nonempty Salt]
+    (stepReal stepProg : ℕ → St → Salt → ProbComp St)
+    (c : ℕ → Finset Salt) [∀ n st r, NeverFail (stepReal n st r)]
+    (h_step : ∀ n st r, r ∉ c n → 𝒟[stepReal n st r] = 𝒟[stepProg n st r])
+    (qSign qHash : ℕ) (hcache : ∀ j, (c j).card ≤ j + qHash) (st : St) :
+    tvDist (signRunF (Salt := Salt) stepReal c qSign (st, false))
+        (signRunF (Salt := Salt) stepProg c qSign (st, false))
+      ≤ (collisionBound Salt qSign qHash).toReal := by
+  refine (signRunF_tvDist_le_saltSeq (Salt := Salt) stepReal stepProg c h_step qSign st).trans ?_
+  refine ENNReal.toReal_mono ?_ (probEvent_saltSeq_le_collisionBound Salt qSign qHash c hcache)
+  refine (ENNReal.div_lt_top ?_ ?_).ne
+  · simp
+  · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
+    exact Fintype.card_ne_zero
+
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
 The GPV `runtime` interprets the surface program over the *sum* spec
