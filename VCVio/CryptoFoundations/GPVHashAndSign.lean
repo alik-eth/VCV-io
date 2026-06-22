@@ -1264,6 +1264,40 @@ theorem gpvStep_agree (pk : PK) (sk : SK) (msgs : ℕ → M)
   rw [hR, hP]
   simp only [evalDist_bind, hreg]
 
+omit [DecidableEq Range] [SampleableType Salt] [Fintype Salt] in
+/-- **Real GPV signing-body cache splice (cache-miss key).** One real signing-query body, run
+through the lazy random oracle at a *missing* cache key `(r, msgs n)`, produces a recorded-cache
+transition distributed exactly as the concrete `signRunF` real step `gpvStepReal` at the (already
+fixed) salt `r`.
+
+The signing body queries the random oracle at `(r, msgs n)`; on the cache miss `cache (r, msgs n) =
+none` the oracle draws a fresh uniform target `u ← $ᵗ Range`, records `(r, msgs n) ↦ u`, and returns
+`u`; the body then draws the trapdoor preimage and yields the updated cache. The handler
+`gpvStepReal` draws the same uniform target `c ← $ᵗ Range`, the same trapdoor preimage, and records
+`(r, msgs n) ↦ c` — so the two recorded-cache distributions coincide. This is the *per-body splice*
+of the adaptive→`signRunF` fold factorization (the signing-step case of
+`gpvRun_factorizes_signRunF`): it recasts one inline signing-oracle body, on a fresh-salt cache
+miss, as the concrete `signRunF` real step, with the fresh salt `r` having been front-loaded out of
+the body. It is *pinned* to the concrete `randomOracle` and `gpvStepReal`, requires only the
+cache-miss side condition `hmiss` (guaranteed for a fresh salt), and is unconditional otherwise. -/
+theorem evalDist_gpvSignBody_run_eq_gpvStepReal (pk : PK) (sk : SK) (msgs : ℕ → M) (n : ℕ)
+    (cache : (Salt × M →ₒ Range).QueryCache) (r : Salt)
+    (hmiss : cache (r, msgs n) = none) :
+    𝒟[(do
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msgs n)).run cache
+        let _s ← psf.trapdoorSample pk sk p.1
+        pure p.2 : ProbComp ((Salt × M →ₒ Range).QueryCache))]
+      = 𝒟[gpvStepReal psf M Salt pk sk msgs n cache r] := by
+  unfold gpvStepReal
+  rw [show (randomOracle (spec := (Salt × M →ₒ Range)) (r, msgs n)).run cache
+        = (fun u => (u, cache.cacheQuery (r, msgs n) u)) <$>
+            (uniformSampleImpl (spec := (Salt × M →ₒ Range)) (r, msgs n))
+      from QueryImpl.withCaching_run_none uniformSampleImpl hmiss]
+  rw [show (uniformSampleImpl (spec := (Salt × M →ₒ Range)) (r, msgs n))
+        = ($ᵗ Range : ProbComp Range) from rfl]
+  rw [map_eq_bind_pure_comp, bind_assoc]
+  simp only [Function.comp_apply, pure_bind]
+
 /-! ## The R2 residual: front-loading the adaptive salt draws into `signRunF`
 
 The remaining content of `AdaptiveFactorizesSignRunF` against the concrete handlers above is the
