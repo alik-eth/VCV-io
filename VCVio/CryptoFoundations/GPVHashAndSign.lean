@@ -1461,6 +1461,239 @@ noncomputable def progGameRun
       (StateT State ProbComp) := (unifImpl + roImpl) + signImpl
   𝒟[Prod.fst <$> (simulateQ impl (adv.main pk)).run (∅, fun _ => none)]
 
+/-! ### Round-5 normalization: collapsing the runtime indirection of `realGameRun`
+
+The residual's real-side run-equality compares `realGameRun` — defined through the bundled
+`runtime` `SPMF` semantics, which is *itself* a `simulateQ` (`withStateOracle`) over a `StateT`
+random-oracle layer wrapping the WriterT signing-oracle `simulateQ` — against the single-`simulateQ`
+`signRunF` presentation. Before that deep fold coupling can be attempted with the generic
+handler-congruence / `inductionOn` machinery, the *outer* runtime indirection of `realGameRun` must
+be peeled back to an explicit `simulateQ` form. The two lemmas below do exactly that peeling (and
+nothing more): they are pure structural unfoldings of the `runtime` bundle, pinned to the concrete
+`realGameRun`, and do **not** perform any distributional coupling. -/
+
+/-- **`withStateOracle` `SPMF` semantics as an explicit `simulateQ` run (general).**
+
+The bundled `withStateOracle hashImpl s` `SPMF` semantics of a surface computation `mx` is exactly
+the observed `StateT.run'` of the `simulateQ` of the public-randomness lift summed with the stateful
+`hashImpl`, started from `s`. This is a definitional unfolding of the bundle (`evalDist` is
+`denote = observe ∘ interpret`, with `interpret = simulateQ'` and
+`observe = liftM ∘ StateT.run' · s`) and carries no probabilistic content; it is the entry point for
+reasoning about the runtime layer of
+`realGameRun` by an explicit `simulateQ`. -/
+theorem withStateOracle_evalDist_eq {ι : Type} {hashSpec : OracleSpec ι} {σ : Type}
+    (hashImpl : QueryImpl hashSpec (StateT σ ProbComp)) (s : σ)
+    {α : Type} (mx : OracleComp (unifSpec + hashSpec) α) :
+    (SPMFSemantics.withStateOracle hashImpl s).evalDist mx
+      = (liftM (StateT.run'
+          (simulateQ
+            ((QueryImpl.ofLift unifSpec ProbComp).liftTarget (StateT σ ProbComp) + hashImpl)
+            mx) s) : SPMF α) := by
+  unfold SPMFSemantics.evalDist SPMFSemantics.withStateOracle
+  simp only [SemanticsVia.denote]
+
+/-- **WriterT-log discard across a substituting oracle (general).**
+
+Simulating `oa` under a WriterT-valued query implementation `so` and then projecting away the
+written log (`Prod.fst <$> (·).run`) coincides with simulating `oa` under the *unlogged* base-spec
+implementation `soNoLog`, provided the two agree per query after the same log discard
+(`hso : ∀ t, Prod.fst <$> (so t).run = soNoLog t`).
+
+Unlike `OracleComp.fst_map_writerT_run_simulateQ`, the target base spec `specBase` may differ from
+the source spec `spec`: `soNoLog` is allowed to *substitute* each query by an arbitrary base-spec
+computation (not merely re-emit it), so this applies to a genuine oracle replacement such as the GPV
+signing oracle (which replaces an abstract signing query by its real `sign` computation over the
+random-oracle spec). It is proved by induction on `oa`, with the append-accumulated WriterT log on
+the binder collapsing under `Prod.fst`. The log carrier uses the append-based `WriterT` monad
+(`[EmptyCollection ω] [Append ω] [LawfulAppend ω]`) so that it applies directly to the `QueryLog`
+log of the GPV signing oracle, whose `WriterT` monad instance is the append-based one (there is
+deliberately no `Monoid (QueryLog spec)` instance). -/
+theorem fst_map_writerT_run_simulateQ_noLog
+    {ι ιB : Type} {spec : OracleSpec ι} {specBase : OracleSpec ιB}
+    {ω : Type} [EmptyCollection ω] [Append ω] [LawfulAppend ω] {α : Type}
+    (so : QueryImpl spec (WriterT ω (OracleComp specBase)))
+    (soNoLog : QueryImpl spec (OracleComp specBase))
+    (hso : ∀ (t : spec.Domain),
+      (Prod.fst <$> (so t).run : OracleComp specBase _) = soNoLog t)
+    (oa : OracleComp spec α) :
+    (Prod.fst <$> (simulateQ so oa).run : OracleComp specBase α) = simulateQ soNoLog oa := by
+  induction oa using OracleComp.inductionOn with
+  | pure x => simp [WriterT.run_pure]
+  | query_bind t oa ih =>
+    rw [simulateQ_bind, simulateQ_query, WriterT.run_bind, map_bind]
+    have heq : ((OracleSpec.query t).cont <$> so (OracleSpec.query t).input) = so t := by
+      simp only [OracleQuery.cont_query, id_map, OracleQuery.input_query]
+    rw [heq]
+    rw [show simulateQ soNoLog (liftM (OracleSpec.query t) >>= oa)
+          = soNoLog t >>= fun u => simulateQ soNoLog (oa u) by
+        rw [simulateQ_bind, simulateQ_query]
+        simp only [OracleQuery.cont_query, id_map, OracleQuery.input_query]]
+    refine (bind_congr fun x => ?_).trans (by rw [← bind_map_left, hso t])
+    obtain ⟨a, w₁⟩ := x
+    dsimp only []
+    rw [← LawfulFunctor.comp_map]
+    have : Prod.fst ∘ (fun x : α × ω ↦ (x.1, w₁ ++ x.2)) = Prod.fst :=
+      funext fun ⟨_, _⟩ => rfl
+    rw [this]
+    exact ih a
+
+/-- **The unlogged real GPV handler stack.**
+
+The real-world handler used inside `realGameRun` is the WriterT-valued stack
+`(HasQuery.toQueryImpl).liftTarget (WriterT …) + signingOracle pk sk`, which logs each signing
+query. `realGameRunImplNoLog` is the same handler with the signing log discarded: the public/random
+oracle queries are re-emitted unchanged into the underlying `OracleComp (unifSpec + (Salt × M →ₒ
+Range))`, and each signing query is replaced by the real GPV `sign pk sk` computation (draw a fresh
+salt, query the random oracle, trapdoor-sample). It targets `OracleComp (unifSpec + (Salt × M →ₒ
+Range))` directly, so simulating `adv.main pk` under it produces the same forgery distribution as
+the logged stack with its log discarded (`realGameRun_writerLog_discard`). -/
+noncomputable def realGameRunImplNoLog (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (OracleComp (unifSpec + (Salt × M →ₒ Range))) :=
+  (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+      (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+    (fun msg => (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+      psf hr M Salt).sign pk sk msg)
+
+omit [Fintype Salt] in
+/-- **Round-5 real-side WriterT-log discard (pinned).**
+
+Discarding the signing log from the real GPV WriterT handler stack of `realGameRun` leaves exactly
+the unlogged stack `realGameRunImplNoLog`: projecting the first component of the WriterT run of
+`simulateQ ((HasQuery.toQueryImpl).liftTarget (WriterT …) + signingOracle pk sk) (adv.main pk)`
+equals `simulateQ (realGameRunImplNoLog …) (adv.main pk)`.
+
+It is *pinned* to the concrete real GPV handler stack and is a pure structural rewrite (the general
+`fst_map_writerT_run_simulateQ_noLog` discharged by the per-query log-transparency of the two
+summands: the lifted public/random-oracle handler re-emits its query, and
+`signingOracle = withLogging sign` recovers `sign` after the log discard). No salt front-loading or
+distributional coupling is
+performed; this is the WriterT-boundary half of the real-side normalization toward the single-impl
+`signRunF` shape. -/
+theorem realGameRun_writerLog_discard (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    (Prod.fst <$> (simulateQ
+        (((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+            (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+          (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+            psf hr M Salt).signingOracle pk sk))
+        (adv.main pk)).run
+        : OracleComp (unifSpec + (Salt × M →ₒ Range)) (M × (Salt × Domain)))
+      = simulateQ (realGameRunImplNoLog psf hr M Salt pk sk) (adv.main pk) := by
+  refine fst_map_writerT_run_simulateQ_noLog _ _ (fun t => ?_) (adv.main pk)
+  rcases t with t | msg
+  · change (Prod.fst <$> ((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+        (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+        (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+          (OracleComp (unifSpec + (Salt × M →ₒ Range)))) t).run
+        : OracleComp (unifSpec + (Salt × M →ₒ Range)) _)
+      = realGameRunImplNoLog psf hr M Salt pk sk (Sum.inl t)
+    simp only [QueryImpl.liftTarget_apply, WriterT.run_liftM]
+    rfl
+  · change (Prod.fst <$> ((GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+        psf hr M Salt).signingOracle pk sk msg).run
+        : OracleComp (unifSpec + (Salt × M →ₒ Range)) _)
+      = (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+          psf hr M Salt).sign pk sk msg
+    simp only [SignatureAlg.signingOracle, QueryImpl.withLogging_apply, bind_pure_comp,
+      WriterT.run_bind, WriterT.run_liftM, bind_map_left]
+    simp only [WriterT.run_map, WriterT.run_tell, map_pure]
+    rw [← Functor.map_map]
+    simp
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Round-5 real-side normalization (pinned): `realGameRun` as an explicit two-layer
+`simulateQ` run.**
+
+This peels the bundled `runtime` indirection off `realGameRun`, exposing the *explicit* nested
+`simulateQ` form: the inner WriterT signing-oracle `simulateQ` over `adv.main pk` (its `.run`
+discarding the signing log to the `Prod.fst` projection), evaluated under the outer
+public-randomness-lift `+ randomOracle` `StateT QueryCache ProbComp` `simulateQ`, observed by
+`StateT.run'` from the empty cache.
+
+It is *pinned* to the concrete `realGameRun` (it is an equation about that exact distribution, with
+the concrete WriterT handler stack `liftTarget HasQuery.toQueryImpl + signingOracle pk sk` and the
+concrete outer lazy random oracle), and it is a pure structural rewrite — the trailing `pure out`
+of the `realGameRun` do-block is commuted out by `withStateOracle_evalDist_bind_pure`, and the
+runtime layer is unfolded by `withStateOracle_evalDist_eq`. No salt front-loading and no
+distributional coupling is performed; this is the runtime-indirection removal that the deep fold
+coupling builds on. -/
+theorem realGameRun_eq_simulateQ_run
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (pk : PK) (sk : SK) :
+    realGameRun psf hr M Salt adv pk sk =
+      Prod.fst <$> ((SPMFSemantics.withStateOracle
+        (randomOracle : QueryImpl (Salt × M →ₒ Range)
+          (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist
+        ((simulateQ
+            (((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+                (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                  (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+              (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                psf hr M Salt).signingOracle pk sk))
+            (adv.main pk)).run)) := by
+  unfold realGameRun
+  rw [show (do
+        let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+          (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+              (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+            (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+              psf hr M Salt).signingOracle pk sk
+        let (out, _log) ← (simulateQ impl (adv.main pk)).run
+        pure out) = ((simulateQ
+            (((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+                (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                  (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+              (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                psf hr M Salt).signingOracle pk sk))
+            (adv.main pk)).run >>= fun p => pure p.1) from rfl]
+  rw [GPVHashAndSign.runtime]
+  change (SPMFSemantics.withStateOracle _ ∅).evalDist _ = _
+  rw [SPMFSemantics.withStateOracle_evalDist_bind_pure]
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Round-5 real-side normalization (pinned, single-impl): `realGameRun` as one bundled
+`simulateQ` over the unlogged real handler stack.**
+
+This is the assembled real-side normalization: `realGameRun` equals the bundled `withStateOracle`
+random-oracle `SPMF` semantics of `simulateQ (realGameRunImplNoLog …) (adv.main pk)` — a *single*
+`OracleComp (unifSpec + (Salt × M →ₒ Range))`-valued `simulateQ` over the unlogged real GPV handler
+stack, with no remaining WriterT layer. It chains `realGameRun_eq_simulateQ_run` (peeling the
+`runtime` indirection and commuting the trailing `pure out` to `Prod.fst <$>`),
+`SPMFSemantics.withStateOracle_evalDist_map` (pushing that `Prod.fst <$>` *inside* the outer
+bundle, since `<$>` does not thread the random-oracle state), and `realGameRun_writerLog_discard`
+(collapsing the inner WriterT signing-log run to `realGameRunImplNoLog`).
+
+It is *pinned* to the concrete `realGameRun` and is purely structural (no salt front-loading, no
+distributional coupling). This is the canonical single-`simulateQ` shape that the eventual fold
+coupling consumes: `realGameRun`'s adversary computation is now interpreted by one ambient handler
+`realGameRunImplNoLog` over `OracleComp (unifSpec + (Salt × M →ₒ Range))`, then observed by the
+random-oracle `withStateOracle` bundle — the same surface shape carried by `progGameRun`'s single
+`StateT`-state `simulateQ`. -/
+theorem realGameRun_eq_withStateOracle_implNoLog
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (pk : PK) (sk : SK) :
+    realGameRun psf hr M Salt adv pk sk =
+      (SPMFSemantics.withStateOracle
+        (randomOracle : QueryImpl (Salt × M →ₒ Range)
+          (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist
+        (simulateQ (realGameRunImplNoLog psf hr M Salt pk sk) (adv.main pk)) := by
+  rw [realGameRun_eq_simulateQ_run, ← SPMFSemantics.withStateOracle_evalDist_map,
+    realGameRun_writerLog_discard]
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The R2 residual (the single open sub-step): the *pinned* adaptive GPV game runs satisfy the
