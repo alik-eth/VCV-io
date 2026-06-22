@@ -294,9 +294,54 @@ The detailed construction simulates the adversary's oracle interactions by maint
 a programmable RO state, using PSF correctness to ensure consistency. -/
 noncomputable def reduction
     (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) :
     CollisionAdversary (PK := PK) (Domain := Domain) :=
-  fun _pk => sorry
+  fun pk => do
+    -- The simulation state threads the lazy random-oracle cache together with a *hidden
+    -- preimage table* recording, for each programmed `(salt, message)` entry, the short
+    -- preimage `s` used to define `psf.eval pk s` as the random-oracle value at that point.
+    let State := (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)
+    -- Random-oracle handler: on a cache hit reuse the recorded value; on a miss
+    -- forward-sample a short preimage `s ← domainSample pk`, set the value to `psf.eval pk s`,
+    -- and record `s` in the hidden table at the queried point.
+    let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+      fun t => do
+        let st ← get
+        match st.1 t with
+        | some v => pure v
+        | none => do
+            let s ← (domainSample pk : ProbComp Domain)
+            let v := psf.eval pk s
+            set ((st.1.cacheQuery t v, fun t' => if t' = t then some s else st.2 t') : State)
+            pure v
+    -- Uniform-sampling handler: answer uniform queries by drawing from the ambient `ProbComp`.
+    let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+      fun t => (unifSpec.query t : ProbComp _)
+    -- Signing handler (sign-then-hash): draw a fresh salt `r`, forward-sample a short preimage
+    -- `s ← domainSample pk`, program the random oracle at `(r, msg) := psf.eval pk s`, record the
+    -- hidden preimage, and return the signature `(r, s)`.
+    let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+      fun msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let s ← (domainSample pk : ProbComp Domain)
+        let v := psf.eval pk s
+        let st ← get
+        set ((st.1.cacheQuery (r, msg) v,
+          fun t' => if t' = (r, msg) then some s else st.2 t') : State)
+        pure (r, s)
+    let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+        (StateT State ProbComp) := (unifImpl + roImpl) + signImpl
+    -- Run the adversary under the simulated oracle stack, then extract a collision candidate.
+    let ((msgStar, (rStar, sStar)), st) ←
+      (simulateQ impl (adv.main pk)).run (∅, fun _ => none)
+    -- On the forgery `(msgStar, (rStar, sStar))`, look up the hidden programmed preimage at the
+    -- forged point. If present, it and the forged preimage `sStar` share the image
+    -- `psf.eval pk sStar` (the random-oracle value the reduction programmed there), forming a
+    -- collision candidate. Otherwise fall back to the forged preimage itself.
+    match st.2 (rStar, msgStar) with
+    | some sHidden => pure (sHidden, sStar)
+    | none => pure (sStar, sStar)
 
 /-- The exact-match branch reduction adversary. Given a public key `pk` and programmed target
 `y`, the reduction embeds `(pk, y)` at one guessed programmed random-oracle entry. If the
@@ -307,9 +352,72 @@ Because the target must be embedded at one guessed programmed entry, this branch
 explicit multi-target loss proportional to the total number of programmed entries. -/
 noncomputable def programmedPreimageReduction
     (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) :
     ProgrammedPreimageAdversary (PK := PK) (Domain := Domain) (Range := Range) :=
-  fun _pk _y => sorry
+  fun pk y => do
+    -- The simulation state threads the lazy random-oracle cache, a running count of programmed
+    -- entries, and the current reservoir winner: the `(salt, message)` point at which the target
+    -- `y` is embedded, paired with the normal value `psf.eval pk s` that point would otherwise
+    -- carry (kept so the displaced previous winner can be restored when a later entry wins).
+    let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)
+    -- Embed `y` at one uniformly chosen programmed entry via reservoir sampling: at the `k`-th
+    -- programmed point the new point wins with probability `1 / (k + 1)`. The winner's cache value
+    -- is set to the target `y`; every other programmed entry carries its normal `psf.eval pk s`.
+    let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      let (cache, count, winner) := st
+      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+      if b = 0 then
+        -- New reservoir winner: restore the previous winner's normal value (if any), then embed
+        -- `y` at the new point and record it together with its restorable normal value `v`.
+        let cache' := match winner with
+          | some (tOld, vOld) => cache.cacheQuery tOld vOld
+          | none => cache
+        set ((cache'.cacheQuery t y, count + 1, some (t, v)) : State)
+      else
+        set ((cache.cacheQuery t v, count + 1, winner) : State)
+    -- Random-oracle handler: reuse cache hits; on a miss program the entry via `programStep`.
+    let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+      fun t => do
+        let st ← get
+        match st.1 t with
+        | some v => pure v
+        | none => do
+            programStep t
+            let st' ← get
+            pure ((st'.1 t).getD y)
+    -- Uniform-sampling handler.
+    let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+      fun t => (unifSpec.query t : ProbComp _)
+    -- Signing handler (sign-then-hash): draw a fresh salt `r`, program `(r, msg)` via the same
+    -- reservoir step, and return the signature `(r, s)` recovered from the programmed cache.
+    let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+      fun msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let s ← (domainSample pk : ProbComp Domain)
+        let v := psf.eval pk s
+        let st ← get
+        let (cache, count, winner) := st
+        let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+        if b = 0 then
+          let cache' := match winner with
+            | some (tOld, vOld) => cache.cacheQuery tOld vOld
+            | none => cache
+          set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v)) : State)
+        else
+          set ((cache.cacheQuery (r, msg) v, count + 1, winner) : State)
+        pure (r, s)
+    let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+        (StateT State ProbComp) := (unifImpl + roImpl) + signImpl
+    let ((_msgStar, (_rStar, sStar)), _st) ←
+      (simulateQ impl (adv.main pk)).run (∅, 0, none)
+    -- The forged preimage `sStar` is the reduction's preimage candidate for the target `y`: when
+    -- the forgery lands on the embedded entry, the random oracle there returned `y`, so a valid
+    -- forgery `psf.eval pk sStar = y` exhibits a preimage of `y`.
+    pure sStar
 
 /-- The salt-collision birthday bound (GPV08, Proposition 6.2).
 
@@ -1575,15 +1683,20 @@ simulator's hidden preimage for that entry, the pair is a valid collision under
 `psf.eval`. The salt-collision probability bounds the only way the programming can
 become inconsistent. -/
 theorem forgery_yields_collision [DecidableEq Domain]
-    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hreg : ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
     adv.advantage (runtime M Salt) ≤
       collisionFindingAdvantage (psf := psf) (hr := hr)
-        (reduction psf hr M Salt adv) +
+        (reduction psf hr M Salt adv domainSample) +
       collisionBound Salt qSign qHash := by
   let _ := hcorrect
   let _ := hreg
@@ -1604,18 +1717,23 @@ theorem forgery_yields_collision [DecidableEq Domain]
 
 The only additional failure mode is a salt collision, bounded by `collisionBound`. -/
 theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
-    (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
+    (hcorrect : psf.Correct) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hreg : ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
     adv.advantage (runtime M Salt) ≤
       collisionFindingAdvantage (psf := psf) (hr := hr)
-          (reduction psf hr M Salt adv) +
+          (reduction psf hr M Salt adv domainSample) +
         ((qSign + qHash : ℕ) : ENNReal) *
           programmedPreimageAdvantage (psf := psf) (hr := hr)
-            (programmedPreimageReduction psf hr M Salt adv) +
+            (programmedPreimageReduction psf hr M Salt adv domainSample) +
         collisionBound Salt qSign qHash := by
   let _ := hcorrect
   let _ := hreg
@@ -1654,8 +1772,9 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
       adv.advantage (runtime M Salt) ≤
         collisionFindingAdvantage (psf := psf) (hr := hr) red +
         collisionBound Salt qSign qHash := by
-  exact ⟨reduction psf hr M Salt adv,
-    forgery_yields_collision psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
+  obtain ⟨domainSample, h⟩ := hreg
+  exact ⟨reduction psf hr M Salt adv domainSample,
+    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv domainSample h hQ⟩
 
 /-- **Split GPV PFDH bound in the random-oracle model**.
 
@@ -1683,8 +1802,10 @@ theorem euf_cma_split_bound [DecidableEq Domain]
           ((qSign + qHash : ℕ) : ENNReal) *
             programmedPreimageAdvantage (psf := psf) (hr := hr) exactMatchRed +
           collisionBound Salt qSign qHash := by
-  exact ⟨reduction psf hr M Salt adv,
-    programmedPreimageReduction psf hr M Salt adv,
-    forgery_yields_collision_or_exact_match psf hr M Salt hcorrect hreg qSign qHash adv hQ⟩
+  obtain ⟨domainSample, h⟩ := hreg
+  exact ⟨reduction psf hr M Salt adv domainSample,
+    programmedPreimageReduction psf hr M Salt adv domainSample,
+    forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash adv
+      domainSample h hQ⟩
 
 end GPVHashAndSign
