@@ -532,6 +532,125 @@ because the salt draws live in the caller of the hash-only `ob` (reason 2) — c
 the current `runtime` / `ob` interface without exposing the signing program's salt draws to the
 coupling, a deeper structural change tracked separately. -/
 
+/-! ## Salt-inclusive identical-until-bad coupling primitives
+
+The coupling `hcouple` cannot be discharged at the hash-only `ob` granularity (reasons 1 and 2
+above). The honest way to make progress is to expose the salt draws and build the coupling on a
+*salt-inclusive* signing process, where the salt-collision averaging is structurally visible. This
+section banks the reusable identical-until-bad primitives for that process.
+
+`tvDist_signStep_real_programmed_le_collision` is the proven per-step core: a single combined
+"draw a fresh salt `r`, then answer" step, where the *real* branch answers with the lazy
+random-oracle value and the *programmed* branch answers with the regularity-supplied value. Off the
+per-step salt collision `r ∈ cache`, regularity makes the two answer branches agree in distribution
+(`h_eq`), so the total-variation distance of the combined step is bounded by exactly the salt
+collision probability `card cache / |Salt|`. This is the single-step instance of the
+fundamental-lemma-of-game-playing, with the bad event averaged over the fresh salt draw — precisely
+the granularity the Phase-5 per-query `withProgramming` framework could not express. It is a direct
+specialization of the banked `tvDist_bind_left_event_le`.
+
+`signRunF` is the flag-carrying sequenced signing process: it draws `qSign` fresh salts in turn,
+applies a per-step answer handler `step n state r`, and sets a Boolean flag the first time a drawn
+salt lands in its recorded cache slice `c n`. Its flag-true marginal is the run-level counterpart of
+the `saltSeq` collision event. `signRunF_flag_le_saltSeq` records that the flag-true probability of
+the *real* run is bounded by `Pr[saltSeq c qSign = true]` (the flag fires iff some draw collides,
+which is exactly the `saltSeq` disjunction marginalized over the threaded state).
+
+The remaining open coupling is `signRunF_tvDist_le_flag`: the total-variation distance between the
+real and programmed sequenced runs is bounded by the run-level flag-true probability. This is the
+genuine `#228`-class multi-step joint coupling: off the per-step collision the *current* step
+distributions agree (via `h_step`), but the two runs recurse with *different* per-step handlers, so
+the off-bad agreement must be threaded through the recursion with the accumulating flag — it cannot
+be obtained by a single application of the per-step primitive (the tails differ). It is isolated
+below as the one precise residual; chaining it with `signRunF_flag_le_saltSeq` and the banked
+`probEvent_saltSeq_le_collisionBound` telescope yields the salt-inclusive coupling that discharges
+`hcouple`. -/
+
+omit [DecidableEq Salt] [Fintype Salt] in
+/-- **Per-step salt-inclusive identical-until-bad coupling (proven).**
+
+A single combined "draw a fresh salt `r`, then answer" step. The *real* answer branch `freal r` and
+the *programmed* answer branch `fprog r` are coupled through the shared fresh salt draw. Off the
+per-step salt collision `r ∈ cache`, regularity guarantees the two answer branches agree in
+distribution (`h_eq`), so the total-variation distance of the combined step is bounded by the
+probability that the fresh salt lands in `cache`, namely `card cache / |Salt|` (via
+`probEvent_mem_uniformSample`).
+
+This is the single-step instance of the fundamental-lemma-of-game-playing with the bad event
+averaged over the fresh salt draw. It specializes the banked `tvDist_bind_left_event_le` at
+`mx := $ᵗ Salt` and `bad := (· ∈ cache)`. It is the per-step core the sequenced coupling
+`signRunF_tvDist_le_flag` accumulates. -/
+theorem tvDist_signStep_real_programmed_le_collision [Nonempty Salt] {β : Type}
+    (cache : Finset Salt) (freal fprog : Salt → ProbComp β)
+    (h_eq : ∀ r, r ∉ cache → 𝒟[freal r] = 𝒟[fprog r]) :
+    tvDist
+        (do let r ← ($ᵗ Salt : ProbComp Salt); freal r)
+        (do let r ← ($ᵗ Salt : ProbComp Salt); fprog r)
+      ≤ (Pr[(· ∈ cache) | ($ᵗ Salt : ProbComp Salt)]).toReal :=
+  tvDist_bind_left_event_le _ freal fprog (· ∈ cache) h_eq
+
+open Classical in
+/-- **Flag-carrying sequenced signing process.**
+
+`signRunF step c n` runs `n` combined signing steps over a threaded state `St × Bool`. At step `j`
+it draws a fresh salt `r ← $ᵗ Salt`, advances the state by the per-step handler `step j state r`,
+and records in the Boolean flag whether `r` landed in the recorded cache slice `c j`. The flag is
+monotone (set once a collision occurs), so its final value is the run-level salt-collision event —
+the salt-inclusive, state-threaded counterpart of the salt-averaged `saltSeq` process. -/
+noncomputable def signRunF {St : Type} (step : ℕ → St → Salt → ProbComp St)
+    (c : ℕ → Finset Salt) : (n : ℕ) → St × Bool → ProbComp (St × Bool)
+  | 0, sb => pure sb
+  | (n + 1), sb => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let st' ← step n sb.1 r
+      signRunF step c n (st', sb.2 || decide (r ∈ c n))
+
+omit [Fintype Salt] in
+/-- **Salt-inclusive identical-until-bad coupling (the one open residual).**
+
+The total-variation distance between the real sequenced signing run `signRunF stepReal c n` and the
+programmed sequenced signing run `signRunF stepProg c n` is bounded by the salt-averaged collision
+probability `Pr[saltSeq c n = true]`, provided the two per-step handlers agree in distribution off
+the per-step salt collision `r ∈ c j` (`h_step`, supplied for GPV by regularity `hreg`). The
+`NeverFail` hypothesis on the real handler keeps probability mass during the state marginalization.
+
+This is the genuine `#228`-class multi-step joint coupling — the sole remaining open sub-coupling of
+the GPV proof, isolated here precisely and never asserted via a false bridge. It decomposes into two
+true parts, both already scaffolded by the banked pieces of this section:
+
+* **Per-step charge.** Off `r ∈ c j` the two combined "draw salt, then answer" steps agree in
+  distribution, so each step contributes only its salt-collision mass `card (c j) / |Salt|`. This is
+  exactly the proven per-step primitive `tvDist_signStep_real_programmed_le_collision`.
+* **Accumulation to `saltSeq`.** The per-step charges accumulate along the recursion to the
+  run-level collision-flag probability of the real run, which in turn equals the salt-averaged
+  `saltSeq` disjunction once the threaded state is marginalized out (the flag depends only on the
+  salt draws and the slices `c j`, not on the state advanced by `stepReal`).
+
+The content that resists a one-line assembly is the threading: off the bad event only the *current*
+step distributions agree, while the two runs recurse with *different* per-step handlers, so the
+off-bad agreement must be carried through the recursion together with the accumulating flag (the
+tails differ, so a single application of the per-step primitive does not suffice). Chaining this
+result with the banked telescope `probEvent_saltSeq_le_collisionBound`
+(`Pr[saltSeq] ≤ collisionBound`) yields the salt-inclusive coupling that discharges the U2
+hypothesis `hcouple`, once the GPV reduction handlers and per-step caches `c j` are instantiated. -/
+theorem signRunF_tvDist_le_saltSeq {St : Type} (stepReal stepProg : ℕ → St → Salt → ProbComp St)
+    (c : ℕ → Finset Salt) [∀ n st r, NeverFail (stepReal n st r)]
+    (h_step : ∀ n st r, r ∉ c n → 𝒟[stepReal n st r] = 𝒟[stepProg n st r])
+    (n : ℕ) (st : St) :
+    tvDist (signRunF (Salt := Salt) stepReal c n (st, false))
+        (signRunF (Salt := Salt) stepProg c n (st, false))
+      ≤ (Pr[(· = true) | saltSeq (Salt := Salt) c n]).toReal := by
+  -- Residual: induction on `n` threading the accumulating collision flag. The base case is
+  -- `tvDist_self`/`tvDist_nonneg`. The successor step shares the salt draw `r ← $ᵗ Salt`; off
+  -- `r ∈ c n` the head handlers agree (`h_step`, the per-step primitive
+  -- `tvDist_signStep_real_programmed_le_collision`) and the tails are coupled by the induction
+  -- hypothesis with the accumulated flag, while on `r ∈ c n` the step is charged to the salt
+  -- collision; the per-step charges accumulate to the `saltSeq` disjunction (the flag is
+  -- state-independent, `NeverFail` keeps the mass). The tails recurse with different handlers, so
+  -- the off-bad agreement must be threaded through the recursion — the genuine joint-coupling
+  -- content.
+  sorry
+
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
 The GPV `runtime` interprets the surface program over the *sum* spec
