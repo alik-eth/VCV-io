@@ -2040,6 +2040,58 @@ lemma evalDist_progGameRunImplTape_sign_cache_eq_gpvStepProg (domainSample : PK 
   unfold gpvStepProg
   simp [map_eq_bind_pure_comp, Function.comp]
 
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **Off-bad joint agreement of the two tape signing steps on a fresh head salt (the `hreg`
+substitution bridge, signing case).** On a non-empty tape `r :: tl` whose head salt `r` is *not yet
+keyed* in the cache — so the random-oracle read at `(r, msg)` is a miss — the full signing-step
+output distributions of `gpvRealImplTape` and `progGameRunImplTape` *coincide*: the returned
+signature `(r, sgn)`, the updated cache, and the advanced tape `tl` are jointly distributed the same
+on both sides.
+
+The real side draws a fresh uniform target `c ← $ᵗ Range`, a trapdoor preimage `sgn ←
+trapdoorSample pk sk c`, records `(r, msg) ↦ c`, and returns `((r, sgn), cache', tl)`; the
+programmed side forward-samples `sd ← domainSample pk`, records `(r, msg) ↦ psf.eval pk sd`, and
+returns `((r, sd), cache'', tl)`. Both apply the *same* deterministic post-processing
+`fun (c, s) => ((r, s), cache.cacheQuery (r, msg) c, tl)` to a `(target, preimage)` pair drawn from
+two distributions that coincide by PSF regularity `hreg`. This is the signing-query case of the
+per-step no-bad-path agreement underlying `gpv_tvDist_tape_runs_le_collisionBound`, the full-output
+generalization of the cache-marginal `gpvStep_agree`. -/
+theorem evalDist_gpvImplTape_run_sign_miss_eq (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain) (msg : M) (r : Salt) (tl : List Salt)
+    (cache : (Salt × M →ₒ Range).QueryCache) (hmiss : cache (r, msg) = none)
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(gpvRealImplTape psf M Salt pk sk (.inr msg)).run (cache, r :: tl)]
+      = 𝒟[(progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run (cache, r :: tl)] := by
+  classical
+  rw [gpvRealImplTape_run_sign_cons, progGameRunImplTape_run_sign_cons]
+  -- The shared post-processing of a `(target, preimage)` pair.
+  set g : Range × Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × List Salt) :=
+    fun cs => ((r, cs.2), (cache.cacheQuery (r, msg) cs.1, tl)) with hg
+  rw [show (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+        = (fun u => (u, cache.cacheQuery (r, msg) u)) <$> ($ᵗ Range : ProbComp Range)
+      from QueryImpl.withCaching_run_none uniformSampleImpl hmiss]
+  -- Both sides reduce to `g <$> (·)` applied to the two `hreg`-equal `(target, preimage)` draws.
+  have hLHS :
+      𝒟[((fun rsc : (Salt × Domain) × (Salt × M →ₒ Range).QueryCache => (rsc.1, (rsc.2, tl))) <$>
+          (do
+            let p ← (fun u => (u, cache.cacheQuery (r, msg) u)) <$> ($ᵗ Range : ProbComp Range)
+            let sgn ← psf.trapdoorSample pk sk p.1
+            pure ((r, sgn), p.2)))]
+        = 𝒟[g <$> (do let c ← ($ᵗ Range); let sgn ← psf.trapdoorSample pk sk c; pure (c, sgn)
+              : ProbComp (Range × Domain))] := by
+    simp only [hg, map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+  have hRHS :
+      𝒟[((fun sd : Domain => ((r, sd), (cache.cacheQuery (r, msg) (psf.eval pk sd), tl))) <$>
+          (domainSample pk : ProbComp Domain))]
+        = 𝒟[g <$> (do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+              : ProbComp (Range × Domain))] := by
+    simp only [hg, map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+  refine hLHS.trans (Eq.trans ?_ hRHS.symm)
+  exact evalDist_map_eq_of_evalDist_eq hreg.symm g
+
 /-! ### Flag-instrumented tape handlers (the identical-until-bad collision flag, round 16)
 
 The per-tape identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_collisionBound` is
@@ -2118,6 +2170,29 @@ lemma progGameRunImplTapeFlag_run_inl (domainSample : PK → ProbComp Domain) (p
     (progGameRunImplTapeFlag psf M Salt domainSample pk (.inl q)).run s =
       (fun p => (p.1, (p.2, s.2))) <$>
         (progGameRunImplTape psf M Salt domainSample pk (.inl q)).run s.1 := rfl
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **One-step unfolding of `gpvRealImplTapeFlag` on a signing query.** The flag is OR-ed with the
+collision predicate on the head salt (`saltKeyed` if the tape is non-empty, `false` otherwise), then
+the underlying `gpvRealImplTape` signing step runs on the `(cache, tape)` component. -/
+lemma gpvRealImplTapeFlag_run_inr (pk : PK) (sk : SK) (msg : M)
+    (s : ((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) :
+    (gpvRealImplTapeFlag psf M Salt pk sk (.inr msg)).run s =
+      (fun p => (p.1, (p.2, s.2 || (match s.1.2 with
+                                    | r :: _ => saltKeyed M Salt s.1.1 r
+                                    | [] => false)))) <$>
+        (gpvRealImplTape psf M Salt pk sk (.inr msg)).run s.1 := rfl
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
+/-- **One-step unfolding of `progGameRunImplTapeFlag` on a signing query.** The programmed dual of
+`gpvRealImplTapeFlag_run_inr`. -/
+lemma progGameRunImplTapeFlag_run_inr (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (s : ((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) :
+    (progGameRunImplTapeFlag psf M Salt domainSample pk (.inr msg)).run s =
+      (fun p => (p.1, (p.2, s.2 || (match s.1.2 with
+                                    | r :: _ => saltKeyed M Salt s.1.1 r
+                                    | [] => false)))) <$>
+        (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run s.1 := rfl
 
 omit [Fintype Salt] [DecidableEq Range] in
 /-- **Per-query flag-projection of the real flag handler.** Dropping the flag component
@@ -2243,6 +2318,52 @@ lemma progGameRunImplTapeFlag_bad_mono (domainSample : PK → ProbComp Domain) (
         obtain ⟨w, _, hw⟩ := hz
         simp [← hw]
       simp [this, hp]
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] [DecidableEq Salt] [DecidableEq M]
+  [SampleableType Salt] in
+/-- **Off-collision unfolding of `saltKeyed`.** If the head salt `r` is not yet keyed in the cache
+(`saltKeyed cache r = false`), then for every message `m` the random-oracle key `(r, m)` is a cache
+miss. This is the side condition the off-bad signing-step agreement consumes: an unkeyed head salt
+forces the random-oracle read at `(r, msg)` to be a miss, where the lazy real oracle and the
+programmed oracle agree in distribution by `hreg`. -/
+lemma saltKeyed_eq_false_iff (cache : (Salt × M →ₒ Range).QueryCache) (r : Salt) :
+    saltKeyed M Salt cache r = false ↔ ∀ m : M, cache (r, m) = none := by
+  classical
+  unfold saltKeyed
+  rw [decide_eq_false_iff_not, not_exists]
+  exact forall_congr' fun m => by rw [Option.not_isSome_iff_eq_none]
+
+omit [Fintype Salt] [DecidableEq Range] in
+/-- **(i) Off-bad signing-step agreement of the two flag-instrumented tape handlers.** On a
+*non-empty* tape `r :: tl` whose head salt `r` is not yet keyed (`saltKeyed cache r = false`, so the
+collision flag stays `false`), the full signing-step output distributions of `gpvRealImplTapeFlag`
+and `progGameRunImplTapeFlag`, started from the off-bad state `((cache, r :: tl), false)`, coincide.
+
+This is the framework `h_agree_good` *signing case* of the identical-until-bad coupling residual
+`gpv_tvDist_tape_runs_le_collisionBound`, lifted from the underlying tape-handler agreement
+`evalDist_gpvImplTape_run_sign_miss_eq` (the joint `hreg` substitution): off the collision flag both
+flag handlers OR the same `false` collision indicator (the head salt is unkeyed) into the prior
+`false` flag, and apply the same flag post-processing to the agreeing underlying signing-step
+outputs.  It is the full-output, flag-level generalization of the cache-marginal `gpvStep_agree`,
+*pinned* to the concrete flag handlers (no free parameters). -/
+theorem evalDist_gpvImplTapeFlag_run_sign_offbad_eq (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain) (msg : M) (r : Salt) (tl : List Salt)
+    (cache : (Salt × M →ₒ Range).QueryCache) (hkey : saltKeyed M Salt cache r = false)
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(gpvRealImplTapeFlag psf M Salt pk sk (.inr msg)).run ((cache, r :: tl), false)]
+      = 𝒟[(progGameRunImplTapeFlag psf M Salt domainSample pk (.inr msg)).run
+          ((cache, r :: tl), false)] := by
+  have hmiss : cache (r, msg) = none := (saltKeyed_eq_false_iff M Salt cache r).1 hkey msg
+  rw [gpvRealImplTapeFlag_run_inr, progGameRunImplTapeFlag_run_inr]
+  -- The flag post-processing is the same `false`-OR on both sides: simplify it away.
+  simp only [Bool.false_or, hkey]
+  -- Both reduce to the flag-tagging map applied to the agreeing underlying signing steps.
+  exact evalDist_map_eq_of_evalDist_eq
+    (evalDist_gpvImplTape_run_sign_miss_eq psf M Salt pk sk domainSample msg r tl cache hmiss hreg)
+    _
 
 /-! ### Per-query tape↔unified-impl bridges (the Fiat–Shamir-template second block)
 
