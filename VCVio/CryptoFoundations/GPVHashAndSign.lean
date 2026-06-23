@@ -5900,6 +5900,94 @@ def ForgesQueriedPoint
       (adv.main pk)).run (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)),
     z.2.1.1 (z.1.2.1, z.1.1) ≠ none
 
+omit [Fintype Salt] in
+/-- **SL-C: the collision-finding advantage unfolds to an averaged collision-event
+probability.** The success probability of the collision reduction in the keyed collision game is
+exactly the chance, over a freshly generated public key `pk` and the reduction's candidate pair
+`(x₁, x₂)`, that the pair is a genuine `psf.eval`-collision of two distinct short preimages.  This
+exposes the collision event as a plain `Pr[= true | …]` so the Step-2 extraction can bound the
+programmed game's distinct-collision mass against it. -/
+theorem collisionFindingAdvantage_reduction_eq [DecidableEq Domain]
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) :
+    collisionFindingAdvantage (psf := psf) (hr := hr)
+        (reduction psf hr M Salt adv domainSample)
+      = Pr[= true | (do
+          let pk ← (Prod.fst <$> hr.gen : ProbComp PK)
+          let xs ← reduction psf hr M Salt adv domainSample pk
+          pure (decide (xs.1 ≠ xs.2) &&
+            decide (psf.eval pk xs.1 = psf.eval pk xs.2) &&
+            psf.isShort xs.1 && psf.isShort xs.2) : ProbComp Bool)] := by
+  unfold collisionFindingAdvantage collisionFindingExp
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp]
+
+omit [Fintype Salt] in
+/-- **SL-C (preimage analog): the programmed-preimage advantage unfolds to an averaged
+exact-match probability.** The success probability of the exact-match reduction in the keyed
+programmed-preimage game is exactly the chance, averaged over a freshly generated key pair
+`(pk, sk) ← hr.gen` (the secret key is needed to draw the hidden trapdoor preimage) and a uniform
+target `y`, that the reduction reproduces the challenger's hidden short preimage `x`.  This exposes
+the exact-match event as a plain `Pr[= true | …]` bind over `hr.gen` so the Step-2 extraction can
+average it against the same keygen mass as the collision term. -/
+theorem programmedPreimageAdvantage_reduction_eq [DecidableEq Domain]
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) :
+    programmedPreimageAdvantage (psf := psf) (hr := hr)
+        (programmedPreimageReduction psf hr M Salt adv domainSample)
+      = Pr[= true | (hr.gen >>= fun pksk => (do
+          let y ← ($ᵗ Range : ProbComp Range)
+          let x ← psf.trapdoorSample pksk.1 pksk.2 y
+          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pksk.1 y
+          pure (decide (x' = x))) : ProbComp Bool)] := by
+  unfold programmedPreimageAdvantage programmedPreimageExp
+  rfl
+
+open Classical in
+omit [Fintype Salt] in
+/-- **SL-A: the 3-term averaging reduction skeleton.** Reduces the Step-2 keygen-averaged
+programmed-game bound to a single per-key `(pk, sk)` bound by expanding all three advantage terms
+over the common keygen mass `𝒟[hr.gen]`.  Given a per-key hypothesis `h` bounding the programmed
+freshness game at `pk` by the reduction's collision event at `pk` plus the multi-target factor
+`qSign + qHash` times the exact-match event at `(pk, sk)`, averaging `h` over `(pk, sk) ← hr.gen`
+re-folds the right-hand averages into `collisionFindingAdvantage (reduction …)` (via SL-C, whose
+`Prod.fst` keygen pushforward matches the full keygen mass) and `programmedPreimageAdvantage
+(programmedPreimageReduction …)` (via its preimage analog). -/
+theorem gpv_progGameVerifyFreshAvg_le_of_perKey [DecidableEq Domain]
+    (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (h : ∀ pksk : PK × SK,
+      Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+        ≤ Pr[= true | (reduction psf hr M Salt adv domainSample pksk.1 >>= fun xs =>
+              pure (decide (xs.1 ≠ xs.2) &&
+                decide (psf.eval pksk.1 xs.1 = psf.eval pksk.1 xs.2) &&
+                psf.isShort xs.1 && psf.isShort xs.2) : ProbComp Bool)]
+          + ((qSign + qHash : ℕ) : ENNReal) *
+            Pr[= true | (do
+              let y ← ($ᵗ Range : ProbComp Range)
+              let x ← psf.trapdoorSample pksk.1 pksk.2 y
+              let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pksk.1 y
+              pure (decide (x' = x)) : ProbComp Bool)]) :
+    Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+        progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+      ≤ collisionFindingAdvantage (psf := psf) (hr := hr)
+          (reduction psf hr M Salt adv domainSample)
+        + ((qSign + qHash : ℕ) : ENNReal) *
+          programmedPreimageAdvantage (psf := psf) (hr := hr)
+            (programmedPreimageReduction psf hr M Salt adv domainSample) := by
+  classical
+  rw [collisionFindingAdvantage_reduction_eq psf hr M Salt adv domainSample,
+    programmedPreimageAdvantage_reduction_eq psf hr M Salt adv domainSample, bind_map_left]
+  rw [probOutput_bind_eq_tsum (𝒟[hr.gen] : SPMF (PK × SK)),
+    probOutput_bind_eq_tsum hr.gen, probOutput_bind_eq_tsum hr.gen]
+  rw [← ENNReal.tsum_mul_left, ← ENNReal.tsum_add]
+  refine ENNReal.tsum_le_tsum fun x => ?_
+  rw [mul_left_comm (↑(qSign + qHash) : ENNReal), ← mul_add]
+  exact mul_le_mul' le_rfl (h x)
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Step 2 (collision extraction): the keygen-averaged programmed freshness verify-Bool game is
