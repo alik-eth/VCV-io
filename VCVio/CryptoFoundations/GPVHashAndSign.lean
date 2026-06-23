@@ -4829,6 +4829,66 @@ theorem gpv_realGameVerifyFresh_le_progGameVerifyFresh_add_collisionBound
       qSign qHash hQ (gpvVerifyKont_no_sign psf M Salt pk) hNF hreg
   linarith [le_trans hsub (le_trans hmap hcouple)]
 
+omit [DecidableEq Range] [SampleableType Range] [DecidableEq M] [DecidableEq Salt]
+  [SampleableType Salt] [Fintype Salt] in
+/-- **Lifted public-randomness run under the bundled state base.** Simulating a lifted
+public-randomness `ProbComp` `oa` under the bundled identity base
+`(QueryImpl.ofLift unifSpec ProbComp).liftTarget (StateT σ ProbComp)` runs `oa` verbatim, pairing
+each output with the unchanged state `s`. The hidden state is inert for public-randomness queries.
+This is the bundled-base analogue of `unifFwdImpl.simulateQ_run` for a general state type `σ`. -/
+theorem simulateQ_ofLift_liftTarget_run {σ : Type} {α : Type} (oa : ProbComp α) (s : σ) :
+    (simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget (StateT σ ProbComp))
+      (oa : OracleComp unifSpec α)).run s = (fun x => (x, s)) <$> oa := by
+  induction oa using OracleComp.inductionOn generalizing s with
+  | pure x => simp
+  | query_bind t oa ih =>
+    simp only [simulateQ_bind, simulateQ_query, StateT.run_bind, QueryImpl.liftTarget_apply,
+      QueryImpl.ofLift_apply, OracleQuery.input_query, OracleQuery.cont_query, id_map]
+    have hlift : (liftM (liftM (OracleSpec.query t) : ProbComp (unifSpec.Range t)) :
+        StateT σ ProbComp (unifSpec.Range t)).run s
+        = (fun x => (x, s)) <$> (liftM (OracleSpec.query t) : ProbComp (unifSpec.Range t)) := by
+      rw [StateT.run_monadLift]; rfl
+    rw [hlift, map_eq_bind_pure_comp, bind_assoc]
+    simp only [pure_bind, Function.comp_def]
+    rw [show (liftM (OracleSpec.query t) : ProbComp (unifSpec.Range t)) >>= oa
+        = liftM (OracleSpec.query t) >>= oa from rfl]
+    rw [map_eq_bind_pure_comp, bind_assoc]
+    refine bind_congr fun u => ?_
+    rw [ih u]
+    simp [map_eq_bind_pure_comp]
+
+/-- **Keygen-averaging peel for the bundled `withStateOracle` semantics (reconstruction piece of the
+game-identification (N)(a)).** A surface computation that begins by lifting a public-randomness
+`ProbComp` prefix `oa` (e.g. the GPV key generation `liftM hr.gen`) into the oracle world and then
+continues with `rest` factors, under the bundled `withStateOracle hashImpl ∅` `SPMF` semantics, as
+the `SPMF`-average over `𝒟[oa]` of the semantics of the continuation.
+
+The public-randomness prefix touches neither the random-oracle cache nor the hidden state: it is
+simulated by the lifted identity implementation (`QueryImpl.simulateQ_add_liftComp_left` drops the
+`hashImpl` summand on the lifted sub-computation, `unifFwdImpl.simulateQ_run` runs it as
+`(·, ∅) <$> oa`), so its draws commute straight out of the bundle. This is the GPV-runtime keygen
+peel of the game-identification (N)(a) — the analogue of the FiatShamir
+`roSim.run'_liftM_bind`-style averaging step that opens
+`probOutput_unforgeableExp_eq_hybridExpAtKey_real`. -/
+theorem withStateOracle_evalDist_liftM_bind {ι : Type} {hashSpec : OracleSpec ι}
+    (hashImpl : QueryImpl hashSpec (StateT hashSpec.QueryCache ProbComp))
+    {α β : Type} (oa : ProbComp α)
+    (rest : α → OracleComp (unifSpec + hashSpec) β) :
+    (SPMFSemantics.withStateOracle hashImpl ∅).evalDist (liftM oa >>= rest)
+      = (𝒟[oa] : SPMF α) >>= fun x =>
+          (SPMFSemantics.withStateOracle hashImpl ∅).evalDist (rest x) := by
+  classical
+  unfold SPMFSemantics.evalDist SPMFSemantics.withStateOracle
+  simp only [SemanticsVia.denote]
+  rw [simulateQ_bind, StateT.run'_eq, StateT.run_bind]
+  rw [show simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+        (StateT hashSpec.QueryCache ProbComp) + hashImpl) (liftM oa)
+      = simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+        (StateT hashSpec.QueryCache ProbComp)) oa
+      from QueryImpl.simulateQ_add_liftComp_left _ hashImpl oa]
+  rw [simulateQ_ofLift_liftTarget_run oa ∅, map_bind, bind_map_left, liftM_bind]
+  rfl
+
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the original-run flag residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
