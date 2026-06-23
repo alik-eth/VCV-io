@@ -3876,6 +3876,157 @@ lemma keyedSalts_cacheQuery_card_le (cache : (Salt × M →ₒ Range).QueryCache
       simp only [ne_eq, Prod.mk.injEq, not_and]; intro h; exact absurd h hsr
     rwa [OracleSpec.QueryCache.cacheQuery_of_ne (cache := cache) (u := v) hne] at hm
 
+omit [DecidableEq Range] [SampleableType Salt] in
+/-- **Cache-slice growth through one lazy random-oracle read.** Any state `p` reachable from a
+single lazy random-oracle step `(randomOracle mc).run cache` enlarges the keyed-salt slice by at
+most one element: on a cache hit the cache is unchanged, and on a miss the new entry is recorded via
+`cacheQuery`, which adds at most one keyed salt (`keyedSalts_cacheQuery_card_le`). -/
+lemma keyedSalts_randomOracle_run_card_le (mc : Salt × M)
+    (cache : (Salt × M →ₒ Range).QueryCache)
+    (p : Range × (Salt × M →ₒ Range).QueryCache)
+    (hp : p ∈ support ((randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache)) :
+    (keyedSalts M Salt p.2).card ≤ (keyedSalts M Salt cache).card + 1 := by
+  classical
+  rcases hcache : cache mc with _ | u
+  · rw [QueryImpl.withCaching_run_none uniformSampleImpl hcache] at hp
+    rw [support_map] at hp
+    obtain ⟨v, -, rfl⟩ := hp
+    exact keyedSalts_cacheQuery_card_le M Salt cache mc.1 mc.2 v
+  · rw [QueryImpl.withCaching_run_some uniformSampleImpl hcache] at hp
+    rw [support_pure] at hp
+    obtain rfl := hp
+    exact Nat.le_succ _
+
+open Classical in
+/-- **(A2) cardinality-telescope auxiliary (general motive).**
+
+The general-motive inductive core behind `gpv_orig_flag_le_collisionBound`: over an arbitrary
+adversary computation `oa`, the run-level collision-flag probability of `gpvRealImplFlag` started
+from a state `(cache, false)` is bounded by the running birthday sum `∑_{j < qS} (m + j) / |Salt|`,
+provided `oa` makes at most `qS` signing and `qH` hash queries and the keyed-salt slice of the
+starting cache satisfies `card (keyedSalts cache) + qH ≤ m`.
+
+Proved by `OracleComp.inductionOn` over `oa`, generalizing the cache, the residual signing/hash
+budgets, and the offset `m`.  At a signing step the fresh inline salt `r ← $ᵗ Salt` is drawn
+*independently* of the running cache, so it lands in `keyedSalts cache` with probability
+`card (keyedSalts cache) / |Salt| ≤ m / |Salt|` (`probEvent_mem_uniformSample`); on the
+non-collision branch the cache slice grows by at most one (`keyedSalts_cacheQuery_card_le`), so the
+continuation is bounded by the IH at offset `m + 1` and residual budget `qS - 1`, and the per-step
+union recombines to the running sum.  Non-signing steps leave the flag untouched; a uniform step
+leaves the cache unchanged and a read step grows the slice by at most one (absorbed by `qH`). -/
+theorem gpv_orig_flag_le_collisionBound_aux [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (cache : (Salt × M →ₒ Range).QueryCache) (m qS qH : ℕ),
+      oa.IsQueryBoundP (· matches .inr _) qS →
+      oa.IsQueryBoundP (· matches .inl (.inr _)) qH →
+      (keyedSalts M Salt cache).card + qH ≤ m →
+      Pr[fun z : β × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+          (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run (cache, false)]
+        ≤ ∑ j ∈ Finset.range qS, ((m + j : ℕ) : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞) := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro cache m qS qH _ _ _
+      simp [simulateQ_pure, StateT.run_pure]
+  | query_bind t mx ih =>
+      intro cache m qS qH hQS hQH hcard
+      rw [simulateQ_query_bind, StateT.run_bind]
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQS hQH
+      obtain ⟨hQS1, hQS2⟩ := hQS
+      obtain ⟨hQH1, hQH2⟩ := hQH
+      rcases t with (n | mc) | msg
+      · -- uniform query: flag and cache untouched
+        simp only [OracleQuery.input_query, monadLift_self,
+          gpvRealImplFlag_run_inl, gpvRealImpl_run_unif, map_eq_bind_pure_comp, bind_assoc,
+          Function.comp_apply, pure_bind]
+        refine probEvent_bind_le_of_forall_le (fun x hx => ?_)
+        obtain ⟨u, -, hx⟩ := (mem_support_bind_iff _ _ _).1 hx
+        simp only [Function.comp_apply] at hx
+        subst hx
+        have hbS := hQS2 u
+        have hbH := hQH2 u
+        simp only [Bool.false_eq_true, if_false] at hbS hbH
+        exact ih u cache m qS qH hbS hbH hcard
+      · -- random-oracle read: flag untouched, cache slice grows ≤ 1
+        have hqH : 0 < qH := by
+          simpa using hQH1
+        simp only [OracleQuery.input_query, monadLift_self,
+          gpvRealImplFlag_run_inl, gpvRealImpl_run_read]
+        rw [map_eq_bind_pure_comp, bind_assoc]
+        refine probEvent_bind_le_of_forall_le (fun p hp => ?_)
+        simp only [Function.comp_apply, pure_bind]
+        have hbS := hQS2 p.1
+        have hbH := hQH2 p.1
+        simp only [Bool.false_eq_true, if_false, if_true] at hbS hbH
+        have hcard' : (keyedSalts M Salt p.2).card + (qH - 1) ≤ m := by
+          have hgrow := keyedSalts_randomOracle_run_card_le M Salt mc cache p hp
+          omega
+        exact ih p.1 p.2 m qS (qH - 1) hbS hbH hcard'
+      · -- signing query: the inline salt is charged against the keyed-salt slice
+        have hqS : 0 < qS := by simpa using hQS1
+        simp only [OracleQuery.input_query, monadLift_self, gpvRealImplFlag_run_inr]
+        -- Reassociate the inline salt draw to the front of the whole step + continuation.
+        rw [bind_assoc]
+        -- Split the running sum into the head charge `(m)/|Salt|` and the IH tail.
+        rw [show qS = (qS - 1) + 1 from (Nat.succ_pred_eq_of_pos hqS).symm,
+          Finset.sum_range_succ', add_comm]
+        -- Phrase the collision event in the `¬ · = false` form expected by `probEvent_bind_le_add`.
+        refine le_trans (le_of_eq (probEvent_congr'
+          (q := fun z => ¬ z.2.2 = false) (oa' := _)
+          (fun z _ => by cases h : z.2.2 <;> simp [h]) rfl)) ?_
+        -- Head charge: the fresh inline salt lands in `keyedSalts cache` w.p. `≤ m / |Salt|`.
+        have hhead :
+            Pr[fun r : Salt => ¬ (fun r : Salt => saltKeyed M Salt cache r = false) r |
+                ($ᵗ Salt : ProbComp Salt)]
+              ≤ ((m + 0 : ℕ) : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞) := by
+          have hkey : (fun r : Salt => ¬ saltKeyed M Salt cache r = false)
+              = (fun r : Salt => r ∈ keyedSalts M Salt cache) := by
+            funext r
+            simp only [keyedSalts, Finset.mem_filter, Finset.mem_univ, true_and,
+              Bool.not_eq_false]
+          rw [show (fun r : Salt => saltKeyed M Salt cache r = false → False)
+              = (fun r : Salt => r ∈ keyedSalts M Salt cache) from hkey,
+            probEvent_mem_uniformSample]
+          gcongr
+          exact_mod_cast hcard.trans' (Nat.le_add_right _ _)
+        -- Off-collision tail: the continuation is bounded by the IH at offset `m + 1`.
+        have htail : ∀ r ∈ support ($ᵗ Salt : ProbComp Salt),
+            (fun r : Salt => saltKeyed M Salt cache r = false) r →
+            Pr[fun z : β × ((Salt × M →ₒ Range).QueryCache × Bool) =>
+                ¬ z.2.2 = false |
+              (do
+                let p ← (randomOracle (r, msg)).run cache
+                let sgn ← psf.trapdoorSample pk sk p.1
+                pure ((r, sgn), p.2, false || saltKeyed M Salt cache r)) >>=
+              fun p_1 => (simulateQ (gpvRealImplFlag psf hr M Salt pk sk)
+                (mx ((OracleSpec.query (Sum.inr msg)).cont p_1.1))).run p_1.2]
+              ≤ ∑ j ∈ Finset.range (qS - 1),
+                ((m + (j + 1) : ℕ) : ℝ≥0∞) / (Fintype.card Salt : ℝ≥0∞) := by
+          intro r _ hr
+          -- Convert the event back to `z.2.2 = true` (cleaner for the IH).
+          refine le_trans (le_of_eq (probEvent_congr' (q := fun z => z.2.2 = true) (oa' := _)
+            (fun z _ => by cases h : z.2.2 <;> simp [h]) rfl)) ?_
+          -- Bound the continuation pointwise over the signing-step outputs.
+          rw [bind_assoc]
+          refine probEvent_bind_le_of_forall_le (fun p hp => ?_)
+          rw [bind_assoc]
+          refine probEvent_bind_le_of_forall_le (fun sgn _ => ?_)
+          rw [pure_bind]
+          -- On the off-collision branch the flag stays false; the cache `p.2` grew by ≤ 1.
+          simp only [hr, Bool.or_false]
+          have hbS := hQS2 (r, sgn)
+          have hbH := hQH2 (r, sgn)
+          simp only [if_true, Bool.false_eq_true, if_false] at hbS hbH
+          refine le_trans (ih (r, sgn) p.2 (m + 1) (qS - 1) qH hbS hbH ?_)
+            (le_of_eq (Finset.sum_congr rfl fun j _ => by
+              rw [show m + 1 + j = m + (j + 1) from by omega]))
+          -- Cache-growth invariant: `card (keyedSalts p.2) + qH ≤ m + 1`.
+          have hgrow := keyedSalts_randomOracle_run_card_le M Salt (r, msg) cache p hp
+          omega
+        exact probEvent_bind_le_add hhead htail
+
 open Classical in
 /-- **(A2) Original-run cardinality telescope: the run-level collision flag of the inline-salt real
 handler is bounded by `collisionBound`.**
@@ -3918,13 +4069,25 @@ theorem gpv_orig_flag_le_collisionBound [Inhabited Range] [Nonempty Salt]
         (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk)).run
           ((∅ : (Salt × M →ₒ Range).QueryCache), false)].toReal
       ≤ (collisionBound Salt qSign qHash).toReal := by
-  -- The original-run cardinality telescope `OracleComp.inductionOn` over `adv.main pk` with the
-  -- cache-growth invariant `card (cache j) ≤ j + qHash`, charging each fresh inline signing salt
-  -- against the running cache slice via `probEvent_mem_uniformSample` (the salt is drawn at its
-  -- step, so no re-interleaving is needed) and summing via `sum_range_div_card_le_collisionBound`.
-  -- This is the single remaining `#228`-class residual.
-  let _ := hQ
-  sorry
+  -- Instantiate the general-motive auxiliary at the empty cache, with `m := qHash`, charging each
+  -- fresh inline signing salt against the running cache slice; then finish with the Gauss-sum
+  -- estimate `sum_range_div_card_le_collisionBound`.
+  obtain ⟨hQS, hQH⟩ := hQ
+  have hempty : (keyedSalts M Salt (∅ : (Salt × M →ₒ Range).QueryCache)).card = 0 := by
+    rw [Finset.card_eq_zero]
+    refine Finset.filter_eq_empty_iff.2 (fun r _ => ?_)
+    simp [saltKeyed]
+  have haux := gpv_orig_flag_le_collisionBound_aux psf hr M Salt pk sk (adv.main pk)
+    (∅ : (Salt × M →ₒ Range).QueryCache) qHash qSign qHash hQS hQH (by omega)
+  have hbound : (probEvent ((simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk)).run
+      ((∅ : (Salt × M →ₒ Range).QueryCache), false)) fun z => z.2.2 = true)
+      ≤ collisionBound Salt qSign qHash := by
+    refine haux.trans (le_trans (Finset.sum_le_sum fun j _ => ?_)
+      (sum_range_div_card_le_collisionBound Salt qSign qHash))
+    rw [Nat.add_comm qHash j]
+  refine ENNReal.toReal_mono ?_ hbound
+  unfold collisionBound
+  exact ENNReal.div_ne_top (by simp) (by simp [Fintype.card_ne_zero])
 
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the original-run flag residual.**
 
