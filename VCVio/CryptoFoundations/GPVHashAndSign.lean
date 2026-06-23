@@ -5799,6 +5799,88 @@ theorem gpv_advantage_le_unforgeableExpNoFresh
     = f <$> (SPMFSemantics.withStateOracle _ ∅).evalDist mx
   exact SPMFSemantics.withStateOracle_evalDist_bind_pure _ ∅ mx f
 
+open Classical in
+/-- **Game-identification (N): the GPV EUF-CMA advantage is bounded by the keygen-averaged
+programmed freshness verify-Bool game plus `collisionBound`.** Chains the keygen-averaging peel
+`probOutput_unforgeableExp_eq_keygen_average`, the per-key WriterT-log → signed-set reconstruction
+`signedSet_eq_wasQueried`, and the real↔programmed coupling hop
+`gpv_realGameVerifyFresh_le_progGameVerifyFresh_add_collisionBound`, averaged over the key pair
+`(pk, sk) ← hr.gen`.  It reduces closing the split bound to bounding the programmed game
+`progGameVerifyFresh` (the remaining reservoir-sampling extraction). -/
+theorem gpv_advantage_le_progGameVerifyFreshAvg_add_collisionBound
+    [Inhabited Range] [Nonempty Salt]
+    (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hreg : ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hQ : ∀ pk, signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    adv.advantage (runtime M Salt) ≤
+      Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+        progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+        + collisionBound Salt qSign qHash := by
+  classical
+  rw [SignatureAlg.unforgeableAdv.advantage,
+    probOutput_unforgeableExp_eq_keygen_average psf hr M Salt adv]
+  rw [show (fun pksk : PK × SK =>
+        (SPMFSemantics.withStateOracle
+          (randomOracle : QueryImpl (Salt × M →ₒ Range)
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist
+          (letI : DecidableEq M := Classical.decEq M
+           letI : DecidableEq (Salt × Domain) := Classical.decEq (Salt × Domain)
+           do
+            let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+                (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                  (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+              (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+                (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                  (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+                (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                  psf hr M Salt).signingOracle pksk.1 pksk.2
+            let ((msg, σ), log) ← (simulateQ impl (adv.main pksk.1)).run
+            let verified ← (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+              psf hr M Salt).verify pksk.1 msg σ
+            return !log.wasQueried msg && verified))
+      = (fun pksk : PK × SK => realGameVerifyFresh psf hr M Salt adv pksk.1 pksk.2) from
+    funext fun pksk => signedSet_eq_wasQueried psf hr M Salt pksk.1 pksk.2 adv]
+  rw [probOutput_bind_eq_tsum (𝒟[hr.gen] : SPMF (PK × SK)), probOutput_bind_eq_tsum
+    (𝒟[hr.gen] : SPMF (PK × SK))]
+  -- Average the per-key coupling hop over `(pk, sk) ← hr.gen`: weight each per-key bound by its
+  -- keygen mass `Pr[= x | 𝒟[hr.gen]]`, pull the constant `collisionBound` out using
+  -- `∑' x, Pr[= x | 𝒟[hr.gen]] ≤ 1`.
+  have hper : ∀ x : PK × SK,
+      Pr[= true | realGameVerifyFresh psf hr M Salt adv x.1 x.2] ≤
+        Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1]
+          + collisionBound Salt qSign qHash := fun x =>
+    gpv_realGameVerifyFresh_le_progGameVerifyFresh_add_collisionBound psf hr M Salt
+      x.1 x.2 adv domainSample qSign qHash (hQ x.1)
+      (fun c => hNF x.1 x.2 c) (hreg x.1 x.2)
+  calc ∑' x : PK × SK,
+        Pr[= x | 𝒟[hr.gen]] * Pr[= true | realGameVerifyFresh psf hr M Salt adv x.1 x.2]
+      ≤ ∑' x : PK × SK, (Pr[= x | 𝒟[hr.gen]]
+            * Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1]
+          + Pr[= x | 𝒟[hr.gen]] * collisionBound Salt qSign qHash) :=
+        ENNReal.tsum_le_tsum fun x => by rw [← mul_add]; gcongr; exact hper x
+    _ = ∑' x : PK × SK, (Pr[= x | 𝒟[hr.gen]]
+            * Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1])
+          + (∑' x : PK × SK, Pr[= x | 𝒟[hr.gen]]) * collisionBound Salt qSign qHash := by
+        rw [ENNReal.tsum_add, ENNReal.tsum_mul_right]
+    _ ≤ ∑' x : PK × SK, (Pr[= x | 𝒟[hr.gen]]
+            * Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1])
+          + 1 * collisionBound Salt qSign qHash := by
+        gcongr
+        exact tsum_probOutput_le_one
+    _ = ∑' x : PK × SK, (Pr[= x | 𝒟[hr.gen]]
+            * Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1])
+          + collisionBound Salt qSign qHash := by rw [one_mul]
+
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
 1. **Distinct-preimage branch:** the forgery differs from the simulator's hidden programmed
