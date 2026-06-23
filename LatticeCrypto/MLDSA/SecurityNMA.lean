@@ -17,10 +17,11 @@ and the **SelfTargetMSIS extractor**:
 
 1. **MLWE key-swap (`nma_keyswap_hop`).** Replace the honest key generation, where the public key
    vector is `t = Â · s₁ + s₂`, with a variant `keygen1` that samples `t` uniformly. The gap
-   between the two EUF-NMA games equals the decisional MLWE advantage of the (seed-based)
-   distinguisher `B = distinguisherB`. The `(Hadv)` and uniform-branch `(H1)` parts are pure
-   runtime-plumbing rewrites; the real-branch `(H0)` is discharged from the honest-sampling field
-   `Primitives.Laws.expandS_honest_sampling` (the ROM idealization of `ExpandSeed`/`ExpandS`).
+   between the two EUF-NMA games is bounded by the decisional MLWE advantage of the (seed-based)
+   distinguisher `B = distinguisherB`, plus the honest-sampling slack `idealGap`. The `(Hadv)` and
+   uniform-branch `(H1)` parts are pure runtime-plumbing rewrites; the real-branch `(H0)` is
+   controlled by the `honestSamplingSlack` hypothesis — the quantitative total-variation ROM
+   modeling of `ExpandSeed`/`ExpandS`, carried as the real slack `idealGap`.
 2. **SelfTargetMSIS extraction (`nmaAdvantage_keygen1_le_stmsis`).** Once `t` is uniform the key
    carries no secret, so a forgery is a short vector satisfying the SelfTargetMSIS relation; the
    extractor `extractorC` reads `(z, c̃)` out of the forged signature. This is fully proven: the
@@ -110,6 +111,37 @@ theorem keyFromMaterial_eq (seed : Bytes 32) :
     keyFromMaterial p prims rho key s1 s2 (prims.expandA rho * s1 + s2) =
       keyGenFromSeed p prims seed := by
   simp only [keyFromMaterial, keyGenFromSeed]
+
+/-- **Honest-sampling slack of the secret derivation (ML-DSA ROM modeling, quantitative form).**
+
+For a real bound `idealGap`, this asserts that for *every* continuation `f`, the real key
+derivation (drawing the secrets `(s₁, s₂) = ExpandS((ExpandSeed seed).2.1)` deterministically
+from the same uniform `seed` that produces `ρ = (ExpandSeed seed).1`) differs from the ideal
+derivation (drawing `s₁`, `s₂` independently and uniformly while keeping the same `ρ`) by total
+variation distance at most `idealGap`.
+
+This is the quantitative replacement for the (false-as-equality) honest-sampling idealization:
+`ExpandSeed`/`ExpandS` are deterministic XOFs, so the real derivation is a deterministic image of
+at most `2^256` seeds and can never *equal* a full-support uniform over the vastly larger secret
+space. The honest model carries the residual distance as an explicit real `idealGap` that enters
+the security bound additively (and is `0` exactly in the idealized limit). It is satisfiable for
+any concrete `prims` — `tvDist` is always at most `1`, so `idealGap = 1` is a trivial witness, and
+the genuine ROM-modeling bound supplies the meaningful value. It is consumed only by
+`MLDSA.NMA.nma_keyswap_hop` to bound the `(H0)` real-branch residue. -/
+def honestSamplingSlack (idealGap : ℝ) : Prop :=
+  ∀ {γ : Type}
+    [SampleableType (RqVec p.l)] [SampleableType (RqVec p.k)] [IsUniformSpec unifSpec]
+    (f : Bytes 32 → RqVec p.l → RqVec p.k → ProbComp γ),
+    tvDist (do
+        let seed ← $ᵗ (Bytes 32)
+        f (prims.expandSeed seed).1
+          (prims.expandS (prims.expandSeed seed).2.1).1
+          (prims.expandS (prims.expandSeed seed).2.1).2)
+      (do
+        let seed ← $ᵗ (Bytes 32)
+        let s₁ ← $ᵗ (RqVec p.l)
+        let s₂ ← $ᵗ (RqVec p.k)
+        f (prims.expandSeed seed).1 s₁ s₂) ≤ idealGap
 
 end KeyGen
 
@@ -317,8 +349,8 @@ theorem nmaGame_eq_keygen_bind
   rfl
 
 /-- **The MLWE key-swap hop (Lemma 7, Step 1).** For every NMA forging strategy `main`, the gap
-between the real-`t` and uniform-`t` EUF-NMA games is bounded by (in fact equal to) the decisional
-MLWE advantage of the seed-based distinguisher `B`.
+between the real-`t` and uniform-`t` EUF-NMA games is bounded by the decisional MLWE advantage of
+the seed-based distinguisher `B`, plus the honest-sampling slack `idealGap`.
 
 The proof factors through three facts:
 - **(Hadv)** the MLWE advantage equals `(game0 B).boolDistAdvantage (game1 B)`
@@ -327,26 +359,32 @@ The proof factors through three facts:
   (proven below: both are the uniform-`t` game, and the `ρ` marginals coincide because
   `mldsaMLWE` samples `ρ` through the *same* `ExpandSeed` that `keygen1` uses, and `keygen1`'s
   secret is discarded);
-- **(H0)** `nmaGame … keygen0` and `game0 (mldsaMLWE) B` have equal `Pr[= true]` — discharged from
-  the honest-sampling field `h_laws.expandS_honest_sampling` (the ROM idealization of
-  `ExpandSeed`/`ExpandS`); see the inline comment for exactly what it needs.
+- **(H0)** `nmaGame … keygen0` and `game0 (mldsaMLWE) B` differ in `Pr[= true]` by at most
+  `idealGap` — controlled by the honest-sampling slack hypothesis `hSlack` (the quantitative,
+  total-variation ROM modeling of `ExpandSeed`/`ExpandS`); see the inline comment for exactly
+  what it needs.
+
+The deterministic `ExpandSeed`/`ExpandS` cannot make the real key law *equal* the
+independent-uniform secret law (a deterministic image of `2^256` seeds has strictly smaller
+support), so `(H0)` is genuinely an inequality with the residual carried by `idealGap`.
 
 This is the first of the three steps of `nma_security`; steps 2 and 3 (the `H₁` reprogramming and
 the SelfTargetMSIS extraction) are handled elsewhere. The bound is stated on `toReal` because the
-NMA advantages are `ℝ≥0∞` while MLWE advantage is `ℝ`. -/
-theorem nma_keyswap_hop (h_laws : Primitives.Laws prims nttOps)
+NMA advantages are `ℝ≥0∞` while MLWE advantage and `idealGap` are `ℝ`. -/
+theorem nma_keyswap_hop (_h_laws : Primitives.Laws prims nttOps)
     (hr : GenerableRelation (PublicKey p prims) (SecretKey p) (validKeyPair p prims))
     (maxAttempts : ℕ)
+    (idealGap : ℝ) (_hGap : 0 ≤ idealGap)
+    (hSlack : honestSamplingSlack p prims idealGap)
     (main : PublicKey p prims →
       OracleComp (unifSpec + (M × Commitment p prims →ₒ CommitHashBytes p))
         (M × Option (Commitment p prims × Response p prims))) :
     |(nmaAdvantage p prims hr maxAttempts (keygen0 p prims) main).toReal -
         (nmaAdvantage p prims hr maxAttempts (keygen1 p prims) main).toReal| ≤
       LearningWithErrors.advantage (mldsaMLWE p prims)
-        (distinguisherB p prims hr maxAttempts main) := by
+        (distinguisherB p prims hr maxAttempts main) + idealGap := by
   set B := distinguisherB p prims hr maxAttempts main (M := M) with hB
   -- (Hadv): the MLWE advantage is exactly the gap between the two single-branch games.
-  apply le_of_eq
   rw [advantage_eq_game_boolDistAdvantage (mldsaMLWE p prims) B,
     ProbComp.boolDistAdvantage, nmaAdvantage, nmaAdvantage]
   -- It now suffices to identify `Pr[= true]` of each NMA game with the matching MLWE game.
@@ -363,40 +401,39 @@ theorem nma_keyswap_hop (h_laws : Primitives.Laws prims nttOps)
     simp only [LearningWithErrors.game1, LearningWithErrors.uniformDistr, hB, distinguisherB,
       mldsaMLWE, keygen1, keyFromMaterial, bind_assoc, pure_bind]
     rw [probOutput_def, probOutput_def, SPMF.evalDist_def]
-  have hH0 : Pr[= true | nmaGame p prims hr maxAttempts (keygen0 p prims) main] =
-      Pr[= true | LearningWithErrors.game0 (mldsaMLWE p prims) B] := by
-    -- (H0) real-branch identity — THE residual honest-sampling assumption.
-    -- `nmaGame … keygen0` samples one `seed ← $ᵗ Bytes 32`, derives `ρ := (ExpandSeed seed).1`,
-    -- `(s₁, s₂) := ExpandS (ExpandSeed seed).2`, and sets `t := ExpandA(ρ)·s₁ + s₂`.
-    -- `game0 = distr >>= B` instead samples `ρ` through `ExpandSeed` but `s₁ ← $ᵗ RqVec l`,
-    -- `s₂ ← $ᵗ RqVec k` *independently* of `ρ` and of each other, with `t := ExpandA(ρ)·s₁ + s₂`.
-    -- These agree on `Pr[= true]` iff the joint law of `(ρ, s₁, s₂)` produced by
-    -- `ExpandSeed`/`ExpandS` from one uniform `seed` equals the product law
-    -- `((ExpandSeed (·)).1 of uniform seed) ⊗ Uniform(RqVec l) ⊗ Uniform(RqVec k)`.
-    -- This is the ML-DSA *honest sampling assumption* (`ExpandSeed`/`ExpandS` modeled as
-    -- independent uniform samplers in the ROM); it is NOT derivable from the deterministic
-    -- `prims` and must enter as an added hypothesis on `prims` (or be supplied by the ROM
-    -- modeling of `ExpandSeed`/`ExpandA`). See obligation (1) in the closing note.
+  -- (H0) real-branch *bound* — THE residual honest-sampling slack, quantified by `idealGap`.
+  -- `nmaGame … keygen0` samples one `seed ← $ᵗ Bytes 32`, derives `ρ := (ExpandSeed seed).1`,
+  -- `(s₁, s₂) := ExpandS (ExpandSeed seed).2`, and sets `t := ExpandA(ρ)·s₁ + s₂`.
+  -- `game0 = distr >>= B` instead samples `ρ` through `ExpandSeed` but `s₁ ← $ᵗ RqVec l`,
+  -- `s₂ ← $ᵗ RqVec k` *independently* of `ρ` and of each other, with `t := ExpandA(ρ)·s₁ + s₂`.
+  -- The two `Pr[= true]` differ by at most the total-variation distance of the underlying key
+  -- derivations, which `hSlack` bounds by `idealGap`. This is the ML-DSA *honest-sampling slack*
+  -- (`ExpandSeed`/`ExpandS` modeled as near-uniform samplers in the ROM); it is NOT derivable from
+  -- the deterministic `prims` (deterministic XOFs cannot manufacture entropy beyond their seed) and
+  -- enters as a real-number bound, not a false equality. See obligation (1) in the closing note.
+  have hH0 : |Pr[= true | nmaGame p prims hr maxAttempts (keygen0 p prims) main].toReal -
+      Pr[= true | LearningWithErrors.game0 (mldsaMLWE p prims) B].toReal| ≤ idealGap := by
     rw [nmaGame_eq_keygen_bind]
     simp only [LearningWithErrors.game0, LearningWithErrors.distr, hB, distinguisherB,
       mldsaMLWE, keygen0, keyFromMaterial, bind_assoc, pure_bind]
-    -- After the runtime plumbing the goal is purely about the *key distribution*:
+    -- After the runtime plumbing the goal compares the *key distributions* only:
     --   LHS: `seed ← $ᵗ; t := ExpandA((ExpandSeed seed).1)·(ExpandS (ExpandSeed seed).2).1
     --           + (ExpandS (ExpandSeed seed).2).2; run B-tail on pk(seed, t)`
     --   RHS: `seed ← $ᵗ; s₁ ← $ᵗ; s₂ ← $ᵗ; t := ExpandA((ExpandSeed seed).1)·s₁ + s₂;
     --           run B-tail on pk(seed, t)`.
-    -- These coincide exactly when `(s₁, s₂) = ExpandS (ExpandSeed seed).2` is, jointly over a
-    -- uniform `seed`, distributed as an *independent* `Uniform(RqVec l) × Uniform(RqVec k)`
-    -- (and independent of `(ExpandSeed seed).1`). That is the ML-DSA honest-sampling assumption
-    -- on `ExpandSeed`/`ExpandS`, not derivable from the deterministic `prims`; see obligation (1).
-    exact probOutput_congr rfl (h_laws.expandS_honest_sampling
+    -- The `Pr[= true]` gap is at most their TV distance, bounded by `idealGap` via `hSlack`.
+    refine le_trans (abs_probOutput_toReal_sub_le_tvDist _ _) ?_
+    exact hSlack
       (fun rho s1 s2 => simulateToProbComp p prims (M := M) (do
         let d ← main ⟨rho, (prims.power2RoundVec (prims.expandA rho * s1 + s2)).1⟩
         (FiatShamirWithAbort (identificationScheme p prims) hr M maxAttempts).verify
-          ⟨rho, (prims.power2RoundVec (prims.expandA rho * s1 + s2)).1⟩ d.1 d.2)))
-  -- The hop is in fact an *equality* modulo (H0)/(H1): after rewriting both NMA games into the
-  -- matching MLWE games the bound becomes `|x - y| = |x - y|`, closed by reflexivity.
-  rw [hH0, hH1]
+          ⟨rho, (prims.power2RoundVec (prims.expandA rho * s1 + s2)).1⟩ d.1 d.2))
+  -- Assemble: `|a − b| ≤ |a − g₀| + |g₀ − g₁| ≤ idealGap + MLWE`, then reorder.
+  rw [hH1]
+  refine le_trans (abs_sub_le _
+    (Pr[= true | LearningWithErrors.game0 (mldsaMLWE p prims) B].toReal) _) ?_
+  rw [add_comm]
+  exact add_le_add le_rfl hH0
 
 end Hop
 
@@ -641,6 +678,8 @@ theorem nma_security (h_laws : Primitives.Laws prims nttOps)
       (TqMatrix p.k p.l) (Response p prims)
       (PublicKey p prims) (M × Commitment p prims) (CommitHashBytes p))
     (maxAttempts : ℕ)
+    (idealGap : ℝ) (hGap : 0 ≤ idealGap)
+    (hSlack : honestSamplingSlack p prims idealGap)
     (hr : GenerableRelation (PublicKey p prims) (SecretKey p)
       (validKeyPair p prims))
     (hGen : hr.gen = keygen0 p prims)
@@ -660,7 +699,8 @@ theorem nma_security (h_laws : Primitives.Laws prims nttOps)
           (FiatShamirWithAbort.runtime
             (Commit := Commitment p prims) (Chal := CommitHashBytes p) M) ≤
         ENNReal.ofReal (LearningWithErrors.advantage mlwe mlweReduction) +
-        SelfTargetMSIS.advantage stmsisReduction := by
+        SelfTargetMSIS.advantage stmsisReduction +
+        ENNReal.ofReal idealGap := by
   classical
   intro adv
   obtain ⟨B, hB⟩ := hMlweBridge adv.main
@@ -698,23 +738,36 @@ theorem nma_security (h_laws : Primitives.Laws prims nttOps)
   have htri := ProbComp.probOutput_true_le_add_ofReal_boolDistAdvantage pc0 pc1
   rw [hg0]
   refine le_trans htri ?_
-  -- `pc0.boolDistAdvantage pc1 = |nmaAdv keygen0 - nmaAdv keygen1| ≤ advantage mldsaMLWE B'`.
+  -- `pc0.boolDistAdvantage pc1 = |nmaAdv keygen0 - nmaAdv keygen1| ≤ advantage mldsaMLWE B' +
+  -- idealGap` (the honest-sampling slack of `nma_keyswap_hop`).
   have hbias : pc0.boolDistAdvantage pc1 ≤
       LearningWithErrors.advantage (mldsaMLWE p prims)
-        (distinguisherB p prims hr maxAttempts adv.main) := by
-    have hk := nma_keyswap_hop p prims h_laws hr maxAttempts (M := M) adv.main
+        (distinguisherB p prims hr maxAttempts adv.main) + idealGap := by
+    have hk := nma_keyswap_hop p prims h_laws hr maxAttempts idealGap hGap hSlack (M := M) adv.main
     rw [ProbComp.boolDistAdvantage, ← hg0, ← hg1]
     exact hk
+  -- `ofReal` of the slacked bound splits additively (both summands are nonnegative).
+  have hbias' : ENNReal.ofReal (pc0.boolDistAdvantage pc1) ≤
+      ENNReal.ofReal (LearningWithErrors.advantage (mldsaMLWE p prims)
+        (distinguisherB p prims hr maxAttempts adv.main)) + ENNReal.ofReal idealGap := by
+    refine le_trans (ENNReal.ofReal_le_ofReal hbias) ?_
+    exact ENNReal.ofReal_add_le
   -- STMSIS extraction bound on the uniform game.
   have hstm := nmaAdvantage_keygen1_le_stmsis p prims hr maxAttempts (M := M) adv.main
   rw [hg1] at hstm
   calc Pr[= true | pc1] + ENNReal.ofReal (pc0.boolDistAdvantage pc1)
       ≤ SelfTargetMSIS.advantage (extractorC p prims adv.main) +
+        (ENNReal.ofReal (LearningWithErrors.advantage (mldsaMLWE p prims)
+          (distinguisherB p prims hr maxAttempts adv.main)) + ENNReal.ofReal idealGap) := by
+        exact add_le_add hstm hbias'
+    _ = (SelfTargetMSIS.advantage (extractorC p prims adv.main) +
         ENNReal.ofReal (LearningWithErrors.advantage (mldsaMLWE p prims)
-          (distinguisherB p prims hr maxAttempts adv.main)) := by
-        exact add_le_add hstm (ENNReal.ofReal_le_ofReal hbias)
+          (distinguisherB p prims hr maxAttempts adv.main))) + ENNReal.ofReal idealGap := by
+        rw [← add_assoc]
     _ ≤ ENNReal.ofReal (LearningWithErrors.advantage mlwe B) +
-        SelfTargetMSIS.advantage (extractorC p prims adv.main) := by
+        SelfTargetMSIS.advantage (extractorC p prims adv.main) +
+        ENNReal.ofReal idealGap := by
+        refine add_le_add ?_ le_rfl
         rw [add_comm]
         exact add_le_add (ENNReal.ofReal_le_ofReal hB) le_rfl
 
@@ -747,6 +800,8 @@ theorem euf_cma_security_of_nma [SampleableType (PublicKey p prims)]
       (TqMatrix p.k p.l) (Response p prims)
       (PublicKey p prims) (M × Commitment p prims) (CommitHashBytes p))
     (maxAttempts : ℕ)
+    (idealGap : ℝ) (hGap : 0 ≤ idealGap)
+    (hSlack : honestSamplingSlack p prims idealGap)
     (hr : GenerableRelation (PublicKey p prims) (SecretKey p)
       (validKeyPair p prims))
     (hGen : hr.gen = keygen0 p prims)
@@ -786,7 +841,8 @@ theorem euf_cma_security_of_nma [SampleableType (PublicKey p prims)]
         ENNReal.ofReal (LearningWithErrors.advantage mlwe mlweReduction) +
         SelfTargetMSIS.advantage stmsisReduction +
         ENNReal.ofReal
-          (FiatShamirWithAbort.cmaToNmaLoss qS qH ε p_abort ζ_zk δ hp) := by
+          (FiatShamirWithAbort.cmaToNmaLoss qS qH ε p_abort ζ_zk δ hp) +
+        ENNReal.ofReal idealGap := by
   classical
   -- Step 1: CMA advantage ≤ managed-RO NMA success of `simulatedNmaAdv` + loss.
   have hcma := FiatShamirWithAbort.euf_cma_to_nma (identificationScheme p prims) hr M
@@ -796,13 +852,13 @@ theorem euf_cma_security_of_nma [SampleableType (PublicKey p prims)]
   -- cache-forgetting reduction `simulatedEufNmaAdv`.
   have hbridge := FiatShamirWithAbort.managedRoNmaExp_simulatedNmaAdv_eq_eufNmaExp
     (identificationScheme p prims) hr M maxAttempts sim adv
-  -- Step 3 (Lemma 7): the plain EUF-NMA advantage is bounded by MLWE + SelfTargetMSIS.
-  obtain ⟨mlweRed, stmsisRed, hnma⟩ := nma_security p prims h_laws mlwe stmsis maxAttempts hr
-    hGen hStmsis hMlweBridge
+  -- Step 3 (Lemma 7): the plain EUF-NMA advantage is bounded by MLWE + SelfTargetMSIS + idealGap.
+  obtain ⟨mlweRed, stmsisRed, hnma⟩ := nma_security p prims h_laws mlwe stmsis maxAttempts
+    idealGap hGap hSlack hr hGen hStmsis hMlweBridge
     (FiatShamirWithAbort.simulatedEufNmaAdv (identificationScheme p prims) hr M maxAttempts
       sim adv)
   refine ⟨mlweRed, stmsisRed, ?_⟩
-  -- Assemble: advantage ≤ (managed = eufNma advantage ≤ MLWE + STMSIS) + loss.
+  -- Assemble: advantage ≤ (managed = eufNma advantage ≤ MLWE + STMSIS + idealGap) + loss.
   refine le_trans hcma ?_
   have hmanaged : Pr[= true | SignatureAlg.managedRoNmaExp
         (FiatShamirWithAbort.runtime M)
@@ -812,7 +868,9 @@ theorem euf_cma_security_of_nma [SampleableType (PublicKey p prims)]
         sim adv).advantage (FiatShamirWithAbort.runtime M) := by
     rw [SignatureAlg.eufNmaAdv.advantage, hbridge]
   rw [hmanaged]
-  exact add_le_add hnma le_rfl
+  -- `(MLWE + STMSIS + idealGap) + loss = MLWE + STMSIS + loss + idealGap` (commute last two).
+  refine le_trans (add_le_add hnma le_rfl) (le_of_eq ?_)
+  rw [add_right_comm]
 
 open scoped Classical in
 /-- **EUF-CMA security of ML-DSA with the HVZK hypotheses discharged.**
@@ -839,6 +897,8 @@ theorem euf_cma_security_of_nma_hvzk [SampleableType (PublicKey p prims)]
       (TqMatrix p.k p.l) (Response p prims)
       (PublicKey p prims) (M × Commitment p prims) (CommitHashBytes p))
     (maxAttempts : ℕ)
+    (idealGap : ℝ) (hGap : 0 ≤ idealGap)
+    (hSlack : honestSamplingSlack p prims idealGap)
     (hr : GenerableRelation (PublicKey p prims) (SecretKey p)
       (validKeyPair p prims))
     (hGen : hr.gen = keygen0 p prims)
@@ -875,9 +935,10 @@ theorem euf_cma_security_of_nma_hvzk [SampleableType (PublicKey p prims)]
         SelfTargetMSIS.advantage stmsisReduction +
         ENNReal.ofReal
           (FiatShamirWithAbort.cmaToNmaLoss qS qH ε p_abort
-            (hvzkBoundReal p prims) δ hp) :=
-  euf_cma_security_of_nma p prims h_laws mlwe stmsis maxAttempts hr hGen hStmsis
-    (hvzkSimulatorReal p prims) (hvzkBoundReal p prims) ENNReal.toReal_nonneg
+            (hvzkBoundReal p prims) δ hp) +
+        ENNReal.ofReal idealGap :=
+  euf_cma_security_of_nma p prims h_laws mlwe stmsis maxAttempts idealGap hGap hSlack hr
+    hGen hStmsis (hvzkSimulatorReal p prims) (hvzkBoundReal p prims) ENNReal.toReal_nonneg
     (idsWithAbort_hvzk_real p prims h_laws) qS qH ε p_abort δ hε hδ hp₀ hp Good hGood hGuess
     hAbort hAbortSim adv hQ hMlweBridge
 
@@ -1080,6 +1141,9 @@ theorem euf_cma_security_asymptotic_real
       ENNReal.ofReal (LearningWithErrors.advantage (mlwe n) B) ≤ mlweAdv n)
     (hStmsisBound : ∀ n (C : SelfTargetMSIS.Adversary (stmsis n)),
       SelfTargetMSIS.advantage C ≤ stmsisAdv n)
+    (idealGap : ℕ → ℝ) (hGap : ∀ n, 0 ≤ idealGap n)
+    (hSlack : ∀ n, honestSamplingSlack (p' n) (prims' n) (idealGap n))
+    (hGapNegl : negligible (fun n => ENNReal.ofReal (idealGap n)))
     (hεneg : negligible (fun n => ENNReal.ofReal (ε n)))
     (hδneg : negligible (fun n => ENNReal.ofReal (δ n)))
     (hζneg : negligible (fun n => ENNReal.ofReal (hvzkBoundReal (p' n) (prims' n)))) :
@@ -1091,13 +1155,15 @@ theorem euf_cma_security_asymptotic_real
         (Commit := Commitment (p' n) (prims' n)) (Chal := CommitHashBytes (p' n)) M') ≤
       mlweAdv n + stmsisAdv n +
       ENNReal.ofReal (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort
-        (hvzkBoundReal (p' n) (prims' n)) (δ n) hp) := by
+        (hvzkBoundReal (p' n) (prims' n)) (δ n) hp) +
+      ENNReal.ofReal (idealGap n) := by
     intro n
     obtain ⟨mlweRed, stmsisRed, hb⟩ :=
       @euf_cma_security_of_nma_hvzk (p' n) (prims' n) nttOps' (instHigh n) M' _
         (instCommEq n) (instCommInh n) (instRespInh n) (instRql n) (instRqk n)
         (instChal n) (instPk n)
-        (h_laws n) (mlwe n) (stmsis n) (maxAttempts n) (hr n) (hGen n) (hStmsis n)
+        (h_laws n) (mlwe n) (stmsis n) (maxAttempts n) (idealGap n) (hGap n) (hSlack n)
+        (hr n) (hGen n) (hStmsis n)
         (qS n) (qH n) (ε n) p_abort (δ n) (hε n) (hδ n) hp₀ hp (Good n) (hGood n) (hGuess n)
         (hAbort n) (hAbortSim n) (adv n) (hQ n) (hMlweBridge n)
     refine le_trans hb ?_
@@ -1105,7 +1171,7 @@ theorem euf_cma_security_asymptotic_real
     · exact hMlweBound n mlweRed
     · exact hStmsisBound n stmsisRed
   refine negligible_of_le hbound ?_
-  refine negligible_add (negligible_add hmlweNegl hstmsisNegl) ?_
+  refine negligible_add (negligible_add (negligible_add hmlweNegl hstmsisNegl) ?_) hGapNegl
   exact cmaToNmaLoss_negligible qS qH ε (fun n => hvzkBoundReal (p' n) (prims' n)) δ p_abort hp
     pS pH hqS hqH hεneg hζneg hδneg
 
@@ -1125,7 +1191,7 @@ This rules out the degenerate reading of the headline (where polynomial queries 
 positive `ε` would force the budgets to vanish): here the budgets grow polynomially while the loss
 still decays, which is exactly the standard asymptotic ML-DSA setting. -/
 theorem euf_cma_security_asymptotic_real_satisfiable :
-    ∃ (qS qH : ℕ → ℕ) (ε ζ_zk δ : ℕ → ℝ) (p_abort : ℝ) (hp : p_abort < 1)
+    ∃ (qS qH : ℕ → ℕ) (ε ζ_zk δ idealGap : ℕ → ℝ) (p_abort : ℝ) (hp : p_abort < 1)
       (pS pH : Polynomial ℕ) (mlweAdv stmsisAdv : ℕ → ℝ≥0∞),
       (∀ n, qS n ≤ pS.eval n) ∧ (∀ n, qH n ≤ pH.eval n) ∧
       -- the queries genuinely grow (are not the degenerate vanishing-query regime)
@@ -1134,9 +1200,11 @@ theorem euf_cma_security_asymptotic_real_satisfiable :
       negligible (fun n => ENNReal.ofReal (ε n)) ∧
       negligible (fun n => ENNReal.ofReal (ζ_zk n)) ∧
       negligible (fun n => ENNReal.ofReal (δ n)) ∧
+      negligible (fun n => ENNReal.ofReal (idealGap n)) ∧
       negligible (fun n => mlweAdv n + stmsisAdv n +
         ENNReal.ofReal (FiatShamirWithAbort.cmaToNmaLoss (qS n) (qH n) (ε n) p_abort
-          (ζ_zk n) (δ n) hp)) := by
+          (ζ_zk n) (δ n) hp) +
+        ENNReal.ofReal (idealGap n)) := by
   have hgrow : ∀ n : ℕ, n ≤ (Polynomial.X : Polynomial ℕ).eval n := fun n => by simp
   have hneg : negligible (fun n => ENNReal.ofReal ((1 / 2 : ℝ) ^ n)) :=
     negligible_ofReal_geometric (1 / 2) (by norm_num) (by norm_num)
@@ -1149,10 +1217,10 @@ theorem euf_cma_security_asymptotic_real_satisfiable :
   have hnegE : negligible (fun n => (1 / 2 : ℝ≥0∞) ^ n) := by
     simp only [hEeq]; exact hneg
   refine ⟨fun n => n, fun n => n, fun n => (1 / 2) ^ n, fun n => (1 / 2) ^ n,
-    fun n => (1 / 2) ^ n, 1 / 2, by norm_num, Polynomial.X, Polynomial.X,
+    fun n => (1 / 2) ^ n, fun n => (1 / 2) ^ n, 1 / 2, by norm_num, Polynomial.X, Polynomial.X,
     fun n => (1 / 2) ^ n, fun n => (1 / 2) ^ n, hgrow, hgrow, fun _ => rfl, fun _ => rfl,
-    hnegE, hnegE, hneg, hneg, hneg, ?_⟩
-  refine negligible_add (negligible_add hnegE hnegE) ?_
+    hnegE, hnegE, hneg, hneg, hneg, hneg, ?_⟩
+  refine negligible_add (negligible_add (negligible_add hnegE hnegE) ?_) hneg
   exact cmaToNmaLoss_negligible (fun n => n) (fun n => n) (fun n => (1 / 2) ^ n)
     (fun n => (1 / 2) ^ n) (fun n => (1 / 2) ^ n) (1 / 2) (by norm_num) Polynomial.X Polynomial.X
     hgrow hgrow hneg hneg hneg
@@ -1168,15 +1236,19 @@ proven and axiom-clean (`[propext, Classical.choice, Quot.sound]`), assembled fr
 
 1. **`(Hadv)`/`(H1)`/`(H0)` MLWE key-swap (`nma_keyswap_hop`).** `(Hadv)` and the uniform branch
    `(H1)` are pure runtime-plumbing rewrites (`advantage_eq_game_boolDistAdvantage`,
-   `nmaGame_eq_keygen_bind`). The real branch `(H0)` reduces, after the plumbing, to the pure
-   key-distribution identity
-   `𝒟[seed ← $ᵗ; run B-tail on pk(seed, ExpandA(ρ)·(ExpandS ρ').1 + (ExpandS ρ').2)] =
-    𝒟[seed ← $ᵗ; s₁ ← $ᵗ; s₂ ← $ᵗ; run B-tail on pk(seed, ExpandA(ρ)·s₁ + s₂)]`
-   (with `ρ = (ExpandSeed seed).1`, `ρ' = (ExpandSeed seed).2`), which is discharged by the
-   honest-sampling field `Primitives.Laws.expandS_honest_sampling` carried by `h_laws`: the ROM
-   idealization of `ExpandSeed`/`ExpandS` as independent uniform XOFs. (This idealization is a
-   modeling assumption, not derivable from the deterministic `prims`; strengthening or instantiating
-   it on a concrete `prims` is the one remaining modeling decision.)
+   `nmaGame_eq_keygen_bind`). The real branch `(H0)` reduces, after the plumbing, to comparing the
+   key distributions
+   `𝒟[seed ← $ᵗ; run B-tail on pk(seed, ExpandA(ρ)·(ExpandS ρ').1 + (ExpandS ρ').2)]` against
+   `𝒟[seed ← $ᵗ; s₁ ← $ᵗ; s₂ ← $ᵗ; run B-tail on pk(seed, ExpandA(ρ)·s₁ + s₂)]`
+   (with `ρ = (ExpandSeed seed).1`, `ρ' = (ExpandSeed seed).2`). Because `ExpandSeed`/`ExpandS` are
+   deterministic, the first is a deterministic image of at most `2^256` seeds and can never *equal*
+   the full-support independent-uniform secret law of the second. The residual is therefore carried
+   as the explicit total-variation slack `idealGap` supplied by the `honestSamplingSlack` hypothesis
+   `hSlack`: the `(H0)` `Pr[= true]` gap is at most `idealGap` (via
+   `abs_probOutput_toReal_sub_le_tvDist` plus `hSlack`), and `idealGap` propagates additively into
+   the final bound. (This slack is a
+   modeling assumption on the XOFs, not derivable from the deterministic `prims`; supplying a
+   concrete quantitative bound on a concrete `prims` is the one remaining modeling decision.)
 
 2. **STMSIS extraction (`nmaAdvantage_keygen1_le_stmsis`).** Both `Pr[= true]`s reduce, through the
    shared `withStateOracle` semantics, to: sample the uniform-`t` key, run the forger against the

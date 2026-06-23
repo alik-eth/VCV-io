@@ -57,12 +57,12 @@ infrastructure now present in the tree:
 
 ## What is NOT proven (and why)
 
-Two fields remain, all in one honest category — there are no false-as-stated fields:
+One field remains, in a single honest category — there are no false-as-stated fields:
 
-**Random-oracle modeling assumptions** (inherent to the ML-DSA security model, not derivable
-from any fixed deterministic instantiation — see their docstrings in `Primitives.lean`):
-- `expandS_honest_sampling`, `keyVector_t0_determined`: standard ROM idealizations of the
-  SHAKE XOFs (`ExpandSeed` / `ExpandS`). These are model assumptions, left abstract.
+**Random-oracle modeling assumption** (inherent to the ML-DSA security model, not derivable
+from any fixed deterministic instantiation — see its docstring in `Primitives.lean`):
+- `keyVector_t0_determined`: a standard ROM idealization of the SHAKE XOFs
+  (`ExpandSeed` / `ExpandS`). This is a model assumption, left abstract.
 
 The abstract `Primitives.Laws` statement is **not** modified by this file; the banked `concrete_*`
 theorems make explicit which concrete obligations are discharged and which remain.
@@ -287,14 +287,16 @@ approved parameter set: the eight algebraic fields (`concrete_transform`,
 (assembled from the generic negacyclic-convolution infinity-norm bound and the challenge `ℓ₁`
 count). There are no longer any false-as-stated fields.
 
-We deliberately do **not** assemble a full `Primitives.Laws (concretePrimitives p) …` witness,
-because two fields remain undischarged here for reasons that are not statement bugs:
+We deliberately do **not** assemble a full `Primitives.Laws (concretePrimitives p) …` witness here,
+because one field remains undischarged for a reason that is not a statement bug:
 
-* `expandS_honest_sampling` / `keyVector_t0_determined`: inherent ROM modeling assumptions, left
-  abstract (see their docstrings in `Primitives.lean`).
+* `keyVector_t0_determined`: an inherent ROM modeling assumption, left abstract (see its docstring
+  in `Primitives.lean`).
 
 A `sorry`-backed aggregate witness is intentionally omitted: it would assert the still-abstract ROM
-fields, which is unsound to bank. The thirteen proven `concrete_*` lemmas above stand on their own
-and are safe to consume. -/
+field, which is unsound to bank. The thirteen proven `concrete_*` lemmas above stand on their own
+and are safe to consume. A full `Primitives.Laws` witness is now inhabitable once the single
+`keyVector_t0_determined` modeling assumption is supplied as a hypothesis (it is satisfiable, e.g.
+when `ExpandSeed` is injective on the relevant data). -/
 
 end MLDSA.Concrete
