@@ -4763,6 +4763,436 @@ lemma map_run_gpvRealImplFlagFresh_proj_flag (pk : PK) (sk : SK) {β : Type}
       (Salt × M →ₒ Range).QueryCache × Finset M)
     (gpvRealImplFlagFresh_proj_flag psf hr M Salt pk sk) oa s
 
+/-! ### Stage-4 combined handler: programmed game ⊕ collision reduction
+
+The distinct-collision transfer needs to relate the programmed freshness game handler
+`progGameRunImplNoRecFlagFresh` (state `((cache × signedSet) × flag)`) to the collision
+`reduction`'s internal handler (state `cache × table`, where `table : (Salt × M) → Option Domain`
+records, for each programmed point, the hidden short preimage `s` used to define the random-oracle
+value `psf.eval pk s` there). The reduction's handler is *not* a projection of the game handler: on
+a random-oracle miss it draws `s ← domainSample pk`, caches `psf.eval pk s`, and stores `s` in the
+table — and `s` is not recoverable from `psf.eval pk s` (`eval` is many-to-one).
+
+The resolution is to build a single **combined** handler `progGameRunImplCombined` that draws each
+programmed preimage `s` *once* and updates every component (cache, signed-set, flag, and the hidden
+table) in one step, exactly matching the draw order of both games. It then projects definitionally
+onto each:
+
+* dropping the table recovers `progGameRunImplNoRecFlagFresh`
+  (`map_run_progGameRunImplCombined_proj_table`);
+* dropping the signed-set and the flag recovers the reduction's internal handler `reductionImpl`
+  (`map_run_progGameRunImplCombined_proj_reduction`).
+
+A support invariant (`progGameRunImplCombined_run_inv`) records that the table and the cache stay
+coherent: at every programmed point `t`, `table t = some d → cache t = some (psf.eval pk d)`. -/
+
+open Classical in
+/-- **The collision reduction's internal oracle handler.** The named handler stack
+`(unifImpl + roImpl) + signImpl` over `StateT (QueryCache × ((Salt × M) → Option Domain)) ProbComp`
+that the collision `reduction` runs the adversary under. On a random-oracle miss it forward-samples
+a short preimage `s ← domainSample pk`, sets the cache value to `psf.eval pk s`, and records `s` in
+the hidden table at the queried point; the signing handler does the same at the freshly salted point
+`(r, msg)`. Cache hits and uniform queries leave the table untouched. The reduction's body equals
+running the adversary under this handler from `(∅, fun _ => none)` and reading the hidden preimage
+off the final table (`reduction_eq_run_reductionImpl`). -/
+noncomputable def reductionImpl (domainSample : PK → ProbComp Domain) (pk : PK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)) ProbComp) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1 t with
+      | some v => pure v
+      | none => do
+          let s ← (domainSample pk : ProbComp Domain)
+          let v := psf.eval pk s
+          set ((st.1.cacheQuery t v, fun t' => if t' = t then some s else st.2 t') : State)
+          pure v
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      set ((st.1.cacheQuery (r, msg) v,
+        fun t' => if t' = (r, msg) then some s else st.2 t') : State)
+      pure (r, s)
+  (unifImpl + roImpl) + signImpl
+
+omit [Fintype Salt] in
+/-- **The collision reduction is `reductionImpl` run from the empty state.** Restates the body of
+`reduction` in terms of the named internal handler `reductionImpl`: run the adversary under
+`reductionImpl` from `(∅, fun _ => none)`, then read the hidden programmed preimage off the final
+table at the forged point. The two are definitionally equal — `reduction`'s `let impl := …` block
+*is* `reductionImpl`. -/
+lemma reduction_eq_run_reductionImpl
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (pk : PK) :
+    reduction psf hr M Salt adv domainSample pk =
+      (do
+        let ((msgStar, (_rStar, sStar)), st) ←
+          (simulateQ (reductionImpl psf M Salt domainSample pk) (adv.main pk)).run
+            (∅, fun _ => none)
+        match st.2 (_rStar, msgStar) with
+        | some sHidden => pure (sHidden, sStar)
+        | none => pure (sStar, sStar)) := rfl
+
+open Classical in
+/-- **The combined programmed-game ⊕ collision-reduction handler.** A single handler that threads
+the programmed freshness-game state `((cache × signedSet) × flag)` *together with* the collision
+reduction's hidden preimage table `table : (Salt × M) → Option Domain`. Each programming step draws
+the short preimage `s ← domainSample pk` *once* and uses it for both the game cache value
+`psf.eval pk s` and the table record `s` at the programmed point, exactly matching the draw order of
+`progGameRunImplNoRecFlagFresh` and `reductionImpl`.
+
+* `.inl (.inl q)` (uniform): answer from `unifSpec`; cache, signed-set, flag, and table untouched.
+* `.inl (.inr q)` (random-oracle read at `q`): on a hit reuse the cached value (table untouched); on
+  a miss draw `s`, set the cache to `psf.eval pk s` and the table to `s` at `q`.
+* `.inr msg` (signing): draw a fresh salt `r`, draw `s`, set the cache at `(r, msg)` to
+  `psf.eval pk s`, insert `msg` into the signed-set, OR the collision flag with `saltKeyed`, and
+  record `s` in the table at `(r, msg)`.
+
+Dropping the table recovers `progGameRunImplNoRecFlagFresh`; dropping the signed-set and flag
+recovers `reductionImpl`. -/
+noncomputable def progGameRunImplCombined (domainSample : PK → ProbComp Domain) (pk : PK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain))) ProbComp) :=
+  fun t => StateT.mk fun s =>
+    match t with
+    | .inl (.inl q) => do
+        let v ← (unifSpec.query q : ProbComp _)
+        pure (v, s)
+    | .inl (.inr q) =>
+        match s.1.1.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            pure (psf.eval pk sd,
+              (((s.1.1.1.cacheQuery q (psf.eval pk sd), s.1.1.2), s.1.2),
+                fun t' => if t' = q then some sd else s.2 t'))
+    | .inr msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sd ← (domainSample pk : ProbComp Domain)
+        pure ((r, sd),
+          (((s.1.1.1.cacheQuery (r, msg) (psf.eval pk sd), insert msg s.1.1.2),
+            s.1.2 || saltKeyed M Salt s.1.1.1 r),
+            fun t' => if t' = (r, msg) then some sd else s.2 t'))
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombined` on a uniform query.** -/
+lemma progGameRunImplCombined_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : unifSpec.Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    (progGameRunImplCombined psf M Salt domainSample pk (.inl (.inl q))).run s =
+      (do let v ← (unifSpec.query q : ProbComp _); pure (v, s)) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombined` on a random-oracle query.** -/
+lemma progGameRunImplCombined_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : (Salt × M →ₒ Range).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    (progGameRunImplCombined psf M Salt domainSample pk (.inl (.inr q))).run s =
+      (match s.1.1.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            pure (psf.eval pk sd,
+              (((s.1.1.1.cacheQuery q (psf.eval pk sd), s.1.1.2), s.1.2),
+                fun t' => if t' = q then some sd else s.2 t'))) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombined` on a signing query.** -/
+lemma progGameRunImplCombined_run_inr (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    (progGameRunImplCombined psf M Salt domainSample pk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sd ← (domainSample pk : ProbComp Domain)
+        pure ((r, sd),
+          (((s.1.1.1.cacheQuery (r, msg) (psf.eval pk sd), insert msg s.1.1.2),
+            s.1.2 || saltKeyed M Salt s.1.1.1 r),
+            fun t' => if t' = (r, msg) then some sd else s.2 t'))) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reductionImpl` on a uniform query.** -/
+lemma reductionImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)) :
+    (reductionImpl psf M Salt domainSample pk (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reductionImpl` on a random-oracle query.** -/
+lemma reductionImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : (Salt × M →ₒ Range).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)) :
+    (reductionImpl psf M Salt domainSample pk (.inl (.inr q))).run s =
+      (match s.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            pure (psf.eval pk sd,
+              (s.1.cacheQuery q (psf.eval pk sd),
+                fun t' => if t' = q then some sd else s.2 t'))) := by
+  cases hq : s.1 q with
+  | none =>
+      simp [reductionImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr, StateT.run_bind,
+        StateT.run_get, StateT.run_set, bind_assoc, map_eq_bind_pure_comp, hq]
+  | some v =>
+      simp [reductionImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr, StateT.run_bind,
+        StateT.run_get, hq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reductionImpl` on a signing query.** -/
+lemma reductionImpl_run_inr (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × ((Salt × M) → Option Domain)) :
+    (reductionImpl psf M Salt domainSample pk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sd ← (domainSample pk : ProbComp Domain)
+        pure ((r, sd),
+          (s.1.cacheQuery (r, msg) (psf.eval pk sd),
+            fun t' => if t' = (r, msg) then some sd else s.2 t'))) := by
+  simp only [reductionImpl, QueryImpl.add_apply_inr]
+  simp [StateT.run_bind, StateT.run_get, StateT.run_set, bind_assoc, map_eq_bind_pure_comp]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRec` on a uniform query.** -/
+lemma progGameRunImplNoRec_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : unifSpec.Domain) (s : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRec` on a random-oracle query.** -/
+lemma progGameRunImplNoRec_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : (Salt × M →ₒ Range).Domain) (s : (Salt × M →ₒ Range).QueryCache) :
+    (progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inr q))).run s =
+      (match s q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            pure (psf.eval pk sd, s.cacheQuery q (psf.eval pk sd))) := by
+  cases hq : s q with
+  | none =>
+      simp [progGameRunImplNoRec, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr, StateT.run_bind,
+        StateT.run_get, StateT.run_set, bind_assoc, map_eq_bind_pure_comp, hq]
+  | some v =>
+      simp [progGameRunImplNoRec, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr, StateT.run_bind,
+        StateT.run_get, hq]
+
+/-! #### D2. Projection of the combined handler onto the programmed game handler
+
+Dropping the hidden preimage table (`proj = Prod.fst`) from the combined handler recovers the
+programmed freshness-game handler `progGameRunImplNoRecFlagFresh`. The table is a passive auxiliary
+over the game state: every game-state update (cache, signed-set, flag) is performed identically by
+both handlers from the *same* drawn preimage, so projecting the table away commutes with each step
+and hence with the whole simulation. -/
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-query table projection of the combined handler.** Dropping the hidden table component
+(`Prod.fst`, keeping the game state `((cache × signedSet) × flag)`) from one
+`progGameRunImplCombined` query step recovers the corresponding `progGameRunImplNoRecFlagFresh`
+step. This is the per-query hypothesis of the state-projection transport
+`map_run_simulateQ_eq_of_query_map_eq`. -/
+lemma progGameRunImplCombined_proj_table (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prod.map id
+        (Prod.fst : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+          ((Salt × M) → Option Domain) → ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) <$>
+        (progGameRunImplCombined psf M Salt domainSample pk t).run s =
+      (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk t).run s.1 := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombined_run_inl_inl, progGameRunImplNoRecFlagFresh_run_inl,
+            progGameRunImplNoRec_run_inl_inl]
+          rfl
+      | inr q =>
+          rw [progGameRunImplCombined_run_inl_inr, progGameRunImplNoRecFlagFresh_run_inl,
+            progGameRunImplNoRec_run_inl_inr]
+          cases s.1.1.1 q with
+          | none => simp [map_eq_bind_pure_comp, Prod.map]
+          | some v => rfl
+  | inr msg =>
+      rw [progGameRunImplCombined_run_inr, progGameRunImplNoRecFlagFresh_run_inr]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Run-level table projection of the combined handler.** Dropping the hidden preimage table from
+the full simulated run of `progGameRunImplCombined` over `oa` recovers the run of the programmed
+game handler `progGameRunImplNoRecFlagFresh`. Transports the per-query
+`progGameRunImplCombined_proj_table` through the whole computation via
+`map_run_simulateQ_eq_of_query_map_eq`: the table is a passive instrument over the game state. -/
+lemma map_run_progGameRunImplCombined_proj_table (domainSample : PK → ProbComp Domain) (pk : PK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prod.map id
+        (Prod.fst : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+          ((Salt × M) → Option Domain) → ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) <$>
+        (simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s =
+      (simulateQ (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (Prod.fst : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+      ((Salt × M) → Option Domain) → ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool)
+    (progGameRunImplCombined_proj_table psf M Salt domainSample pk) oa s
+
+/-! #### D3. Projection of the combined handler onto the collision-reduction handler
+
+Dropping the signed-set and the collision flag (`proj = fun s => (s.1.1.1, s.2)`, keeping the cache
+and the hidden table) from the combined handler recovers the collision reduction's internal handler
+`reductionImpl`. The signed-set and flag are passive auxiliaries over the reduction's cache/table
+state: both handlers draw the *same* preimage and update the cache and table identically, so
+projecting the game-only bookkeeping away commutes with each step and hence with the whole
+simulation. -/
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-query reduction projection of the combined handler.** Dropping the signed-set and the flag
+(`fun s => (s.1.1.1, s.2)`, keeping the cache and the hidden table) from one
+`progGameRunImplCombined` query step recovers the corresponding `reductionImpl` step. This is the
+per-query hypothesis of the state-projection transport `map_run_simulateQ_eq_of_query_map_eq`. -/
+lemma progGameRunImplCombined_proj_reduction (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prod.map id
+        (fun s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+            ((Salt × M) → Option Domain) => (s.1.1.1, s.2)) <$>
+        (progGameRunImplCombined psf M Salt domainSample pk t).run s =
+      (reductionImpl psf M Salt domainSample pk t).run (s.1.1.1, s.2) := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombined_run_inl_inl, reductionImpl_run_inl_inl]
+          rfl
+      | inr q =>
+          rw [progGameRunImplCombined_run_inl_inr, reductionImpl_run_inl_inr]
+          cases s.1.1.1 q with
+          | none => simp [map_eq_bind_pure_comp, Prod.map]
+          | some v => rfl
+  | inr msg =>
+      rw [progGameRunImplCombined_run_inr, reductionImpl_run_inr]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Run-level reduction projection of the combined handler.** Dropping the signed-set and the flag
+from the full simulated run of `progGameRunImplCombined` over `oa` recovers the run of the collision
+reduction's internal handler `reductionImpl`. Transports the per-query
+`progGameRunImplCombined_proj_reduction` through the whole computation via
+`map_run_simulateQ_eq_of_query_map_eq`: the signed-set and flag are passive over the reduction's
+cache/table state. -/
+lemma map_run_progGameRunImplCombined_proj_reduction (domainSample : PK → ProbComp Domain) (pk : PK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prod.map id
+        (fun s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+            ((Salt × M) → Option Domain) => (s.1.1.1, s.2)) <$>
+        (simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s =
+      (simulateQ (reductionImpl psf M Salt domainSample pk) oa).run (s.1.1.1, s.2) :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (fun s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain) => (s.1.1.1, s.2))
+    (progGameRunImplCombined_proj_reduction psf M Salt domainSample pk) oa s
+
+/-! #### D4. Cache/table coherence invariant of the combined handler
+
+The combined handler keeps the cache and the hidden table coherent: at every programmed point `t`,
+if the table records a hidden preimage `d`, then the cache value at `t` is exactly `psf.eval pk d`.
+This holds because every table write `t ↦ s` is performed in lockstep with the cache write
+`t ↦ psf.eval pk s` from the *same* drawn preimage `s`; cache hits and uniform queries touch
+neither. The invariant is the structural certificate that lets the distinct-collision transfer read
+a genuine `psf.eval`-collision off any forged fresh point. -/
+
+/-- **Cache/table coherence predicate.** At every programmed point, a recorded hidden preimage in
+the table is a `psf.eval pk`-preimage of the cached random-oracle value there. -/
+def combinedCacheTableInv (pk : PK)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prop :=
+  ∀ t : Salt × M, ∀ d : Domain, s.2 t = some d → s.1.1.1 t = some (psf.eval pk d)
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-step preservation of cache/table coherence.** Each `progGameRunImplCombined` query step
+preserves `combinedCacheTableInv`: a uniform query and a random-oracle cache hit leave cache and
+table unchanged; a random-oracle miss and a signing step add a *matched* pair `t ↦ s` (table) and
+`t ↦ psf.eval pk s` (cache) at the same point, preserving coherence everywhere. -/
+lemma combinedCacheTableInv_step (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedCacheTableInv psf M Salt pk s) :
+    ∀ y ∈ support ((progGameRunImplCombined psf M Salt domainSample pk t).run s),
+      combinedCacheTableInv psf M Salt pk y.2 := by
+  intro y hy
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombined_run_inl_inl] at hy
+          simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+          obtain ⟨v, _, hw⟩ := hy
+          subst hw
+          exact hs
+      | inr q =>
+          rw [progGameRunImplCombined_run_inl_inr] at hy
+          cases hq : s.1.1.1 q with
+          | some v =>
+              rw [hq] at hy
+              simp only [support_pure, Set.mem_singleton_iff] at hy
+              subst hy
+              exact hs
+          | none =>
+              rw [hq] at hy
+              simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+              obtain ⟨sd, hsd, hw⟩ := hy
+              subst hw
+              intro t' d ht'
+              dsimp only at ht' ⊢
+              by_cases htq : t' = q
+              · subst htq
+                rw [if_pos rfl, Option.some_inj] at ht'
+                subst ht'
+                exact QueryCache.cacheQuery_self _ _ _
+              · rw [if_neg htq] at ht'
+                rw [QueryCache.cacheQuery_of_ne _ _ htq]
+                exact hs t' d ht'
+  | inr msg =>
+      rw [progGameRunImplCombined_run_inr] at hy
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+      obtain ⟨r, _, sd, hsd, hw⟩ := hy
+      subst hw
+      intro t' d ht'
+      dsimp only at ht' ⊢
+      by_cases htq : t' = (r, msg)
+      · subst htq
+        rw [if_pos rfl, Option.some_inj] at ht'
+        subst ht'
+        exact QueryCache.cacheQuery_self _ _ _
+      · rw [if_neg htq] at ht'
+        rw [QueryCache.cacheQuery_of_ne _ _ htq]
+        exact hs t' d ht'
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Cache/table coherence holds throughout the combined simulation.** Starting from any state
+satisfying `combinedCacheTableInv` (in particular the empty start `((∅, ∅, false), fun _ => none)`,
+where it holds vacuously), every final state in the support of the full combined run over `oa`
+satisfies it. Transports `combinedCacheTableInv_step` through the whole simulation via
+`simulateQ_run_preserves_inv_of_query`. -/
+lemma progGameRunImplCombined_run_inv (domainSample : PK → ProbComp Domain) (pk : PK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedCacheTableInv psf M Salt pk s) :
+    ∀ y ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s),
+      combinedCacheTableInv psf M Salt pk y.2 :=
+  OracleComp.simulateQ_run_preserves_inv_of_query _
+    (combinedCacheTableInv psf M Salt pk)
+    (combinedCacheTableInv_step psf M Salt domainSample pk) oa s hs
+
 /-! ### Cross-monad WriterT-log → signed-set reconstruction
 
 The unforgeability experiment runs the adversary under the WriterT signing-log handler stack
