@@ -2828,6 +2828,126 @@ theorem tvDist_drawList_bind_le {β : Type} (qSign : ℕ) (freal fprog : List Sa
   subst hreal hprog
   exact tvDist_bind_left_le (OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign) freal fprog
 
+omit [DecidableEq Range] [DecidableEq Salt] [SampleableType Salt] [Fintype Salt] in
+/-- **First marginal of the PSF regularity witness (the `hreg`-substitution bridge).**
+
+PSF regularity `hreg` equates the *joint* distributions of the `(image, preimage)` pairs produced
+by the forward sampler `domainSample` (programmed side) and by uniform-target trapdoor sampling
+(real side). The programmed random oracle answers a cache miss with `psf.eval pk (domainSample pk)`,
+while the real (lazy) random oracle answers with a fresh uniform `$ᵗ Range`; off the collision, the
+two tape-consuming GPV runs diverge *only* in this answer. This lemma extracts exactly the *first
+marginal* of `hreg` needed to identify those two answer distributions: the programmed answer
+`psf.eval pk (domainSample pk)` is distributed uniformly on `Range`.
+
+The trapdoor-sampler suffix `s ← psf.trapdoorSample pk sk c` on the real side is discarded using its
+totality (`hNF : NeverFail`), so the real first marginal collapses to the bare uniform draw
+`$ᵗ Range`. This is the per-step off-collision answer agreement underlying the identical-until-bad
+coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: it is the distributional (not pointwise)
+agreement of the real and programmed random-oracle answers that the framework identical-until-bad
+machinery consumes as its no-bad-path agreement hypothesis. -/
+theorem evalDist_eval_domainSample_eq_uniform (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(do let s ← domainSample pk; pure (psf.eval pk s) : ProbComp Range)] =
+      𝒟[($ᵗ Range : ProbComp Range)] := by
+  have h := congrArg (Functor.map (Prod.fst : Range × Domain → Range)) hreg
+  simp only [← evalDist_map, map_bind, map_pure] at h
+  rw [h]
+  have hinner : ∀ a : Range,
+      𝒟[(do let _ ← psf.trapdoorSample pk sk a; pure a : ProbComp Range)] =
+        𝒟[(pure a : ProbComp Range)] := by
+    intro a
+    refine evalDist_ext fun y => ?_
+    rw [probOutput_bind_const, (hNF a).probFailure_eq_zero]
+    simp
+  calc 𝒟[(do let a ← ($ᵗ Range); let _ ← psf.trapdoorSample pk sk a; pure a : ProbComp Range)]
+      = 𝒟[(do let a ← ($ᵗ Range); pure a : ProbComp Range)] :=
+        evalDist_bind_congr fun a _ => hinner a
+    _ = 𝒟[($ᵗ Range : ProbComp Range)] := by simp
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Off-bad agreement of the two tape handlers on a uniform query.** The uniform-query branch of
+`gpvRealImplTape` and `progGameRunImplTape` are *literally identical*: both run the bare uniform
+sample on the random component and leave the cache and the salt tape untouched.
+
+This is the trivial "free query" case of the per-step no-bad-path agreement underlying the
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: the two tape-consuming
+GPV runs never diverge on a uniform query, so it contributes no charge to the bad event. -/
+theorem gpvImplTape_run_unif_eq (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
+    (n : unifSpec.Domain) (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inl n))).run s =
+      (progGameRunImplTape psf M Salt domainSample pk (.inl (.inl n))).run s := by
+  rw [gpvRealImplTape_run_unif, progGameRunImplTape_run_unif]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Off-bad agreement of the two tape handlers on a random-oracle read at a cached key.** On a
+cache *hit* `s.1 mc = some v`, the random-oracle-read branch of `gpvRealImplTape` and
+`progGameRunImplTape` are *literally identical*: the real (lazy) oracle returns the recorded value
+without touching the cache, and the programmed oracle likewise returns the recorded value; both
+leave the salt tape untouched.
+
+This is the "cached read" free case of the per-step no-bad-path agreement underlying the
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: a read that hits the
+cache returns the same recorded answer on both sides (the divergence between the lazy and programmed
+oracles can only arise on a *miss*, where a fresh answer is sampled). -/
+theorem gpvImplTape_run_read_hit_eq (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
+    (mc : Salt × M) (s : (Salt × M →ₒ Range).QueryCache × List Salt) (v : Range)
+    (hhit : s.1 mc = some v) :
+    (gpvRealImplTape psf M Salt pk sk (.inl (.inr mc))).run s =
+      (progGameRunImplTape psf M Salt domainSample pk (.inl (.inr mc))).run s := by
+  rw [gpvRealImplTape_run_read, progGameRunImplTape_run_read, hhit]
+  rw [show (randomOracle (spec := (Salt × M →ₒ Range)) mc).run s.1 = pure (v, s.1)
+      from QueryImpl.withCaching_run_some uniformSampleImpl hhit]
+  simp
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Off-bad distributional agreement of the two tape handlers on a random-oracle read at a fresh
+key (the `hreg`-substitution bridge, read case).** On a cache *miss* `s.1 mc = none`, the real
+(lazy) random oracle answers with a fresh uniform target `$ᵗ Range`, while the programmed oracle
+answers with `psf.eval pk (domainSample pk)`. By the first marginal of PSF regularity
+(`evalDist_eval_domainSample_eq_uniform`) these two answer distributions coincide, and both handlers
+apply the *same* deterministic post-processing of the answer (record it at `mc` in the cache and
+return it, salt tape untouched). Hence the two tape handlers' read-on-miss transitions agree as
+output distributions.
+
+This is the genuinely distributional (not pointwise) per-step no-bad-path agreement underlying the
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: it is the read-query case
+of the `hreg`-substitution bridge that the framework identical-until-bad machinery consumes as its
+no-bad agreement hypothesis. The lazy-vs-programmed *answer* divergence is invisible to the output
+distribution off the collision; it becomes observable only when the freshly recorded key later
+collides with a tape salt — which is exactly the bad event `tapeCheck` charges. -/
+theorem evalDist_gpvImplTape_run_read_miss_eq (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain) (mc : Salt × M)
+    (s : (Salt × M →ₒ Range).QueryCache × List Salt) (hmiss : s.1 mc = none)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(gpvRealImplTape psf M Salt pk sk (.inl (.inr mc))).run s] =
+      𝒟[(progGameRunImplTape psf M Salt domainSample pk (.inl (.inr mc))).run s] := by
+  rw [gpvRealImplTape_run_read, progGameRunImplTape_run_read, hmiss]
+  simp only []
+  rw [show (randomOracle (spec := (Salt × M →ₒ Range)) mc).run s.1
+        = (fun u => (u, s.1.cacheQuery mc u)) <$> ($ᵗ Range : ProbComp Range)
+      from QueryImpl.withCaching_run_none uniformSampleImpl hmiss]
+  have hfst := evalDist_eval_domainSample_eq_uniform psf pk sk domainSample hNF hreg
+  set g : Range → Range × ((Salt × M →ₒ Range).QueryCache × List Salt) :=
+    fun u => (u, (s.1.cacheQuery mc u, s.2)) with hg
+  have hLHS : 𝒟[((fun p : Range × (Salt × M →ₒ Range).QueryCache => (p.1, p.2, s.2)) <$>
+            (fun u => (u, s.1.cacheQuery mc u)) <$> ($ᵗ Range : ProbComp Range))]
+        = 𝒟[g <$> ($ᵗ Range : ProbComp Range)] := by rw [Functor.map_map]
+  have hRHS : 𝒟[((fun sd => (psf.eval pk sd, s.1.cacheQuery mc (psf.eval pk sd), s.2)) <$>
+            (domainSample pk : ProbComp Domain))]
+        = 𝒟[g <$> (do let sd ← domainSample pk; pure (psf.eval pk sd) : ProbComp Range)] := by
+    refine congrArg _ ?_
+    rw [map_eq_bind_pure_comp]
+    simp only [hg, map_bind, map_pure, Function.comp_def]
+  exact hLHS.trans ((evalDist_map_eq_of_evalDist_eq hfst.symm g).trans hRHS.symm)
+
 open Classical in
 omit [Fintype Salt] in
 /-- **(A) Per-tape identical-until-bad coupling of the tape-consuming GPV runs (the single open
