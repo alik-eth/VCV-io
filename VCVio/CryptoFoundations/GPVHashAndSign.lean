@@ -5817,6 +5817,7 @@ probability mass during the real↔programmed sign-then-hash hop and is not impl
 (which constrains only the *support* of the sampler) nor by `hreg` (which equates only the *total
 masses* of the two joint distributions). -/
 theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
+    [Inhabited Range] [Nonempty Salt]
     (hcorrect : psf.Correct) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
@@ -5858,6 +5859,7 @@ for a finite domain (reproducing a sampled preimage is always possible with nonz
 so a clean collision-only bound (`εpp = 0`) is unsatisfiable.  Specializing `εpp` to a concrete PSF
 preimage min-entropy bound (e.g. for Falcon) yields the quantitative collision bound. -/
 theorem forgery_yields_collision [DecidableEq Domain]
+    [Inhabited Range] [Nonempty Salt]
     (hcorrect : psf.Correct) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
@@ -5905,6 +5907,7 @@ prior signing salt or an adversary hash query). For Falcon with 40-byte salts
 
 References: GPV08 Section 6; BDF+11 for the QROM extension. -/
 theorem euf_cma_collision_bound [DecidableEq Domain]
+    [Inhabited Range] [Nonempty Salt]
     (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
@@ -5938,6 +5941,7 @@ This theorem makes both branches of the GPV proof explicit:
 It is the most honest generic statement available from the current API, before any additional
 PSF-specific min-entropy lemma collapses the exact-match branch into the collision branch. -/
 theorem euf_cma_split_bound [DecidableEq Domain]
+    [Inhabited Range] [Nonempty Salt]
     (hcorrect : psf.Correct) (hreg : psf.Regularity) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
