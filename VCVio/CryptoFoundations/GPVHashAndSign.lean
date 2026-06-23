@@ -1182,7 +1182,7 @@ handlers, and proves the two *structurally provable* conjuncts of the obligation
 purely deep — the two run-equalities `realRun = 𝒟[signRunF stepReal c qSign …]` /
 `progRun = 𝒟[signRunF stepProg c qSign …]` together with the cache-growth bound on the *adaptive*
 run's recorded slices — is the front-loading fold factorization, isolated as the single residual
-`gpv_tvDist_tape_runs_le_tapeCheck` below.
+`gpv_tvDist_tape_runs_le_collisionBound` below.
 
 The handler state is the lazy random-oracle cache `(Salt × M →ₒ Range).QueryCache`; both step
 handlers update it at the freshly drawn salt `r` and the `n`-th signing message `msgs n`. The
@@ -1278,8 +1278,8 @@ none` the oracle draws a fresh uniform target `u ← $ᵗ Range`, records `(r, m
 `gpvStepReal` draws the same uniform target `c ← $ᵗ Range`, the same trapdoor preimage, and records
 `(r, msgs n) ↦ c` — so the two recorded-cache distributions coincide. This is the *per-body splice*
 of the adaptive→`signRunF` fold factorization (the signing-step case of the residual
-`gpv_tvDist_tape_runs_le_tapeCheck`): it recasts one inline signing-oracle body, on a fresh-salt
-cache miss, as the concrete `signRunF` real step, with the fresh salt `r` having been front-loaded
+`gpv_tvDist_tape_runs_le_collisionBound`): it recasts one inline signing-oracle body, on a
+fresh-salt cache miss, as the concrete `signRunF` real step, with the fresh salt `r` front-loaded
 out of the body. It is *pinned* to the concrete `randomOracle` and `gpvStepReal`, requires only the
 cache-miss side condition `hmiss` (guaranteed for a fresh salt), and is unconditional otherwise. -/
 theorem evalDist_gpvSignBody_run_eq_gpvStepReal (pk : PK) (sk : SK) (msgs : ℕ → M) (n : ℕ)
@@ -1314,7 +1314,7 @@ concrete `signRunF` programmed step: draw the same fresh salt `r ← $ᵗ Salt`,
 This is the programmed-side dual of `evalDist_gpvSignBody_run_eq_gpvStepReal`, and the signing-step
 case of the *programmed* run-equality
 `progGameRun … = 𝒟[signRunF gpvStepProg c qSign …]` underlying the residual
-`gpv_tvDist_tape_runs_le_tapeCheck`. It is *pinned* to the concrete `progGameRun` signing body
+`gpv_tvDist_tape_runs_le_collisionBound`. It is *pinned* to the concrete `progGameRun` signing body
 and the concrete `gpvStepProg`: the cache transition
 `cache ↦ cache.cacheQuery (r, msgs n) (psf.eval pk s)`
 on both sides is the same, the salt draw is the same front-loaded `$ᵗ Salt`, and `domainSample` is
@@ -1374,7 +1374,7 @@ signing step handled by a bespoke per-body salt splice. -/
 
 /-! ### The pinned GPV game runs
 
-The residual `gpv_tvDist_tape_runs_le_tapeCheck` is pinned to the *actual* GPV game runs of the
+The residual `gpv_tvDist_tape_runs_le_collisionBound` is pinned to the *actual* GPV game runs of the
 adversary's main computation `adv.main pk`, not to free `SPMF` parameters or to a hash-only run
 under a deterministic programming policy. Two named game-run distributions model the two worlds of
 the sign-then-hash hop:
@@ -1843,8 +1843,8 @@ theorem realGameRun_eq_run'_implReal
 
 /-! ### GPV tape-consuming impls (the Fiat–Shamir-template first block)
 
-The fold coupling discharging `gpv_tvDist_tape_runs_le_tapeCheck` follows the worked Fiat–Shamir
-instance
+The fold coupling discharging `gpv_tvDist_tape_runs_le_collisionBound` follows the worked
+Fiat–Shamir instance
 `FiatShamirWithAbort.evalDist_deferredDrawRead_eq_drawList_tapeDrawRead`: an
 `OracleComp.inductionOn`
 over `adv.main pk` that front-loads every signing query's fresh salt draw into a single front draw
@@ -2000,7 +2000,8 @@ exactly as the concrete `signRunF` real step `gpvStepReal` at the consumed head 
 
 This is the GPV analogue of Fiat–Shamir's per-body splice (the signing-step case of the fold
 factorization): it relates the tape-consuming signing step to the `signRunF` handler underlying the
-residual `gpv_tvDist_tape_runs_le_tapeCheck`. It is *pinned* to the concrete `gpvRealImplTape` and
+residual `gpv_tvDist_tape_runs_le_collisionBound`. It is *pinned* to the concrete
+`gpvRealImplTape` and
 `gpvStepReal`, and reduces (via `gpvRealImplTape_run_sign_cons`) to the banked inline splice
 `evalDist_gpvSignBody_run_eq_gpvStepReal`: with the head salt `r` already supplied (front-loaded out
 of the tape), the tape signing step is exactly one real signing body run through the lazy random
@@ -2744,18 +2745,23 @@ theorem progGameRun_eq_drawList_progGameRunImplTape (pk : PK)
 The pieces below re-derive `gpv_tvDist_real_programmed_le_collisionBound` *directly* from the
 banked front-tape factorization (`realGameRun_eq_drawList_gpvRealImplTape` /
 `progGameRun_eq_drawList_progGameRunImplTape`), via the direct front-tape coupling residual
-`gpv_tvDist_tape_runs_le_tapeCheck`.
+`gpv_tvDist_tape_runs_le_collisionBound`.
 
 After the front-tape factorization both pinned game runs are `drawList ($ᵗ Salt) qSign` followed by
 the tape-consuming run of `adv.main pk`. The TV distance is then bounded by:
 
 * **(C) data processing** — `tvDist_drawList_bind_le` reduces the TV of the two factored runs to the
   expectation over the front salt tape of the per-tape TV distance (`tvDist_bind_left_le`).
-* **(B) drawList birthday** — `probEvent_tapeCheck_drawList_le_collisionBound` bounds the salt-tape
-  collision event over `drawList ($ᵗ Salt) qSign` by `collisionBound`, by identifying the tape-check
-  process with the salt-averaged `saltSeq` telescope.
-* **(A) per-tape identical-until-bad** — the deep `#228`-class residual: a fixed salt tape's real
-  and programmed tape-consuming runs of `adv.main pk` agree off the tape-collision event. -/
+* **(A) per-tape identical-until-bad** — the deep `#228`-class residual
+  `gpv_tvDist_tape_runs_le_collisionBound`: the tape-averaged TV between the real and programmed
+  tape-consuming runs of `adv.main pk` over the front tape is bounded *directly* by
+  `(collisionBound …).toReal`. The per-tape bad event is a fresh tape salt hitting the actual
+  running random-oracle cache; its salt-averaged probability telescopes to `collisionBound`.
+
+The salt-tape birthday infrastructure (`tapeCheck`, `drawList_tapeCheck_eq_saltSeq`,
+`probEvent_tapeCheck_drawList_le_collisionBound`) records the explicit-list form of the
+salt-averaged `saltSeq` telescope; it is the analytic tool the run-level collision-flag charge of
+`(A)` reduces to once the flag-instrumented inductive coupling is in place. -/
 
 /-- **Salt-tape collision check.** `tapeCheck c n tape` is the explicit-list analogue of the
 salt-averaged `saltSeq` disjunction: it reports `true` iff some head salt of the front `n`-block
@@ -2842,7 +2848,7 @@ marginal* of `hreg` needed to identify those two answer distributions: the progr
 The trapdoor-sampler suffix `s ← psf.trapdoorSample pk sk c` on the real side is discarded using its
 totality (`hNF : NeverFail`), so the real first marginal collapses to the bare uniform draw
 `$ᵗ Range`. This is the per-step off-collision answer agreement underlying the identical-until-bad
-coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: it is the distributional (not pointwise)
+coupling residual `gpv_tvDist_tape_runs_le_collisionBound`: it is the distributional (not pointwise)
 agreement of the real and programmed random-oracle answers that the framework identical-until-bad
 machinery consumes as its no-bad-path agreement hypothesis. -/
 theorem evalDist_eval_domainSample_eq_uniform (pk : PK) (sk : SK)
@@ -2874,8 +2880,9 @@ omit [DecidableEq Range] [Fintype Salt] in
 sample on the random component and leave the cache and the salt tape untouched.
 
 This is the trivial "free query" case of the per-step no-bad-path agreement underlying the
-identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: the two tape-consuming
-GPV runs never diverge on a uniform query, so it contributes no charge to the bad event. -/
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_collisionBound`: the two
+tape-consuming GPV runs never diverge on a uniform query, so it contributes no charge to the bad
+event. -/
 theorem gpvImplTape_run_unif_eq (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
     (n : unifSpec.Domain) (s : (Salt × M →ₒ Range).QueryCache × List Salt) :
     (gpvRealImplTape psf M Salt pk sk (.inl (.inl n))).run s =
@@ -2890,7 +2897,7 @@ without touching the cache, and the programmed oracle likewise returns the recor
 leave the salt tape untouched.
 
 This is the "cached read" free case of the per-step no-bad-path agreement underlying the
-identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: a read that hits the
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_collisionBound`: a read that hits the
 cache returns the same recorded answer on both sides (the divergence between the lazy and programmed
 oracles can only arise on a *miss*, where a fresh answer is sampled). -/
 theorem gpvImplTape_run_read_hit_eq (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
@@ -2914,7 +2921,8 @@ return it, salt tape untouched). Hence the two tape handlers' read-on-miss trans
 output distributions.
 
 This is the genuinely distributional (not pointwise) per-step no-bad-path agreement underlying the
-identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_tapeCheck`: it is the read-query case
+identical-until-bad coupling residual `gpv_tvDist_tape_runs_le_collisionBound`: it is the
+read-query case
 of the `hreg`-substitution bridge that the framework identical-until-bad machinery consumes as its
 no-bad agreement hypothesis. The lazy-vs-programmed *answer* divergence is invisible to the output
 distribution off the collision; it becomes observable only when the freshly recorded key later
@@ -2949,34 +2957,39 @@ theorem evalDist_gpvImplTape_run_read_miss_eq (pk : PK) (sk : SK)
   exact hLHS.trans ((evalDist_map_eq_of_evalDist_eq hfst.symm g).trans hRHS.symm)
 
 open Classical in
-omit [Fintype Salt] in
 /-- **(A) Per-tape identical-until-bad coupling of the tape-consuming GPV runs (the single open
 `#228`-class residual, direct front-tape route).**
 
-For the *pinned* front-tape vehicles `gpvRealImplTape` / `progGameRunImplTape`, there is a recorded
-cache-slice sequence `c` with the standard growth bound `card (c j) ≤ j + qHash` such that the
-tape-averaged total-variation distance between the real and programmed tape-consuming runs of
-`adv.main pk` — averaged over the front salt tape `drawList ($ᵗ Salt) qSign` — is bounded by the
-front-tape collision event `tapeCheck c qSign`.
+For the *pinned* front-tape vehicles `gpvRealImplTape` / `progGameRunImplTape`, the tape-averaged
+total-variation distance between the real and programmed tape-consuming runs of `adv.main pk` —
+averaged over the front salt tape `drawList ($ᵗ Salt) qSign` — is bounded directly by
+`(collisionBound Salt qSign qHash).toReal`.
 
 This is the front-tape analogue of the `signRunF` coupling: a fixed salt tape feeds the *same*
 salts to both tape-consuming runs, so the only divergence is the random-oracle answer (real
 lazy-uniform vs programmed `eval ∘ domainSample`, equal off-collision by the first marginal of the
-regularity witness `hreg`), and the per-step bad event is the head salt landing in its recorded
-cache slice — exactly `tapeCheck`. The deep content is the `OracleComp.inductionOn` over
+regularity witness `hreg`), and the per-step bad event is the head salt landing in the recorded
+running random-oracle cache slice. The deep content is the `OracleComp.inductionOn` over
 `adv.main pk` threading this identical-until-bad agreement across the adaptive adversary with the
-shared front tape, accumulating the per-step charges into the run-level `tapeCheck` collision flag.
+shared front tape, accumulating the per-step charges into the run-level collision flag, which the
+cardinality telescope (`card (cache j) ≤ j + qHash`, a fresh uniform tape salt independent of the
+prior cache hits the cache slice with probability `card / |Salt|`) bounds by `collisionBound`.
+
+The bound is stated *directly* against `collisionBound` (rather than against a tape-independent
+`tapeCheck c` flag): the real per-tape bad event is a fresh tape salt hitting the *actual running
+random-oracle cache*, which depends on the random-oracle answers and the adaptive hash queries, so
+a tape-independent deterministic flag `tapeCheck c` cannot dominate it; the run-level collision-flag
+probability is bounded by the salt-averaged birthday term directly.
 
 It is *true-as-stated* (counterexample-checked at `qSign = 0`: `drawList _ 0 = pure []`, so the
 tape-average is the single empty tape; with no signing queries the programmed run programs nothing
 along the sign path and each RO answer is `eval ∘ domainSample`, uniform by the first marginal of
-`hreg`, so the two empty-tape runs coincide and the LHS is `0 ≤ Pr[tapeCheck …]`). It is *pinned* to
-the concrete `gpvRealImplTape` / `progGameRunImplTape` handlers and the actual game-run vehicle
-`adv.main pk` (NOT free parameters), and is consumed by the direct re-proof of
+`hreg`, so the two empty-tape runs coincide and the LHS is `0 ≤ (collisionBound …).toReal`). It is
+*pinned* to the concrete `gpvRealImplTape` / `progGameRunImplTape` handlers and the actual game-run
+vehicle `adv.main pk` (NOT free parameters), and is consumed by the direct re-proof of
 `gpv_tvDist_real_programmed_le_collisionBound` via the data-processing reduction
-`tvDist_drawList_bind_le` `(C)` and the front-tape birthday bound
-`probEvent_tapeCheck_drawList_le_collisionBound` `(B)`. -/
-theorem gpv_tvDist_tape_runs_le_tapeCheck [Finite Range] [Inhabited Range] [Nonempty Salt]
+`tvDist_drawList_bind_le` `(C)`. -/
+theorem gpv_tvDist_tape_runs_le_collisionBound [Finite Range] [Inhabited Range] [Nonempty Salt]
     (pk : PK) (sk : SK)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
@@ -2988,34 +3001,35 @@ theorem gpv_tvDist_tape_runs_le_tapeCheck [Finite Range] [Inhabited Range] [None
     (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))]) :
-    ∃ c : ℕ → Finset Salt, (∀ j, (c j).card ≤ j + qHash) ∧
-      (∑' tape : List Salt,
-          Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal *
-            tvDist
-              ((fun tape => (fun p : (M × (Salt × Domain)) ×
-                    ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
-                  (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
-                    ((∅ : (Salt × M →ₒ Range).QueryCache), tape)) tape)
-              ((fun tape => (fun p : (M × (Salt × Domain)) ×
-                    ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
-                  (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
-                    ((∅ : (Salt × M →ₒ Range).QueryCache), tape)) tape))
-        ≤ Pr[(· = true) | (do
-              let tape ← OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign
-              pure (tapeCheck Salt c qSign tape))].toReal := by
+    (∑' tape : List Salt,
+        Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal *
+          tvDist
+            ((fun tape => (fun p : (M × (Salt × Domain)) ×
+                  ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+                (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
+                  ((∅ : (Salt × M →ₒ Range).QueryCache), tape)) tape)
+            ((fun tape => (fun p : (M × (Salt × Domain)) ×
+                  ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+                (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
+                  ((∅ : (Salt × M →ₒ Range).QueryCache), tape)) tape))
+      ≤ (collisionBound Salt qSign qHash).toReal := by
   -- The deferred-sampling/identical-until-bad coupling of the two tape-consuming runs over the
   -- shared front salt tape: `OracleComp.inductionOn (adv.main pk)` threading the off-collision RO
-  -- answer agreement (`hreg` first marginal, via `gpvStep_agree`) with the per-step `tapeCheck`
-  -- charge.  This is the single remaining `#228`-class residual of the direct front-tape route; the
-  -- cache-slice sequence `c` is the recorded RO cache at each signing query (growth `card (c j) ≤
-  -- j + qHash` from the per-query cache growth), and the averaged TV bound is the run-level
-  -- collision-flag accumulation.  Counterexample-checked TRUE at `qSign = 0` (see docstring).
+  -- answer agreement (`hreg` first marginal, via `gpvStep_agree`) with the per-step collision
+  -- charge, accumulated into the run-level collision flag and bounded by the salt-averaged birthday
+  -- telescope (cache-slice growth `card (cache j) ≤ j + qHash`).  This is the single remaining
+  -- `#228`-class residual of the direct front-tape route.  Counterexample-checked TRUE at
+  -- `qSign = 0` (see docstring).  `hNF`/`hreg` are the off-collision answer-agreement witnesses
+  -- consumed by the (not-yet-discharged) inductive coupling.
+  let _ := hNF
+  let _ := hreg
   sorry
 
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the direct front-tape residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
-coupling supplied by the per-tape identical-until-bad residual `gpv_tvDist_tape_runs_le_tapeCheck`.
+coupling supplied by the per-tape identical-until-bad residual
+`gpv_tvDist_tape_runs_le_collisionBound`.
 The real run `realGameRun … adv pk sk` (the real EUF-CMA game) and the programmed run
 `progGameRun … adv domainSample pk` (the randomized sign-then-hash game of the collision reduction)
 are the two distributions of the sign-then-hash hop; given the query bound `hQ`, the trapdoor
@@ -3029,11 +3043,10 @@ actual game run.
 **Proof route (direct front-tape).** The proof chains the banked front-tape
 factorization bridges (`realGameRun_eq_drawList_gpvRealImplTape` /
 `progGameRun_eq_drawList_progGameRunImplTape`, putting both pinned game runs into the front-tape
-`drawList ($ᵗ Salt) qSign >>= tape-run` shape) with three direct pieces: the data-processing
-reduction `tvDist_drawList_bind_le` `(C)`, the per-tape identical-until-bad coupling
-`gpv_tvDist_tape_runs_le_tapeCheck` `(A)`, and the front-tape birthday bound
-`probEvent_tapeCheck_drawList_le_collisionBound` `(B)`, finished by `ENNReal.toReal_mono`
-(`collisionBound < ⊤`). -/
+`drawList ($ᵗ Salt) qSign >>= tape-run` shape) with two direct pieces: the data-processing
+reduction `tvDist_drawList_bind_le` `(C)`, and the per-tape identical-until-bad coupling
+`gpv_tvDist_tape_runs_le_collisionBound` `(A)`, which already bounds the tape-averaged TV directly
+by `(collisionBound …).toReal`. -/
 theorem gpv_tvDist_real_programmed_le_collisionBound
     [Finite Range] [Inhabited Range] [Nonempty Salt]
     (pk : PK) (sk : SK)
@@ -3051,22 +3064,15 @@ theorem gpv_tvDist_real_programmed_le_collisionBound
         (progGameRun psf hr M Salt adv domainSample pk)
       ≤ (collisionBound Salt qSign qHash).toReal := by
   classical
-  -- (A): obtain the recorded cache-slice sequence and the tape-averaged identical-until-bad bound.
-  obtain ⟨c, hcache, hbound⟩ :=
-    gpv_tvDist_tape_runs_le_tapeCheck psf hr M Salt pk sk adv domainSample qSign qHash hQ hNF hreg
   -- (C): the data-processing reduction over the front salt tape, fed by the banked bridges.
   refine le_trans (tvDist_drawList_bind_le (Salt := Salt) qSign _ _ _ _
     (realGameRun_eq_drawList_gpvRealImplTape psf hr M Salt pk sk adv qSign qHash hQ)
     (progGameRun_eq_drawList_progGameRunImplTape psf hr M Salt pk adv domainSample qSign qHash hQ))
     ?_
-  -- (A) then (B): the averaged TV is at most the front-tape collision event, itself at most
-  -- `collisionBound` by the birthday bound; move to `ℝ` by `ENNReal.toReal_mono`.
-  refine le_trans hbound ?_
-  refine ENNReal.toReal_mono (by
-    rw [collisionBound]
-    exact ENNReal.div_ne_top (ENNReal.pow_ne_top (ENNReal.natCast_ne_top _))
-      (by simp [Fintype.card_ne_zero])) ?_
-  exact probEvent_tapeCheck_drawList_le_collisionBound Salt qSign qHash c hcache
+  -- (A): the tape-averaged identical-until-bad bound directly bounds the averaged TV by
+  -- `(collisionBound …).toReal`.
+  exact gpv_tvDist_tape_runs_le_collisionBound psf hr M Salt pk sk adv domainSample
+    qSign qHash hQ hNF hreg
 
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
@@ -3259,7 +3265,7 @@ theorem tvDist_runtime_real_programmed_le_collisionBound_saltInclusive
 
 **Step 1 (sign-then-hash ≡ real) is done and load-bearing.** The proven
 `gpv_tvDist_real_programmed_le_collisionBound` *consumes* the direct front-tape residual
-`gpv_tvDist_tape_runs_le_tapeCheck` in a real (non-`sorry`) proof: after the front-tape
+`gpv_tvDist_tape_runs_le_collisionBound` in a real (non-`sorry`) proof: after the front-tape
 factorization bridges put both pinned GPV game runs into `drawList ($ᵗ Salt) qSign >>= tape-run`
 shape, the per-tape identical-until-bad coupling `(A)` and the front-tape birthday bound `(B)`
 discharge the salt-inclusive sign-then-hash hop `tvDist realRun progRun ≤ collisionBound`. The
