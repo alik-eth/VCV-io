@@ -4913,6 +4913,93 @@ lemma flattenAppendLog_proj_gpvRealImplFresh (pk : PK) (sk : SK)
       simp only [StateT.run_pure, bind_assoc, pure_bind,
         show (l ++ [msg]).toFinset = insert msg l.toFinset by simp [List.toFinset_append]]
 
+omit [Fintype Salt] in
+/-- **Cross-monad WriterT-log → signed-set run reconstruction.** Running `oa` under the
+unforgeability experiment's WriterT signing-log handler stack `baseW + signingOracle pk sk`, then
+interpreting its base random-oracle queries through the runtime's `withStateOracle` cache
+(`gpvOuter`) and mapping the result to `(output, (log.map fst).toFinset, cache)`, coincides with the
+freshness vehicle `gpvRealImplFresh` run started from `(∅, ∅), false`, projected to drop the passive
+collision flag.
+
+This is the kernel of the freshness game-identification (N)(a): it identifies the WriterT signing
+log of `unforgeableExp` with the `Finset M` signed-set carried by `gpvRealImplFresh`, across the
+WriterT/StateT monad divide.  The proof chains the banked reconstruction pieces, mirroring the
+FiatShamir `probOutput_unforgeableExp_eq_hybridExpAtKey_real` kernel:
+`simulateQ_writerTMapBase_run` + `gpvOuter_writerTMapBase_implW` (fuse the inner WriterT pass with
+the outer cache simulation into `baseW' + withLogging signBody`),
+`map_run_withLogging_inputs_eq_run_appendInputLog` (replay the WriterT log into a `StateT (List M)`
+input log, `initialInputs = []`), `simulateQ_flattenStateT_run` (flatten the nested `StateT`), and
+`flattenAppendLog_proj_gpvRealImplFresh` via `map_run_simulateQ_eq_of_query_map_eq` (project onto
+`gpvRealImplFresh`, the signed-set reconstructed as the logged messages' `toFinset`). -/
+lemma map_simulateQ_gpvOuter_writerLog_eq_gpvRealImplFresh (pk : PK) (sk : SK) {β : Type}
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β) :
+    (fun z : (β × QueryLog (M →ₒ (Salt × Domain))) × (Salt × M →ₒ Range).QueryCache =>
+        (z.1.1, z.2, (z.1.2.map (fun e => e.1)).toFinset)) <$>
+        (simulateQ (gpvOuter M Salt)
+          ((simulateQ
+              ((HasQuery.toQueryImpl (spec := unifSpec + (Salt × M →ₒ Range))
+                (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                  (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                    (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+                (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                  psf hr M Salt).signingOracle pk sk)
+              oa).run)).run (∅ : (Salt × M →ₒ Range).QueryCache)
+      = (fun z : β × ((Salt × M →ₒ Range).QueryCache × Finset M) =>
+          (z.1, z.2.1, z.2.2)) <$>
+        (simulateQ (gpvRealImplFresh psf hr M Salt pk sk) oa).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)) := by
+  classical
+  -- The fused base `gpvOuter.liftTarget (WriterT …)` is `(HasQuery.toQueryImpl).liftTarget` for the
+  -- `HasQuery` instance `gpvOuter.toHasQuery`; provide it so the replay lemma's `baseW` matches.
+  letI hq : HasQuery (unifSpec + (Salt × M →ₒ Range))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) := (gpvOuter M Salt).toHasQuery
+  -- (1) Fuse the inner WriterT pass with the outer cache simulation `gpvOuter` via
+  -- `writerTMapBase`, and rewrite the fused handler as `baseW' + withLogging signBody`.
+  rw [QueryImpl.simulateQ_writerTMapBase_run, gpvOuter_writerTMapBase_implW]
+  -- (2) Replay the WriterT log into a `StateT (List M)` input log starting from `[]`.
+  have hreplay := QueryImpl.map_run_withLogging_inputs_eq_run_appendInputLog
+    (spec₀ := unifSpec + (Salt × M →ₒ Range)) (loggedSpec := M →ₒ (Salt × Domain))
+    (m₀ := StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)
+    (fun msg => gpvRealImpl psf hr M Salt pk sk (Sum.inr msg)) oa ([] : List M)
+  simp only [List.nil_append] at hreplay
+  -- Apply the run, flatten the nested `StateT (List M) (StateT cache)`, and project to
+  -- `gpvRealImplFresh` via the per-query `hmatch`.
+  have hflatten := OracleComp.simulateQ_flattenStateT_run
+    ((gpvOuter M Salt).liftTarget
+        (StateT (List M) (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) +
+      QueryImpl.appendInputLog
+        (fun msg => gpvRealImpl psf hr M Salt pk sk (Sum.inr msg) :
+          QueryImpl (M →ₒ (Salt × Domain))
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)))
+    oa ([] : List M) (∅ : (Salt × M →ₒ Range).QueryCache)
+  have hflat := OracleComp.map_run_simulateQ_eq_of_query_map_eq
+    (((gpvOuter M Salt).liftTarget
+        (StateT (List M) (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) +
+      QueryImpl.appendInputLog
+        (fun msg => gpvRealImpl psf hr M Salt pk sk (Sum.inr msg) :
+          QueryImpl (M →ₒ (Salt × Domain))
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp))).flattenStateT)
+    (gpvRealImplFresh psf hr M Salt pk sk)
+    (fun s : List M × (Salt × M →ₒ Range).QueryCache => (s.2, s.1.toFinset))
+    (flattenAppendLog_proj_gpvRealImplFresh psf hr M Salt pk sk) oa
+    (([], ∅) : List M × (Salt × M →ₒ Range).QueryCache)
+  -- Rewrite the RHS `gpvRealImplFresh` run via `hflat` (the state-projection of the flattened
+  -- append-log run), then `hflatten` (flatten = nested run) and `hreplay` (WriterT log → input
+  -- list), reducing both sides to the same base computation; the three maps compose pointwise.
+  simp only [List.toFinset_nil] at hflat
+  rw [← hflat, Functor.map_map, hflatten]
+  -- The fused base `HasQuery.toQueryImpl` (for the instance `hq := gpvOuter.toHasQuery`) is exactly
+  -- `gpvOuter`, so the replay lemma's base matches the flattened run's base.
+  have hbase : (@HasQuery.toQueryImpl _ (unifSpec + (Salt × M →ₒ Range))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) hq) = gpvOuter M Salt := rfl
+  -- The flattened nested run (RHS, via `hflat`/`hflatten`) and the replayed WriterT-log input-list
+  -- run (`hreplay`, applied at the cache `∅`) are the same base computation; the maps compose.
+  have hreplay' := congrArg
+    (fun (g : StateT ((Salt × M →ₒ Range).QueryCache) ProbComp _) => g.run ∅) hreplay
+  simp only [StateT.run_map, hbase] at hreplay'
+  rw [← hreplay']
+  simp only [bind_pure_comp, Functor.map_map, Prod.map, id_eq]
+
 /-! ### Verify-Bool games on the freshness-tracking vehicle
 
 The verification read `gpvVerifyRead` recomputes the random-oracle value at the forged `(r, msg)`
