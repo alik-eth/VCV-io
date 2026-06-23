@@ -4799,6 +4799,18 @@ lemma gpvRealImpl_eq_compose (pk : PK) (sk : SK) :
     gpvRealImpl psf hr M Salt pk sk =
       (gpvOuter M Salt ∘ₛ realGameRunImplNoLog psf hr M Salt pk sk) := rfl
 
+omit [Fintype Salt] in
+/-- **The base (non-signing) step of `gpvRealImpl` is `gpvOuter`.** On a public/random-oracle
+query `Sum.inl q`, the composed real handler re-emits the query through `realGameRunImplNoLog`
+(`= query q`) and the `gpvOuter` simulation answers it, so `gpvRealImpl … (Sum.inl q) = gpvOuter q`.
+-/
+lemma gpvRealImpl_inl_eq_gpvOuter (pk : PK) (sk : SK)
+    (q : (unifSpec + (Salt × M →ₒ Range)).Domain) :
+    gpvRealImpl psf hr M Salt pk sk (Sum.inl q) = gpvOuter M Salt q := by
+  simp only [gpvRealImpl_eq_compose, QueryImpl.compose, realGameRunImplNoLog, HAdd.hAdd,
+    QueryImpl.add, HasQuery.toQueryImpl_apply, HasQuery.query]
+  exact simulateQ_spec_query (gpvOuter M Salt) q
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Handler fusion: the fused WriterT stack is `baseW + withLogging signBody`.** Pushing the
@@ -4847,6 +4859,59 @@ lemma gpvOuter_writerTMapBase_implW (pk : PK) (sk : SK) :
       WriterT.run_tell, WriterT.run_pure, map_eq_bind_pure_comp]
     simp only [HAdd.hAdd, QueryImpl.add, simulateQ_bind, simulateQ_pure,
       StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind, Function.comp_def]
+
+omit [Fintype Salt] in
+/-- **Per-query state-projection of the flattened append-log handler onto `gpvRealImplFresh`.**
+The flattened `StateT (List M × QueryCache)` handler — the lifted public/random-oracle base plus the
+`appendInputLog`-instrumented GPV signing body `gpvRealImpl … (Sum.inr ·)` — projects, under
+`proj (l, c) = (c, l.toFinset)`, onto the freshness vehicle `gpvRealImplFresh` step by step.  On a
+non-signing query both leave the signed-set untouched and evolve the cache through `gpvRealImpl`; on
+a signing query `appendInputLog` appends `msg` to the list (`l ++ [msg]`) while `gpvRealImplFresh`
+inserts it into the signed-set, reconciled by `(l ++ [msg]).toFinset = insert msg l.toFinset` (the
+list-order is invisible to the `Finset`).  This is the per-query hypothesis of the state-projection
+transport `map_run_simulateQ_eq_of_query_map_eq`, the GPV analogue of the FiatShamir `hmatch`. -/
+lemma flattenAppendLog_proj_gpvRealImplFresh (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : List M × (Salt × M →ₒ Range).QueryCache) :
+    Prod.map id (fun s : List M × (Salt × M →ₒ Range).QueryCache => (s.2, s.1.toFinset)) <$>
+        ((((gpvOuter M Salt).liftTarget
+              (StateT (List M) (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp))) +
+            QueryImpl.appendInputLog
+              (fun msg => gpvRealImpl psf hr M Salt pk sk (Sum.inr msg) :
+                QueryImpl (M →ₒ (Salt × Domain))
+                  (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp))).flattenStateT t).run s =
+      (gpvRealImplFresh psf hr M Salt pk sk t).run (s.2, s.1.toFinset) := by
+  obtain ⟨l, c⟩ := s
+  cases t with
+  | inl q =>
+      -- public/random-oracle base query: the list is untouched, the cache evolves through
+      -- `gpvRealImpl`; both sides drop to the same base step `gpvOuter q = gpvRealImpl … (inl q)`.
+      rw [gpvRealImplFresh_run_inl, gpvRealImpl_inl_eq_gpvOuter]
+      simp only [QueryImpl.flattenStateT, QueryImpl.add_apply_inl, QueryImpl.liftTarget_apply,
+        StateT.run_mk, Prod.map, id_eq, map_eq_bind_pure_comp, bind_assoc, pure_bind,
+        Function.comp_def]
+      -- `(liftM (gpvOuter q)).run l = gpvOuter q >>= fun a => (a, l)` is definitional; rephrase the
+      -- nested lifted run so the cache run distributes and the list rides through unchanged.
+      change ((gpvOuter M Salt q >>= fun a => pure (a, l)).run c >>= fun x =>
+          pure (x.1.1, x.2, x.1.2.toFinset)) = _
+      rw [StateT.run_bind]
+      simp only [StateT.run_pure, bind_assoc, pure_bind]
+      rfl
+  | inr msg =>
+      -- signing query: `appendInputLog` appends `msg` to the list, `gpvRealImplFresh` inserts it
+      -- into the signed-set, reconciled by `(l ++ [msg]).toFinset = insert msg l.toFinset`.
+      rw [gpvRealImplFresh_run_inr]
+      simp only [QueryImpl.flattenStateT, QueryImpl.add_apply_inr, QueryImpl.appendInputLog_apply,
+        StateT.run_mk, Prod.map, id_eq, map_bind, map_pure]
+      -- `(modify (· ++ [msg]) >>= liftM (gpvRealImpl …)).run l = gpvRealImpl … >>= fun a => (a,
+      -- l ++ [msg])` is definitional; then `gpvRealImpl_run_sign` exposes the explicit sign body
+      -- and `(l ++ [msg]).toFinset = insert msg l.toFinset` reconciles the signed-set.
+      change ((gpvRealImpl psf hr M Salt pk sk (Sum.inr msg) >>=
+            fun a => pure (a, l ++ [msg])).run c
+          >>= fun a => pure (a.1.1, a.2, a.1.2.toFinset)) = _
+      rw [StateT.run_bind, gpvRealImpl_run_sign]
+      simp only [StateT.run_pure, bind_assoc, pure_bind,
+        show (l ++ [msg]).toFinset = insert msg l.toFinset by simp [List.toFinset_append]]
 
 /-! ### Verify-Bool games on the freshness-tracking vehicle
 
