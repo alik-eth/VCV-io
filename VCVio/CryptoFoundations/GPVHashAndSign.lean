@@ -5193,6 +5193,163 @@ lemma progGameRunImplCombined_run_inv (domainSample : PK → ProbComp Domain) (p
     (combinedCacheTableInv psf M Salt pk)
     (combinedCacheTableInv_step psf M Salt domainSample pk) oa s hs
 
+/-- **Cache ⇒ table coherence predicate.** At every programmed point, a cached random-oracle value
+is the `psf.eval pk`-image of a recorded hidden preimage in the table.  This is the direction the
+distinct-collision transfer needs: a verifying forgery hits a *cached* point, and this invariant
+exhibits the simulator's hidden preimage there. -/
+def combinedCacheImpliesTableInv (pk : PK)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prop :=
+  ∀ t : Salt × M, ∀ v : Range, s.1.1.1 t = some v → ∃ d : Domain, s.2 t = some d ∧ v = psf.eval pk d
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-step preservation of cache ⇒ table coherence.** Each combined query step preserves
+`combinedCacheImpliesTableInv`: uniform queries and cache hits leave both components untouched,
+while random-oracle misses and signing steps write a matched pair `t ↦ psf.eval pk s` (cache) and
+`t ↦ s` (table) at the same point. -/
+lemma combinedCacheImpliesTableInv_step (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedCacheImpliesTableInv psf M Salt pk s) :
+    ∀ y ∈ support ((progGameRunImplCombined psf M Salt domainSample pk t).run s),
+      combinedCacheImpliesTableInv psf M Salt pk y.2 := by
+  intro y hy
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombined_run_inl_inl] at hy
+          simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+          obtain ⟨v, _, hw⟩ := hy
+          subst hw
+          exact hs
+      | inr q =>
+          rw [progGameRunImplCombined_run_inl_inr] at hy
+          cases hq : s.1.1.1 q with
+          | some v =>
+              rw [hq] at hy
+              simp only [support_pure, Set.mem_singleton_iff] at hy
+              subst hy
+              exact hs
+          | none =>
+              rw [hq] at hy
+              simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+              obtain ⟨sd, _hsd, hw⟩ := hy
+              subst hw
+              intro t' v' ht'
+              dsimp only at ht' ⊢
+              by_cases htq : t' = q
+              · subst htq
+                rw [QueryCache.cacheQuery_self, Option.some_inj] at ht'
+                exact ⟨sd, by rw [if_pos rfl], ht'.symm⟩
+              · rw [QueryCache.cacheQuery_of_ne _ _ htq] at ht'
+                obtain ⟨d, hd, hv⟩ := hs t' v' ht'
+                exact ⟨d, by rw [if_neg htq]; exact hd, hv⟩
+  | inr msg =>
+      rw [progGameRunImplCombined_run_inr] at hy
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+      obtain ⟨r, _, sd, _hsd, hw⟩ := hy
+      subst hw
+      intro t' v' ht'
+      dsimp only at ht' ⊢
+      by_cases htq : t' = (r, msg)
+      · subst htq
+        rw [QueryCache.cacheQuery_self, Option.some_inj] at ht'
+        exact ⟨sd, by rw [if_pos rfl], ht'.symm⟩
+      · rw [QueryCache.cacheQuery_of_ne _ _ htq] at ht'
+        obtain ⟨d, hd, hv⟩ := hs t' v' ht'
+        exact ⟨d, by rw [if_neg htq]; exact hd, hv⟩
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Cache ⇒ table coherence holds throughout the combined simulation.** Starting from any state
+satisfying `combinedCacheImpliesTableInv` (in particular the empty start, vacuously), every final
+state of the combined run over `oa` satisfies it. -/
+lemma progGameRunImplCombined_run_cacheImpliesTable (domainSample : PK → ProbComp Domain) (pk : PK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedCacheImpliesTableInv psf M Salt pk s) :
+    ∀ y ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s),
+      combinedCacheImpliesTableInv psf M Salt pk y.2 :=
+  OracleComp.simulateQ_run_preserves_inv_of_query _
+    (combinedCacheImpliesTableInv psf M Salt pk)
+    (combinedCacheImpliesTableInv_step psf M Salt domainSample pk) oa s hs
+
+/-- **Table values are drawn preimages.** Every hidden preimage recorded in the combined run's table
+lies in the support of the forward sampler `domainSample pk`. Every table write `t ↦ sd` records a
+freshly drawn `sd ← domainSample pk`, so it is in the sampler's support; uniform queries and cache
+hits leave the table untouched. -/
+def combinedTableInDomainInv (M Salt : Type) (domainSample : PK → ProbComp Domain) (pk : PK)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Prop :=
+  ∀ t : Salt × M, ∀ d : Domain, s.2 t = some d → d ∈ support (domainSample pk)
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-step preservation of `combinedTableInDomainInv`.** -/
+lemma combinedTableInDomainInv_step (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedTableInDomainInv M Salt domainSample pk s) :
+    ∀ y ∈ support ((progGameRunImplCombined psf M Salt domainSample pk t).run s),
+      combinedTableInDomainInv M Salt domainSample pk y.2 := by
+  intro y hy
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombined_run_inl_inl] at hy
+          simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+          obtain ⟨v, _, hw⟩ := hy
+          subst hw
+          exact hs
+      | inr q =>
+          rw [progGameRunImplCombined_run_inl_inr] at hy
+          cases hq : s.1.1.1 q with
+          | some v =>
+              rw [hq] at hy
+              simp only [support_pure, Set.mem_singleton_iff] at hy
+              subst hy
+              exact hs
+          | none =>
+              rw [hq] at hy
+              simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+              obtain ⟨sd, hsd, hw⟩ := hy
+              subst hw
+              intro t' d ht'
+              dsimp only at ht' ⊢
+              by_cases htq : t' = q
+              · subst htq
+                rw [if_pos rfl, Option.some_inj] at ht'
+                subst ht'
+                exact hsd
+              · rw [if_neg htq] at ht'
+                exact hs t' d ht'
+  | inr msg =>
+      rw [progGameRunImplCombined_run_inr] at hy
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hy
+      obtain ⟨r, _, sd, hsd, hw⟩ := hy
+      subst hw
+      intro t' d ht'
+      dsimp only at ht' ⊢
+      by_cases htq : t' = (r, msg)
+      · subst htq
+        rw [if_pos rfl, Option.some_inj] at ht'
+        subst ht'
+        exact hsd
+      · rw [if_neg htq] at ht'
+        exact hs t' d ht'
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **`combinedTableInDomainInv` holds throughout the combined simulation.** -/
+lemma progGameRunImplCombined_run_tableInDomain (domainSample : PK → ProbComp Domain) (pk : PK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs : combinedTableInDomainInv M Salt domainSample pk s) :
+    ∀ y ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s),
+      combinedTableInDomainInv M Salt domainSample pk y.2 :=
+  OracleComp.simulateQ_run_preserves_inv_of_query _
+    (combinedTableInDomainInv M Salt domainSample pk)
+    (combinedTableInDomainInv_step psf M Salt domainSample pk) oa s hs
+
 /-! ### Cross-monad WriterT-log → signed-set reconstruction
 
 The unforgeability experiment runs the adversary under the WriterT signing-log handler stack
@@ -6453,6 +6610,303 @@ lemma isShort_of_mem_support_domainSample
   subst heq2
   exact (hcorrect pk sk c s hs').2
 
+omit [SampleableType Range] [Fintype Salt] in
+/-- **The verification read is table-passive on a cache hit.** When the forged point `(r, msg)` is
+already cached in the combined run state `st` with value `v`, running the GPV verification read
+`gpvVerifyRead pk (msg, (r, s))` under the combined handler from `st` reads back `v`, returns the
+verification Bool `decide (psf.eval pk s = v) && psf.isShort s`, and leaves the *entire* combined
+state — cache, signed-set, flag, and hidden table — unchanged.  The verification read issues a
+single random-oracle query at the forged point, which on a hit is a pure `get`/return. -/
+lemma run_combined_gpvVerifyRead_of_cache_hit (domainSample : PK → ProbComp Domain) (pk : PK)
+    (msg : M) (r : Salt) (s : Domain) (v : Range)
+    (st : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hhit : st.1.1.1 (r, msg) = some v) :
+    (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+        (gpvVerifyRead psf M Salt pk (msg, (r, s)))).run st =
+      pure (decide (psf.eval pk s = v) && psf.isShort s, st) := by
+  rw [gpvVerifyRead]
+  rw [simulateQ_bind, simulateQ_query, StateT.run_bind]
+  simp only [OracleQuery.input_query, OracleQuery.cont_query, StateT.run_map, simulateQ_pure,
+    StateT.run_pure]
+  rw [progGameRunImplCombined_run_inl_inr, hhit]
+  simp only [id_eq, map_pure, pure_bind]
+
+omit [SampleableType Range] [Fintype Salt] in
+/-- **The verification continuation is table-passive on a cache hit.** The `verifyKont`-shaped
+continuation `(out, ·) <$> gpvVerifyRead pk out` of the freshness verify game, run under the
+combined handler from a state `st` whose cache hits the forged point with value `v`, returns the
+pair of the forgery output `out` and the verification Bool, leaving the entire combined state
+unchanged. -/
+lemma run_combined_verifyKont_of_cache_hit (domainSample : PK → ProbComp Domain) (pk : PK)
+    (msg : M) (r : Salt) (s : Domain) (v : Range)
+    (st : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hhit : st.1.1.1 (r, msg) = some v) :
+    (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+        ((fun w => ((msg, (r, s)), w)) <$>
+          gpvVerifyRead psf M Salt pk (msg, (r, s)))).run st =
+      pure (((msg, (r, s)), decide (psf.eval pk s = v) && psf.isShort s), st) := by
+  rw [simulateQ_map, StateT.run_map,
+    run_combined_gpvVerifyRead_of_cache_hit psf M Salt domainSample pk msg r s v st hhit]
+  simp only [map_pure]
+
+omit [Fintype Salt] in
+/-- **`hForge` transported to the combined run.** Under `ForgesQueriedPoint`, every final state of
+the combined run over `adv.main pk` (from the empty start) has its cache defined at the forged point
+`(r⋆, msg⋆)`.  Projecting the combined run onto the game handler
+(`map_run_progGameRunImplCombined_proj_table`) sends each combined final state to a game final
+state, to which `hForge` applies; the cache component is preserved by the table projection. -/
+lemma combined_cache_forge_point_ne_none (domainSample : PK → ProbComp Domain) (pk : PK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (w : (M × (Salt × Domain)) ×
+      ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)))
+    (hw : w ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+      (adv.main pk)).run ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+        fun _ => none))) :
+    w.2.1.1.1 (w.1.2.1, w.1.1) ≠ none := by
+  have hproj := map_run_progGameRunImplCombined_proj_table psf M Salt domainSample pk
+    (adv.main pk) ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+      fun _ => none)
+  have hmem : (Prod.map id
+      (Prod.fst : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain) → ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool)) w ∈
+      support ((simulateQ (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk)
+        (adv.main pk)).run (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)) := by
+    rw [← hproj, support_map]
+    exact ⟨w, hw, rfl⟩
+  exact hForge pk _ hmem
+
+open Classical in
+omit [Fintype Salt] in
+/-- **The programmed verify game success is a winning event on the combined run.** Projecting the
+combined run over `adv.main pk >>= verifyKont` onto the game handler recovers the programmed
+freshness verify game (`map_run_progGameRunImplCombined_proj_table`), so the game's success
+probability equals the probability, over the combined run, of the *winning event*: the forged
+message is fresh (not in the signed set) and the verification Bool is `true`. -/
+lemma progGameVerifyFresh_eq_probEvent_combined (domainSample : PK → ProbComp Domain) (pk : PK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pk]
+      = Pr[fun w : ((M × (Salt × Domain)) × Bool) ×
+            ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+              (decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true |
+          (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+            (adv.main pk >>= fun out =>
+              (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
+            ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)] := by
+  have hgame : Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pk]
+      = Pr[= true | (fun z : ((M × (Salt × Domain)) × Bool) ×
+            (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) =>
+            decide (z.1.1.1 ∉ z.2.1.2) && z.1.2) <$>
+          (simulateQ (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk)
+            (adv.main pk >>= fun out =>
+              (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
+            (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)] := rfl
+  rw [hgame, ← map_run_progGameRunImplCombined_proj_table psf M Salt domainSample pk
+    (adv.main pk >>= fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)
+    ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+    ← probEvent_eq_eq_probOutput, Functor.map_map, probEvent_map]
+  rfl
+
+open Classical in
+omit [Fintype Salt] in
+/-- **The collision-reduction success is a collision event on the combined run.** The collision
+reduction runs `reductionImpl` over `adv.main pk` and reads its hidden table at the forged point;
+projecting the combined run onto `reductionImpl` (`map_run_progGameRunImplCombined_proj_reduction`)
+re-expresses the reduction's collision-success probability as the probability, over the combined run
+*of `adv.main pk` alone*, that the table records a hidden preimage `sHidden` at the forged point
+with `(sHidden, s⋆)` a genuine `psf.eval`-collision of two distinct short preimages. -/
+lemma reduction_collision_eq_probEvent_combined [DecidableEq Domain]
+    (domainSample : PK → ProbComp Domain) (pk : PK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    Pr[= true | (reduction psf hr M Salt adv domainSample pk >>= fun xs =>
+        pure (decide (xs.1 ≠ xs.2) && decide (psf.eval pk xs.1 = psf.eval pk xs.2) &&
+          psf.isShort xs.1 && psf.isShort xs.2) : ProbComp Bool)]
+      = Pr[fun w : (M × (Salt × Domain)) ×
+            ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+              ∃ sHidden : Domain, w.2.2 (w.1.2.1, w.1.1) = some sHidden ∧
+                (decide (sHidden ≠ w.1.2.2) &&
+                  decide (psf.eval pk sHidden = psf.eval pk w.1.2.2) &&
+                  psf.isShort sHidden && psf.isShort w.1.2.2) = true |
+          (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+            (adv.main pk)).run
+            ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)] := by
+  rw [reduction_eq_run_reductionImpl psf hr M Salt adv domainSample pk]
+  rw [← map_run_progGameRunImplCombined_proj_reduction psf M Salt domainSample pk
+    (adv.main pk) ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+      fun _ => none)]
+  rw [← probEvent_eq_eq_probOutput, bind_assoc, bind_map_left, probEvent_bind_eq_tsum]
+  conv_rhs => rw [← bind_pure ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+    (adv.main pk)).run ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+      fun _ => none)), probEvent_bind_eq_tsum]
+  refine tsum_congr fun w => ?_
+  congr 1
+  rcases w with ⟨out, st⟩
+  obtain ⟨msgStar, rStar, sStar⟩ := out
+  simp only [Prod.map, id_eq]
+  rcases hlk : st.2 (rStar, msgStar) with _ | sHidden
+  · simp only [hlk, pure_bind, probEvent_pure, ne_eq, not_true_eq_false,
+      decide_false, Bool.false_and]
+    simp
+  · simp only [hlk, pure_bind, probEvent_pure, Option.some.injEq, exists_eq_left']
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Pointwise distinct-collision transfer.** For any final state `(out, st)` of the combined run
+over `adv.main pk` whose forged point is cached (guaranteed by `hForge`), the distinct-preimage
+winning event on the verify-extended run implies the collision event on the table: the cache hit at
+the forged point exhibits a hidden preimage `sHidden` with `psf.eval pk sHidden = psf.eval pk s⋆`
+(the verifier's check), with `sHidden ≠ s⋆` (distinctness), and both short (`s⋆` by the verifier,
+`sHidden` by `hcorrect`/`hreg` on the drawn preimage). -/
+lemma distinct_implies_collision_pointwise [DecidableEq Domain]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK)
+    (hcorrect : psf.Correct)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (out : M × (Salt × Domain))
+    (st : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hmem : (out, st) ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+      (adv.main pk)).run ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+        fun _ => none)))
+    (vb : Bool)
+    (hvb : vb = (decide (psf.eval pk out.2.2 =
+      (st.1.1.1 (out.2.1, out.1)).getD (psf.eval pk out.2.2)) && psf.isShort out.2.2))
+    (hwin : (decide (out.1 ∉ st.1.1.2) && vb) = true)
+    (hdist : st.2 (out.2.1, out.1) ≠ some out.2.2) :
+    ∃ sHidden : Domain, st.2 (out.2.1, out.1) = some sHidden ∧
+      (decide (sHidden ≠ out.2.2) && decide (psf.eval pk sHidden = psf.eval pk out.2.2) &&
+        psf.isShort sHidden && psf.isShort out.2.2) = true := by
+  -- Cache hit at the forged point (from `hForge`).
+  have hcache_ne : st.1.1.1 (out.2.1, out.1) ≠ none :=
+    combined_cache_forge_point_ne_none psf hr M Salt domainSample pk adv hForge (out, st) hmem
+  obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hcache_ne
+  -- Cache ⇒ table coherence: the hidden preimage and the eval relation.
+  have hci : combinedCacheImpliesTableInv psf M Salt pk st :=
+    progGameRunImplCombined_run_cacheImpliesTable psf M Salt domainSample pk (adv.main pk)
+      _ (by intro t v ht; simp at ht) (out, st) hmem
+  obtain ⟨sHidden, htbl, hveq⟩ := hci (out.2.1, out.1) v hv
+  -- Table values are drawn preimages, hence short.
+  have htd : combinedTableInDomainInv M Salt domainSample pk st :=
+    progGameRunImplCombined_run_tableInDomain psf M Salt domainSample pk (adv.main pk)
+      _ (by intro t d ht; simp at ht) (out, st) hmem
+  have hHidden_mem : sHidden ∈ support (domainSample pk) := htd (out.2.1, out.1) sHidden htbl
+  have hHidden_short : psf.isShort sHidden = true :=
+    isShort_of_mem_support_domainSample psf domainSample pk sk hcorrect hreg sHidden hHidden_mem
+  -- Unpack the winning Bool: verification holds, so `eval pk s⋆ = v` and `isShort s⋆`.
+  rw [hvb] at hwin
+  simp only [hv, Option.getD_some, Bool.and_eq_true, decide_eq_true_eq] at hwin
+  obtain ⟨_hfresh, hverify_eq, hshort_star⟩ := hwin
+  -- Assemble the collision.
+  refine ⟨sHidden, htbl, ?_⟩
+  have hsHidden_ne : sHidden ≠ out.2.2 := by
+    intro h; exact hdist (h ▸ htbl)
+  have heval : psf.eval pk sHidden = psf.eval pk out.2.2 := by
+    rw [← hveq, ← hverify_eq]
+  simp only [hsHidden_ne, hverify_eq, hshort_star, hHidden_short, heval, decide_true,
+    Bool.and_self, ne_eq, not_false_eq_true]
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Distinct-collision transfer (probability level).** The distinct-preimage winning mass on the
+combined verify-extended run is bounded by the collision event on the combined run of `adv.main pk`.
+The verify continuation is table-passive on the cache hit (`run_combined_verifyKont_of_cache_hit`),
+so the distinct event on the verify-extended run reduces, support-pointwise, to the distinct event
+on `adv.main pk`'s final state, which the pointwise transfer `distinct_implies_collision_pointwise`
+turns into the table collision. -/
+lemma gpv_perKey_distinct_le_collision [DecidableEq Domain]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK)
+    (hcorrect : psf.Correct)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample) :
+    Pr[fun w : ((M × (Salt × Domain)) × Bool) ×
+          ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+            (decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true ∧
+              w.2.2 (w.1.1.2.1, w.1.1.1) ≠ some w.1.1.2.2 |
+        (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+          (adv.main pk >>= fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
+          ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
+      ≤ Pr[fun w : (M × (Salt × Domain)) ×
+            ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+              ∃ sHidden : Domain, w.2.2 (w.1.2.1, w.1.1) = some sHidden ∧
+                (decide (sHidden ≠ w.1.2.2) &&
+                  decide (psf.eval pk sHidden = psf.eval pk w.1.2.2) &&
+                  psf.isShort sHidden && psf.isShort w.1.2.2) = true |
+          (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+            (adv.main pk)).run
+            ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)] := by
+  rw [simulateQ_bind, StateT.run_bind, probEvent_bind_eq_tsum_subtype]
+  conv_rhs => rw [← bind_pure ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+    (adv.main pk)).run ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+      fun _ => none)), probEvent_bind_eq_tsum_subtype]
+  refine ENNReal.tsum_le_tsum fun p => ?_
+  gcongr
+  obtain ⟨⟨out, st⟩, hmem⟩ := p
+  obtain ⟨msg, r, s⟩ := out
+  rw [run_combined_verifyKont_of_cache_hit psf M Salt domainSample pk msg r s
+      ((st.1.1.1 (r, msg)).getD (psf.eval pk s)) st ?_, probEvent_pure, probEvent_pure]
+  · by_cases hwin : (decide (msg ∉ st.1.1.2) &&
+        (decide (psf.eval pk s = (st.1.1.1 (r, msg)).getD (psf.eval pk s)) &&
+          psf.isShort s)) = true ∧ st.2 (r, msg) ≠ some s
+    · obtain ⟨sHidden, htbl, hcoll⟩ :=
+        distinct_implies_collision_pointwise psf hr M Salt domainSample pk sk hcorrect hreg adv
+          hForge (msg, (r, s)) st hmem _ rfl hwin.1 hwin.2
+      rw [if_pos hwin, if_pos ⟨sHidden, htbl, hcoll⟩]
+    · rw [if_neg hwin]
+      exact zero_le'
+  · have hcache_ne : st.1.1.1 (r, msg) ≠ none :=
+      combined_cache_forge_point_ne_none psf hr M Salt domainSample pk adv hForge
+        ((msg, (r, s)), st) hmem
+    obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hcache_ne
+    rw [hv, Option.getD_some]
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Exact-match reservoir bound (Step-2 residual).** The exact-match winning mass on the combined
+verify-extended run — a verifying fresh forgery `(msg, (r, s⋆))` whose forged preimage `s⋆` exactly
+reproduces the simulator's hidden programmed preimage `sHidden` recorded in the table at the forged
+point — is bounded by the multi-target factor `qSign + qHash` times the exact-match programmed
+preimage advantage of `programmedPreimageReduction` at `(pk, sk)`.
+
+The programmed-preimage reduction embeds its uniform target `y` at one uniformly chosen programmed
+entry (reservoir sampling over the at most `qSign + qHash` programmed random-oracle entries); when
+the embedded entry is the forged point and the forgery reproduces the hidden preimage, it wins the
+single-target programmed-preimage experiment, paying the explicit `qSign + qHash` guessing loss.
+
+This is the residual exact-match branch of the GPV Step-2 collision extraction; the
+distinct-preimage branch is discharged by `gpv_perKey_distinct_le_collision`. -/
+lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    Pr[fun w : ((M × (Salt × Domain)) × Bool) ×
+          ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+            (decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true ∧
+              w.2.2 (w.1.1.2.1, w.1.1.1) = some w.1.1.2.2 |
+        (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+          (adv.main pk >>= fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
+          ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
+      ≤ ((qSign + qHash : ℕ) : ENNReal) *
+        Pr[= true | (do
+          let y ← ($ᵗ Range : ProbComp Range)
+          let x ← psf.trapdoorSample pk sk y
+          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+          pure (decide (x' = x)) : ProbComp Bool)] := by
+  sorry
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Step 2 (collision extraction): the keygen-averaged programmed freshness verify-Bool game is
@@ -6504,11 +6958,27 @@ theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq 
   -- bound) — the remaining Step-2 residual.
   refine gpv_progGameVerifyFreshAvg_le_of_perKey psf hr M Salt qSign qHash adv domainSample ?_
   intro pksk
-  let _ := hcorrect
-  let _ := hreg
-  let _ := hForge
-  let _ := hQ
-  sorry
+  -- Lift the game success onto the combined run, split into the distinct and exact-match branches,
+  -- transfer the distinct branch to the collision reduction, and hand the exact branch to the
+  -- reservoir bound.
+  rw [progGameVerifyFresh_eq_probEvent_combined psf hr M Salt domainSample pksk.1 adv,
+    reduction_collision_eq_probEvent_combined psf hr M Salt domainSample pksk.1 adv]
+  refine le_trans (probEvent_mono (fun w _ hw => ?_) :
+      _ ≤ Pr[fun w : ((M × (Salt × Domain)) × Bool) ×
+          ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+          ((decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true ∧
+              w.2.2 (w.1.1.2.1, w.1.1.1) ≠ some w.1.1.2.2) ∨
+            ((decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true ∧
+              w.2.2 (w.1.1.2.1, w.1.1.1) = some w.1.1.2.2) | _]) ?_
+  · by_cases heq : w.2.2 (w.1.1.2.1, w.1.1.1) = some w.1.1.2.2
+    · exact Or.inr ⟨hw, heq⟩
+    · exact Or.inl ⟨hw, heq⟩
+  refine le_trans (probEvent_or_le _ _ _) ?_
+  gcongr
+  · exact gpv_perKey_distinct_le_collision psf hr M Salt domainSample pksk.1 pksk.2 hcorrect
+      (hreg pksk.1 pksk.2) adv hForge
+  · exact gpv_perKey_exactMatch_le_reservoir psf hr M Salt domainSample pksk.1 pksk.2 qSign qHash
+      adv hForge (hQ pksk.1)
 
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
