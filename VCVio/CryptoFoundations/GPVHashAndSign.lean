@@ -5881,6 +5881,25 @@ theorem gpv_advantage_le_progGameVerifyFreshAvg_add_collisionBound
             * Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample x.1])
           + collisionBound Salt qSign qHash := by rw [one_mul]
 
+open Classical in
+/-- **The forger queries its forgery point (standard random-oracle well-formedness).** For every
+public key, every forgery `(msg, (r, s))` the adversary outputs in the programmed sign-then-hash
+game lands on a random-oracle point `(r, msg)` that was already programmed during the adversary's
+run — i.e. the forger queried `RO(r, msg)` before forging, so the verification read is a cache hit.
+This is the textbook ROM convention (matching the "fresh forgery on a *programmed* point" framing of
+the collision extraction): any adversary is transformed into one satisfying it by appending a single
+hash query at its forgery point (absorbed into `qHash`).  It rules out the degenerate
+"forge on a never-queried point" case, in which the verification read would program the point
+*fresh* — a value independent of the forged preimage — which neither the collision nor the
+programmed-preimage reduction observes. -/
+def ForgesQueriedPoint
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) : Prop :=
+  ∀ (pk : PK), ∀ z ∈ support ((simulateQ (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk)
+      (adv.main pk)).run (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)),
+    z.2.1.1 (z.1.2.1, z.1.1) ≠ none
+
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
 1. **Distinct-preimage branch:** the forgery differs from the simulator's hidden programmed
@@ -5897,7 +5916,11 @@ The honest trapdoor sampler is assumed total (`hNF`): for every key pair and tar
 condition that the trapdoor inversion is a genuine distribution; it is the hypothesis that keeps
 probability mass during the real↔programmed sign-then-hash hop and is not implied by `hcorrect`
 (which constrains only the *support* of the sampler) nor by `hreg` (which equates only the *total
-masses* of the two joint distributions). -/
+masses* of the two joint distributions).
+
+The forger is assumed to query its forgery point (`hForge`, `ForgesQueriedPoint`): the standard
+ROM well-formedness condition that the forgery lands on a programmed random-oracle entry, so the
+collision/exact-match extraction observes the simulator's hidden preimage at that point. -/
 theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
     [Inhabited Range] [Nonempty Salt]
     (hcorrect : psf.Correct) (qSign qHash : ℕ)
@@ -5909,6 +5932,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))])
     (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
@@ -5922,6 +5946,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
   let _ := hcorrect
   let _ := hreg
   let _ := hNF
+  let _ := hForge
   let _ := qSign
   let _ := qHash
   let _ := adv
@@ -5951,6 +5976,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))])
     (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
@@ -5963,7 +5989,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
         ((qSign + qHash : ℕ) : ENNReal) * εpp +
         collisionBound Salt qSign qHash := by
   refine le_trans (forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash
-    adv domainSample hreg hNF hQ) ?_
+    adv domainSample hreg hNF hForge hQ) ?_
   gcongr
 
 /-- **Collision-style GPV PFDH bound in the random-oracle model, under a preimage min-entropy
@@ -5994,6 +6020,7 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ∀ ds : PK → ProbComp Domain, ForgesQueriedPoint psf hr M Salt adv ds)
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
@@ -6008,8 +6035,8 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
         collisionBound Salt qSign qHash := by
   obtain ⟨domainSample, h⟩ := hreg
   exact ⟨reduction psf hr M Salt adv domainSample,
-    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv domainSample h hNF hQ εpp
-      (hMinEntropy domainSample)⟩
+    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv domainSample h hNF
+      (hForge domainSample) hQ εpp (hMinEntropy domainSample)⟩
 
 /-- **Split GPV PFDH bound in the random-oracle model**.
 
@@ -6028,6 +6055,7 @@ theorem euf_cma_split_bound [DecidableEq Domain]
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ∀ ds : PK → ProbComp Domain, ForgesQueriedPoint psf hr M Salt adv ds)
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
@@ -6043,6 +6071,6 @@ theorem euf_cma_split_bound [DecidableEq Domain]
   exact ⟨reduction psf hr M Salt adv domainSample,
     programmedPreimageReduction psf hr M Salt adv domainSample,
     forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash adv
-      domainSample h hNF hQ⟩
+      domainSample h hNF (hForge domainSample) hQ⟩
 
 end GPVHashAndSign
