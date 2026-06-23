@@ -5105,51 +5105,6 @@ theorem gpv_advantage_le_unforgeableExpNoFresh
     = f <$> (SPMFSemantics.withStateOracle _ ∅).evalDist mx
   exact SPMFSemantics.withStateOracle_evalDist_bind_pure _ ∅ mx f
 
-/-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
-makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
-that it produces a fresh forgery whose preimage differs from the simulator's programmed
-preimage is bounded by the collision-finding advantage of the reduction plus the
-salt-collision birthday bound.
-
-The argument proceeds in two steps:
-
-**Step 1 (sign-then-hash ≡ real).**  Replace the signing oracle with one that:
-  (a) samples a fresh salt `r ← Salt`,
-  (b) samples a short preimage `s` using the trapdoor sampler on a fresh random target,
-  (c) programs the RO at `(r, msg) := psf.eval pk s`.
-By PSF correctness (`hcorrect`), the joint distribution `(r, s, H(r, msg))` is identical
-to the real game. This step is exact (zero statistical distance).
-
-**Step 2 (extract collision).**  In the sign-then-hash game, every RO entry is
-programmed by the simulator together with a hidden short preimage. If the adversary's
-fresh forgery `(msg*, (r*, s*))` lands on a programmed entry and `s*` differs from the
-simulator's hidden preimage for that entry, the pair is a valid collision under
-`psf.eval`. The salt-collision probability bounds the only way the programming can
-become inconsistent. -/
-theorem forgery_yields_collision [DecidableEq Domain]
-    (hcorrect : psf.Correct) (qSign qHash : ℕ)
-    (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
-    (domainSample : PK → ProbComp Domain)
-    (hreg : ∀ (pk : PK) (sk : SK),
-      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
-      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
-            : ProbComp (Range × Domain))])
-    (hQ : ∀ pk, signHashQueryBound
-      (S' := Salt × Domain) (α := M × (Salt × Domain))
-      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
-    adv.advantage (runtime M Salt) ≤
-      collisionFindingAdvantage (psf := psf) (hr := hr)
-        (reduction psf hr M Salt adv domainSample) +
-      collisionBound Salt qSign qHash := by
-  let _ := hcorrect
-  let _ := hreg
-  let _ := qSign
-  let _ := qHash
-  let _ := adv
-  let _ := hQ
-  sorry
-
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
 1. **Distinct-preimage branch:** the forgery differs from the simulator's hidden programmed
@@ -5187,17 +5142,57 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
   let _ := hQ
   sorry
 
-/-- **Collision-style GPV PFDH bound in the random-oracle model**.
+/-- **Collision-only specialization of the GPV split bound under a PSF preimage min-entropy
+bound.**  This is `forgery_yields_collision_or_exact_match` with the exact-match
+(programmed-preimage) branch controlled by an explicit preimage min-entropy / one-wayness bound
+`εpp`: the adversary's chance of reproducing the simulator's hidden short preimage at a programmed
+point is at most `εpp` (`hMinEntropy`), so the multi-target exact-match contribution is at most
+`(qSign + qHash) · εpp`.  It is *derived* from the split bound and carries no independent proof
+obligation.
+
+The exact-match term is *bounded*, not eliminated: `programmedPreimageAdvantage ≥ 1 / |Domain| > 0`
+for a finite domain (reproducing a sampled preimage is always possible with nonzero probability),
+so a clean collision-only bound (`εpp = 0`) is unsatisfiable.  Specializing `εpp` to a concrete PSF
+preimage min-entropy bound (e.g. for Falcon) yields the quantitative collision bound. -/
+theorem forgery_yields_collision [DecidableEq Domain]
+    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hreg : ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hQ : ∀ pk, signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
+    (εpp : ℝ≥0∞)
+    (hMinEntropy : programmedPreimageAdvantage (psf := psf) (hr := hr)
+      (programmedPreimageReduction psf hr M Salt adv domainSample) ≤ εpp) :
+    adv.advantage (runtime M Salt) ≤
+      collisionFindingAdvantage (psf := psf) (hr := hr)
+          (reduction psf hr M Salt adv domainSample) +
+        ((qSign + qHash : ℕ) : ENNReal) * εpp +
+        collisionBound Salt qSign qHash := by
+  refine le_trans (forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash
+    adv domainSample hreg hQ) ?_
+  gcongr
+
+/-- **Collision-style GPV PFDH bound in the random-oracle model, under a preimage min-entropy
+bound**.
 
 For any adversary `A` making at most `qSign` signing queries against the GPV hash-and-sign
-scheme with a correct PSF and `k`-bit salts, and making at most `qHash`
-random-oracle queries, there exists a collision-finding reduction `B` such that:
+scheme with a correct PSF and `k`-bit salts, and making at most `qHash` random-oracle queries,
+there exists a collision-finding reduction `B` such that:
 
-  `Adv^{EUF-CMA}(A) ≤ Adv^{collision}(B) + (qSign + qHash)² / (2 · |Salt|)`
+  `Adv^{EUF-CMA}(A) ≤ Adv^{collision}(B) + (qSign + qHash) · εpp + (qSign + qHash)² / (2 · |Salt|)`
 
-This packages the distinct-preimage branch of the standard GPV argument. The complementary
-exact-match branch, where the forgery reproduces the simulator's programmed preimage, is to
-be discharged separately via a PSF preimage-min-entropy or one-wayness lemma.
+where `εpp` bounds the exact-match (programmed-preimage) branch: the chance that an adversary
+reproduces the simulator's hidden short preimage at a programmed point is at most `εpp`
+(`hMinEntropy`), the PSF preimage min-entropy / one-wayness assumption. The distinct-preimage
+branch gives the collision term; the exact-match branch the `(qSign + qHash) · εpp` term. This is a
+specialization of `euf_cma_split_bound` and is derived from it; the exact-match term is *bounded*,
+not dropped, since `programmedPreimageAdvantage ≥ 1 / |Domain| > 0` for a finite domain.
 
 The salt-collision term `(qSign + qHash)² / (2 · |Salt|)` is the birthday bound on a fresh
 signing salt colliding with any previously recorded `(salt, message)` random-oracle input (a
@@ -5211,14 +5206,20 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
-      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
+    (εpp : ℝ≥0∞)
+    (hMinEntropy : ∀ ds : PK → ProbComp Domain,
+      programmedPreimageAdvantage (psf := psf) (hr := hr)
+        (programmedPreimageReduction psf hr M Salt adv ds) ≤ εpp) :
     ∃ (red : CollisionAdversary (PK := PK) (Domain := Domain)),
       adv.advantage (runtime M Salt) ≤
         collisionFindingAdvantage (psf := psf) (hr := hr) red +
+        ((qSign + qHash : ℕ) : ENNReal) * εpp +
         collisionBound Salt qSign qHash := by
   obtain ⟨domainSample, h⟩ := hreg
   exact ⟨reduction psf hr M Salt adv domainSample,
-    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv domainSample h hQ⟩
+    forgery_yields_collision psf hr M Salt hcorrect qSign qHash adv domainSample h hQ εpp
+      (hMinEntropy domainSample)⟩
 
 /-- **Split GPV PFDH bound in the random-oracle model**.
 
