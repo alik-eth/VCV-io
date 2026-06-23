@@ -5900,6 +5900,57 @@ def ForgesQueriedPoint
       (adv.main pk)).run (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)),
     z.2.1.1 (z.1.2.1, z.1.1) ≠ none
 
+open Classical in
+/-- **Step 2 (collision extraction): the keygen-averaged programmed freshness verify-Bool game is
+bounded by the collision and exact-match reduction advantages.**
+
+In the programmed sign-then-hash game `progGameVerifyFresh`, every random-oracle entry was
+programmed as `psf.eval pk s` for a hidden short preimage `s ← domainSample pk`.  Under `hForge` the
+forgery `(msg, (r, s⋆))` lands on a programmed entry, so the verification read is a cache hit
+returning `psf.eval pk sHidden` for the simulator's hidden preimage `sHidden` at `(r, msg)`; a
+verifying fresh forgery therefore satisfies `psf.eval pk s⋆ = psf.eval pk sHidden` with both
+preimages short (the forged one by the verifier's `isShort` check, the hidden one by `hcorrect` and
+`hreg`).  This splits into:
+
+* the **distinct-preimage branch** `sHidden ≠ s⋆`, a collision under `psf.eval` extracted by the
+  collision reduction `reduction` (which records the hidden preimage at each programmed point and
+  returns `(sHidden, s⋆)`), bounding that mass by `collisionFindingAdvantage (reduction …)`; and
+* the **exact-match branch** `sHidden = s⋆`, where the forgery reproduces the simulator's hidden
+  preimage; the programmed-preimage reduction `programmedPreimageReduction` embeds its target `y` at
+  one uniformly chosen programmed entry (reservoir sampling over the at most `qSign + qHash`
+  entries), winning when the embedded entry is the forged point, which costs the explicit
+  multi-target factor `qSign + qHash`.
+
+This is the Step-2 collision-extraction frontier of the GPV proof, stated pinned over the concrete
+programmed forgery game and the concrete reductions. -/
+theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq Domain]
+    [Inhabited Range] [Nonempty Salt]
+    (hcorrect : psf.Correct) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hreg : ∀ (pk : PK) (sk : SK),
+      𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (hQ : ∀ pk, signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+        progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+      ≤ collisionFindingAdvantage (psf := psf) (hr := hr)
+          (reduction psf hr M Salt adv domainSample) +
+        ((qSign + qHash : ℕ) : ENNReal) *
+          programmedPreimageAdvantage (psf := psf) (hr := hr)
+            (programmedPreimageReduction psf hr M Salt adv domainSample) := by
+  classical
+  let _ := hcorrect
+  let _ := hreg
+  let _ := hForge
+  let _ := hQ
+  sorry
+
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
 1. **Distinct-preimage branch:** the forgery differs from the simulator's hidden programmed
@@ -5943,15 +5994,11 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
           programmedPreimageAdvantage (psf := psf) (hr := hr)
             (programmedPreimageReduction psf hr M Salt adv domainSample) +
         collisionBound Salt qSign qHash := by
-  let _ := hcorrect
-  let _ := hreg
-  let _ := hNF
-  let _ := hForge
-  let _ := qSign
-  let _ := qHash
-  let _ := adv
-  let _ := hQ
-  sorry
+  refine le_trans (gpv_advantage_le_progGameVerifyFreshAvg_add_collisionBound psf hr M Salt
+    qSign qHash adv domainSample hreg hNF hQ) ?_
+  gcongr
+  exact gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv psf hr M Salt
+    hcorrect qSign qHash adv domainSample hreg hForge hQ
 
 /-- **Collision-only specialization of the GPV split bound under a PSF preimage min-entropy
 bound.**  This is `forgery_yields_collision_or_exact_match` with the exact-match
