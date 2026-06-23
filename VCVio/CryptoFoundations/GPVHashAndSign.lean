@@ -5901,6 +5901,7 @@ def ForgesQueriedPoint
     z.2.1.1 (z.1.2.1, z.1.1) ≠ none
 
 open Classical in
+omit [Fintype Salt] in
 /-- **Step 2 (collision extraction): the keygen-averaged programmed freshness verify-Bool game is
 bounded by the collision and exact-match reduction advantages.**
 
