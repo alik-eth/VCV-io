@@ -4361,6 +4361,88 @@ than asserted:
    stub feeding a headline, which the campaign discipline forbids. It is therefore left open
    together with the reduction constructor rather than isolated as a speculative lemma. -/
 
+/-! ## O1: the data-processing bridge from Step-1 to a post-processed (verification) game
+
+Step-1 (`gpv_tvDist_real_programmed_le_collisionBound`) bounds the total-variation distance between
+the *forgery* distributions `realGameRun` and `progGameRun` (both `SPMF (M × (Salt × Domain))`) by
+`collisionBound`. The headline games are obtained by post-processing each forgery `out = (msg, σ)`
+through a verification step `k : M × (Salt × Domain) → SPMF Bool`. The lemma below is the
+data-processing transfer of Step-1 across that post-processing: for *any* `SPMF`-valued
+post-processor `k`, the success probability of the real post-processed game exceeds that of the
+programmed post-processed game by at most `collisionBound`.
+
+It is a pure consequence of the data-processing inequality `tvDist_bind_right_le` (binding both runs
+with the same continuation `k` does not increase TV distance) chained with Step-1, transported to
+`ℝ≥0∞` through the bool-valued TV bridge `abs_probOutput_toReal_sub_le_tvDist`. It carries no new
+probabilistic content beyond Step-1 and is reusable for any verification post-processor. -/
+theorem gpv_realGameVerify_le_progGameVerify_add_collisionBound
+    [Finite Range] [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (k : M × (Salt × Domain) → SPMF Bool) :
+    Pr[= true | realGameRun psf hr M Salt adv pk sk >>= k]
+      ≤ Pr[= true | progGameRun psf hr M Salt adv domainSample pk >>= k]
+        + collisionBound Salt qSign qHash := by
+  -- Both probabilities are `< ⊤`, so it suffices to prove the `toReal` inequality.
+  have hcb_lt_top : collisionBound Salt qSign qHash < ⊤ := by
+    refine ENNReal.div_lt_top ?_ ?_
+    · simp
+    · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
+      exact Fintype.card_ne_zero
+  set pProg := Pr[= true | progGameRun psf hr M Salt adv domainSample pk >>= k] with hpProg
+  rw [← ENNReal.ofReal_toReal probOutput_ne_top,
+      ← ENNReal.ofReal_toReal (a := pProg) probOutput_ne_top,
+      ← ENNReal.ofReal_toReal hcb_lt_top.ne]
+  rw [← ENNReal.ofReal_add ENNReal.toReal_nonneg ENNReal.toReal_nonneg]
+  refine ENNReal.ofReal_le_ofReal ?_
+  -- `Pr[real⋯].toReal ≤ Pr[prog⋯].toReal + tvDist(real⋯)(prog⋯)` via the bool TV bridge,
+  -- then `tvDist(real⋯)(prog⋯) ≤ tvDist(real)(prog) ≤ collisionBound` (DPI + Step-1).
+  have hbridge :=
+    abs_probOutput_toReal_sub_le_tvDist
+      (realGameRun psf hr M Salt adv pk sk >>= k)
+      (progGameRun psf hr M Salt adv domainSample pk >>= k)
+  have hsub :=
+    (abs_le.mp hbridge).2
+  have hdpi : SPMF.tvDist
+        (realGameRun psf hr M Salt adv pk sk >>= k)
+        (progGameRun psf hr M Salt adv domainSample pk >>= k)
+      ≤ (collisionBound Salt qSign qHash).toReal :=
+    le_trans (SPMF.tvDist_bind_right_le k _ _)
+      (gpv_tvDist_real_programmed_le_collisionBound psf hr M Salt pk sk adv domainSample
+        qSign qHash hQ hNF hreg)
+  linarith [le_trans hsub hdpi]
+
+omit [Fintype Salt] in
+/-- **GPV freshness-drop (Phase-B game-hop), mechanical.** The GPV EUF-CMA advantage is bounded by
+the success probability of the same experiment with the freshness check dropped
+(`unforgeableExpNoFresh`). This instantiates the generic
+`SignatureAlg.unforgeableAdv.advantage_le_unforgeableExpNoFresh` for the concrete GPV `runtime`,
+discharging its `h_pull` runtime-factoring obligation by the `withStateOracle` map-commutation
+`SPMFSemantics.withStateOracle_evalDist_bind_pure` (the GPV `runtime` is the bundled
+`withStateOracle randomOracle ∅`). It is a pure runtime-bookkeeping bridge with no probabilistic
+content: dropping the freshness check can only increase the success probability. -/
+theorem gpv_advantage_le_unforgeableExpNoFresh
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    adv.advantage (runtime M Salt)
+      ≤ Pr[= true | SignatureAlg.unforgeableExpNoFresh (runtime M Salt) adv] := by
+  refine SignatureAlg.unforgeableAdv.advantage_le_unforgeableExpNoFresh
+    (runtime M Salt) (fun {α β} f mx => ?_) adv
+  -- `runtime.evalDist (mx >>= pure ∘ f) = f <$> runtime.evalDist mx` is the `withStateOracle`
+  -- map-commutation at the empty cache.
+  change (SPMFSemantics.withStateOracle _ ∅).evalDist (mx >>= fun x => pure (f x))
+    = f <$> (SPMFSemantics.withStateOracle _ ∅).evalDist mx
+  exact SPMFSemantics.withStateOracle_evalDist_bind_pure _ ∅ mx f
+
 /-- **Collision branch of the GPV game-hop**: when the PSF is correct and the adversary
 makes at most `qSign` signing queries and `qHash` random-oracle queries, the probability
 that it produces a fresh forgery whose preimage differs from the simulator's programmed
