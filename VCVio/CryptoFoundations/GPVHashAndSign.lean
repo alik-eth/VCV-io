@@ -4751,6 +4751,84 @@ noncomputable def progGameVerifyFresh
           (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
         (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)]
 
+omit [SampleableType Range] [DecidableEq M] [DecidableEq Salt] [SampleableType Salt]
+  [Fintype Salt] in
+/-- **The verification continuation is signing-free.** The freshness-game continuation
+`fun out => (out, ·) <$> gpvVerifyRead pk out` issues exactly one random-oracle read (inside
+`gpvVerifyRead`) and *no* signing query, so it meets the signing-free query bound
+`IsQueryBoundP (· matches .inr _) 0` required by the fresh verify-Bool coupling. -/
+lemma gpvVerifyKont_no_sign (pk : PK) (out : M × (Salt × Domain)) :
+    ((fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out).IsQueryBoundP
+      (· matches .inr _) 0 := by
+  rw [OracleComp.isQueryBoundP_map_iff]
+  exact gpvVerifyRead_no_sign psf M Salt pk out
+
+/-- **Coupling hop (b) on the freshness-tracking verify-Bool games.** The real freshness verify-Bool
+game's success probability is bounded by the programmed one plus `collisionBound`.
+
+This is the bool-valued, data-processed shadow of the fresh verify-Bool coupling
+`gpv_tvDist_orig_verify_fresh_le_collisionBound`: both `realGameVerifyFresh` and
+`progGameVerifyFresh` are the *same* `decide (·.1.1.1 ∉ ·.2.1.2) && ·.1.2`-map of the two
+vehicle runs of `adv.main pk >>= verify` on the real / programmed fresh flag handlers, so the
+total-variation contraction `tvDist_map_le` reduces their bool TV to the run-level TV, which the
+banked fresh coupling (with the signing-free verification continuation, `gpvVerifyKont_no_sign`)
+bounds by `(collisionBound …).toReal`.  Transporting through the bool-valued bridge
+`abs_probOutput_toReal_sub_le_tvDist` gives the `ℝ≥0∞` inequality. -/
+theorem gpv_realGameVerifyFresh_le_progGameVerifyFresh_add_collisionBound
+    [Finite Range] [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    Pr[= true | realGameVerifyFresh psf hr M Salt adv pk sk]
+      ≤ Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pk]
+        + collisionBound Salt qSign qHash := by
+  classical
+  have hcb_lt_top : collisionBound Salt qSign qHash < ⊤ := by
+    refine ENNReal.div_lt_top ?_ ?_
+    · simp
+    · simp only [ne_eq, mul_eq_zero, OfNat.ofNat_ne_zero, Nat.cast_eq_zero, false_or]
+      exact Fintype.card_ne_zero
+  -- The two games are the same `decide (·) && ·`-map of the two vehicle runs; `tvDist_map_le`
+  -- reduces their bool TV to the run-level TV bounded by the banked fresh coupling.
+  let f : ((M × (Salt × Domain)) × Bool) ×
+        (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) → Bool :=
+    fun z => decide (z.1.1.1 ∉ z.2.1.2) && z.1.2
+  let kont : M × (Salt × Domain) →
+      OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+        ((M × (Salt × Domain)) × Bool) :=
+    fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out
+  let runReal := (simulateQ (gpvRealImplFlagFresh psf hr M Salt pk sk) (adv.main pk >>= kont)).run
+        (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)
+  let runProg := (simulateQ (progGameRunImplNoRecFlagFresh psf M Salt domainSample pk)
+        (adv.main pk >>= kont)).run
+        (((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false)
+  have hgoal : Pr[= true | realGameVerifyFresh psf hr M Salt adv pk sk]
+      = Pr[= true | f <$> runReal] := rfl
+  have hgoalProg : Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pk]
+      = Pr[= true | f <$> runProg] := rfl
+  rw [hgoal, hgoalProg]
+  rw [← ENNReal.ofReal_toReal probOutput_ne_top,
+      ← ENNReal.ofReal_toReal (a := Pr[= true | f <$> runProg]) probOutput_ne_top,
+      ← ENNReal.ofReal_toReal hcb_lt_top.ne,
+      ← ENNReal.ofReal_add ENNReal.toReal_nonneg ENNReal.toReal_nonneg]
+  refine ENNReal.ofReal_le_ofReal ?_
+  have hbridge := abs_probOutput_toReal_sub_le_tvDist (f <$> runReal) (f <$> runProg)
+  have hsub := (abs_le.mp hbridge).2
+  have hmap : tvDist (f <$> runReal) (f <$> runProg) ≤ tvDist runReal runProg :=
+    tvDist_map_le f runReal runProg
+  have hcouple : tvDist runReal runProg ≤ (collisionBound Salt qSign qHash).toReal :=
+    gpv_tvDist_orig_verify_fresh_le_collisionBound psf hr M Salt pk sk adv domainSample kont
+      qSign qHash hQ (gpvVerifyKont_no_sign psf M Salt pk) hNF hreg
+  linarith [le_trans hsub (le_trans hmap hcouple)]
+
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the original-run flag residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
