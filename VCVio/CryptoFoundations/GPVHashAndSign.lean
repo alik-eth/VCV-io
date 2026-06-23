@@ -7007,6 +7007,58 @@ lemma gpv_perKey_distinct_le_collision [DecidableEq Domain]
     rw [hv, Option.getD_some]
 
 open Classical in
+omit [DecidableEq Range] [SampleableType Range] [DecidableEq M] [DecidableEq Salt]
+  [SampleableType Salt] [Fintype Salt] in
+/-- **Reservoir per-step embedding mass.** At the `k`-th programmed entry the reservoir step of
+`programmedPreimageReduction` draws `b ← $ᵗ Fin (k + 1)` and embeds the external target precisely
+when `b = 0`, i.e. with probability `1 / (k + 1)`.  This is the atomic per-entry win probability of
+the reservoir-sampling embedding: summing it telescopes to the uniform `1 / N` over the `N`
+programmed entries that drives the multi-target `qSign + qHash` guessing loss. -/
+lemma probOutput_reservoirStep_win (k : ℕ) :
+    Pr[= (0 : Fin (k + 1)) | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))]
+      = ((k : ℝ≥0∞) + 1)⁻¹ := by
+  rw [probOutput_uniformSample]
+  simp [Fintype.card_fin]
+
+open Classical in
+omit [DecidableEq Range] [SampleableType Range] [DecidableEq M] [DecidableEq Salt]
+  [SampleableType Salt] [Fintype Salt] in
+/-- **Reservoir per-step miss mass.** Complementary to `probOutput_reservoirStep_win`: at the
+`k`-th programmed entry the reservoir step keeps the previous winner (draws `b ≠ 0`) with
+probability `k / (k + 1)`.  This is the per-entry survival factor whose telescoping product over a
+trace of `N` entries gives each fixed entry the uniform reservoir mass `1 / N`. -/
+lemma probEvent_reservoirStep_miss (k : ℕ) :
+    Pr[(· ≠ (0 : Fin (k + 1))) | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))]
+      = (k : ℝ≥0∞) / ((k : ℝ≥0∞) + 1) := by
+  rw [probEvent_uniformSample]
+  simp only [Fintype.card_fin]
+  rw [Finset.filter_ne', Finset.card_erase_of_mem (Finset.mem_univ _)]
+  simp [Fintype.card_fin]
+
+omit [Fintype Salt] in
+/-- **D0 — exact-match advantage as a target-averaged reservoir win.** The per-key exact-match term
+of the programmed-preimage reduction expands, over the uniform target draw `y ← $ᵗ Range`, into the
+weighted sum of the reduction's exact-match win probability at each fixed target `y`.  This is the
+entry point for the reservoir analysis: the inner factor `Pr[= true | …]` is the success
+probability of `programmedPreimageReduction … pk y` reproducing the trapdoor preimage `x` of the
+fixed embedded target `y`, which the reservoir-sampling argument then bounds. -/
+lemma programmedPreimage_perKey_eq_tsum [DecidableEq Domain]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let x ← psf.trapdoorSample pk sk y
+        let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+        pure (decide (x' = x)) : ProbComp Bool)]
+      = ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+          Pr[= true | (do
+            let x ← psf.trapdoorSample pk sk y
+            let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+            pure (decide (x' = x)) : ProbComp Bool)] := by
+  rw [probOutput_bind_eq_tsum]
+
+open Classical in
 omit [Fintype Salt] in
 /-- **Exact-match reservoir bound (Step-2 residual).** The exact-match winning mass on the combined
 verify-extended run — a verifying fresh forgery `(msg, (r, s⋆))` whose forged preimage `s⋆` exactly
@@ -7046,10 +7098,19 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
           let x ← psf.trapdoorSample pk sk y
           let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
           pure (decide (x' = x)) : ProbComp Bool)] := by
-  -- `hreg` (per-key regularity) and `hNF` (trapdoor totality) are threaded down for the reservoir
-  -- assembly; they are consumed here to keep them in scope for the residual proof.
+  -- `hreg` (per-key regularity), `hNF` (trapdoor totality), `hForge`, and `hQ` are threaded down
+  -- for the reservoir assembly; consumed here to keep them in scope for the residual proof.
   let _hreg := hreg
   let _hNF := hNF
+  let _hForge := hForge
+  let _hQ := hQ
+  -- Rewrite the multi-target factor into the target-averaged reservoir win (D0).  The remaining
+  -- obligation is the reservoir-sampling coupling: the combined-game exact-match mass is at most
+  -- `(qSign + qHash)` times the target-averaged reduction win, because the reservoir embeds the
+  -- uniform target at each of the at most `qSign + qHash` programmed entries with the uniform mass
+  -- `1 / N` (`probOutput_reservoirStep_win` / `probEvent_reservoirStep_miss`), conditioned on which
+  -- the reduction run is distributionally the combined game run (`hreg`).
+  rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk adv]
   sorry
 
 open Classical in
