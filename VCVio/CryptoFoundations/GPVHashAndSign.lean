@@ -6034,6 +6034,11 @@ theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq 
           programmedPreimageAdvantage (psf := psf) (hr := hr)
             (programmedPreimageReduction psf hr M Salt adv domainSample) := by
   classical
+  -- Reduce the keygen-average to a per-key `(pk, sk)` bound via the averaging skeleton SL-A,
+  -- then discharge that per-key bound (the distinct-collision transfer + the reservoir exact-match
+  -- bound) — the remaining Step-2 residual.
+  refine gpv_progGameVerifyFreshAvg_le_of_perKey psf hr M Salt qSign qHash adv domainSample ?_
+  intro pksk
   let _ := hcorrect
   let _ := hreg
   let _ := hForge
