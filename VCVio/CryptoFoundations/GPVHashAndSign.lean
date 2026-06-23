@@ -5609,6 +5609,59 @@ theorem probOutput_unforgeableExp_eq_keygen_average
   obtain ⟨pk, sk⟩ := pksk
   rfl
 
+open Classical in
+omit [Fintype Salt] in
+/-- **Verify-extended WriterT-run fold.** Running `adv.main pk` under the WriterT signing-log stack
+and then the verification read `verify pk msg σ` (as a separate `OracleComp` continuation on the
+shared random-oracle base) coincides with running the *single* WriterT computation
+`adv.main pk >>= fun out => (out, ·) <$> verify pk out.1 out.2`: the verification read issues no
+signing query, so it leaves the WriterT log untouched (the empty log appends nothing), and
+`simulateQ` distributes over the adversary-then-verify bind.  This folds the outer verification
+continuation of the unforgeability experiment into the single adversary computation that the
+reconstruction `map_simulateQ_gpvOuter_writerLog_eq_gpvRealImplFresh` consumes. -/
+lemma simulateQ_writerImpl_verify_fold (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    ((simulateQ
+        ((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+          (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+          (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+            (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+          (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+            psf hr M Salt).signingOracle pk sk)
+        (adv.main pk)).run >>=
+        fun z => (fun v => ((z.1, v), z.2)) <$>
+          ((GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+            psf hr M Salt).verify pk z.1.1 z.1.2
+            : OracleComp (unifSpec + (Salt × M →ₒ Range)) Bool))
+      = (simulateQ
+        ((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+          (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+          (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+            (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+          (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+            psf hr M Salt).signingOracle pk sk)
+        (adv.main pk >>= fun out =>
+          (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run := by
+  classical
+  rw [simulateQ_bind, WriterT.run_bind]
+  refine bind_congr fun z => ?_
+  obtain ⟨⟨msg, σ⟩, log⟩ := z
+  -- The verification read is a single `.inl (.inr _)` RO query routed through the lifted base
+  -- `baseW`, which logs nothing; `verify` and `gpvVerifyRead` are the same RO read + check.
+  obtain ⟨r, s⟩ := σ
+  -- The RHS `gpvVerifyRead` is a single `Sum.inl (Sum.inr (r, msg))` RO read; route it through the
+  -- lifted base `baseW` (`simulateQ_spec_query` + `add_apply_inl` + `liftTarget_apply`).
+  simp only [gpvVerifyRead, GPVHashAndSign, simulateQ_map, bind_pure_comp]
+  erw [simulateQ_spec_query]
+  simp only [QueryImpl.add_apply_inl, QueryImpl.liftTarget_apply, HasQuery.toQueryImpl_apply,
+    WriterT.run_bind, WriterT.run_pure, map_eq_bind_pure_comp, bind_assoc,
+    pure_bind, Function.comp_def]
+  erw [WriterT.run_liftM]
+  simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def, List.append_nil,
+    EmptyCollection.emptyCollection]
+  rfl
+
 omit [Fintype Salt] in
 /-- **GPV freshness-drop (Phase-B game-hop), mechanical.** The GPV EUF-CMA advantage is bounded by
 the success probability of the same experiment with the freshness check dropped
