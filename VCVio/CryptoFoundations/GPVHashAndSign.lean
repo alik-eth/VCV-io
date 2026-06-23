@@ -5221,6 +5221,64 @@ theorem gpv_realGameVerify_le_progGameVerify_add_collisionBound
         qSign qHash hQ hNF hreg)
   linarith [le_trans hsub hdpi]
 
+open Classical in
+omit [Fintype Salt] in
+/-- **Keygen-averaging peel of the GPV unforgeability experiment (sub-build (3) of the
+game-identification (N)(a)).** The success probability of the GPV unforgeability experiment is the
+`SPMF`-average over the key pair `(pk, sk) ← hr.gen` of the success probability of the per-key
+verify-extended WriterT signing-log experiment under the bundled `withStateOracle` random-oracle
+semantics.
+
+The GPV `keygen` is `liftM hr.gen`, a public-randomness prefix that touches neither the
+random-oracle cache nor the hidden state; the keygen-peel `withStateOracle_evalDist_liftM_bind`
+commutes its draw straight out of the bundled `withStateOracle` semantics as an `SPMF`-average over
+`𝒟[hr.gen]`. This is the GPV-runtime analogue of the FiatShamir `roSim.run'_liftM_bind`-style
+averaging step that
+opens `probOutput_unforgeableExp_eq_hybridExpAtKey_real`; it isolates the keygen average so the
+remaining game-identification work is a per-key WriterT-log → signed-set reconstruction. -/
+theorem probOutput_unforgeableExp_eq_keygen_average
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    Pr[= true | SignatureAlg.unforgeableExp (runtime M Salt) adv]
+      = Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+          (SPMFSemantics.withStateOracle
+            (randomOracle : QueryImpl (Salt × M →ₒ Range)
+              (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist
+            (letI : DecidableEq M := Classical.decEq M
+             letI : DecidableEq (Salt × Domain) := Classical.decEq (Salt × Domain)
+             do
+              let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+                  (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                    (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+                (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+                  (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                  (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                    (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+                  (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                    psf hr M Salt).signingOracle pksk.1 pksk.2
+              let ((msg, σ), log) ← (simulateQ impl (adv.main pksk.1)).run
+              let verified ← (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                psf hr M Salt).verify pksk.1 msg σ
+              return !log.wasQueried msg && verified)] := by
+  classical
+  unfold SignatureAlg.unforgeableExp
+  rw [show (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+        psf hr M Salt).keygen
+      = (liftM hr.gen : OracleComp (unifSpec + (Salt × M →ₒ Range)) (PK × SK)) from rfl]
+  refine congrArg (fun d : SPMF Bool => Pr[= true | d]) ?_
+  rw [GPVHashAndSign.runtime]
+  change (SPMFSemantics.withStateOracle
+      (randomOracle : QueryImpl (Salt × M →ₒ Range)
+        (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist (liftM hr.gen >>= _)
+    = (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+        (SPMFSemantics.withStateOracle
+          (randomOracle : QueryImpl (Salt × M →ₒ Range)
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist _
+  rw [withStateOracle_evalDist_liftM_bind]
+  refine bind_congr fun pksk => ?_
+  obtain ⟨pk, sk⟩ := pksk
+  rfl
+
 omit [Fintype Salt] in
 /-- **GPV freshness-drop (Phase-B game-hop), mechanical.** The GPV EUF-CMA advantage is bounded by
 the success probability of the same experiment with the freshness check dropped
