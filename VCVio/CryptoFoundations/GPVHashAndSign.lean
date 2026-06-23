@@ -3843,6 +3843,39 @@ theorem gpv_tvDist_orig_run_le_probEvent_flag (pk : PK) (sk : SK)
     (gpvRealImplFlag_bad_mono psf hr M Salt pk sk)
     (progGameRunImplNoRecFlag_bad_mono psf M Salt domainSample pk)
 
+/-- **Finset of salts already keyed in the random-oracle cache.** The salts `r` for which some
+random-oracle key `(r, m)` is already recorded (`saltKeyed`).  Its cardinality is the size of the
+cache slice the inline signing salt is charged against in the `(A2)` telescope: a fresh uniform salt
+lands in it with probability `card / |Salt|` (`probEvent_mem_uniformSample`). -/
+noncomputable def keyedSalts (cache : (Salt × M →ₒ Range).QueryCache) : Finset Salt :=
+  Finset.univ.filter (fun r : Salt => saltKeyed M Salt cache r)
+
+omit [DecidableEq Range] [SampleableType Range] [SampleableType Salt] in
+/-- **Cache-slice growth on one recorded random-oracle answer.** Recording a single random-oracle
+entry `(r, msg) ↦ v` enlarges the keyed-salt slice by at most one element (the salt `r`): every
+other salt's keyed status is unchanged, since `cacheQuery` only updates the key `(r, msg)`.  This is
+the per-step cache-growth bound that drives the `(A2)` cardinality telescope (`card (cache j) ≤
+j + qHash`). -/
+lemma keyedSalts_cacheQuery_card_le (cache : (Salt × M →ₒ Range).QueryCache)
+    (r : Salt) (msg : M) (v : Range) :
+    (keyedSalts M Salt (cache.cacheQuery (r, msg) v)).card
+      ≤ (keyedSalts M Salt cache).card + 1 := by
+  classical
+  refine le_trans (Finset.card_le_card ?_) (le_trans (Finset.card_insert_le r
+    (keyedSalts M Salt cache)) (by rw [add_comm]))
+  intro s hs
+  simp only [keyedSalts, Finset.mem_filter, Finset.mem_univ, true_and, saltKeyed,
+    decide_eq_true_eq] at hs
+  obtain ⟨m, hm⟩ := hs
+  simp only [Finset.mem_insert, keyedSalts, Finset.mem_filter, Finset.mem_univ, true_and,
+    saltKeyed, decide_eq_true_eq]
+  by_cases hsr : s = r
+  · exact Or.inl hsr
+  · refine Or.inr ⟨m, ?_⟩
+    have hne : (s, m) ≠ (r, msg) := by
+      simp only [ne_eq, Prod.mk.injEq, not_and]; intro h; exact absurd h hsr
+    rwa [OracleSpec.QueryCache.cacheQuery_of_ne (cache := cache) (u := v) hne] at hm
+
 open Classical in
 /-- **(A2) Original-run cardinality telescope: the run-level collision flag of the inline-salt real
 handler is bounded by `collisionBound`.**
@@ -3863,8 +3896,8 @@ revealed at that point), so it lands on the cache slice with probability `card (
 Summing
 `∑_{j < qSign} (j + qHash) / |Salt| = (qSign + qHash)² / (2 |Salt|) = collisionBound`
 (`sum_range_div_card_le_collisionBound`) gives the bound, mapping onto the proven
-`probEvent_saltSeq_le_collisionBound` telescope — *without* the front-tape re-interleaving that the
-upfront-tape residual `(A′)` `gpv_tape_avg_flag_le_collisionBound` requires.
+`probEvent_saltSeq_le_collisionBound` telescope — *without* the front-tape re-interleaving the
+upfront-tape route required.
 
 It is *true-as-stated* (counterexample-checked at `qSign = 0`: `hQ` permits no signing query, so the
 flag — which only fires on a signing step — is never set, the flag probability is `0`, and
