@@ -4089,6 +4089,155 @@ theorem gpv_orig_flag_le_collisionBound [Inhabited Range] [Nonempty Salt]
   unfold collisionBound
   exact ENNReal.div_ne_top (by simp) (by simp [Fintype.card_ne_zero])
 
+omit [Fintype Salt] in
+/-- **Flag-neutrality of a signing-free continuation (real flag handler).**
+The collision flag of `gpvRealImplFlag` is set *only* on a signing step. Hence a computation `ob`
+that issues **no** signing query (`ob.IsQueryBoundP (· matches .inr _) 0`) cannot move the flag: run
+from `(cache, b)`, every output state still carries flag `b`.
+
+Proved by `OracleComp.inductionOn` over `ob`: the `pure` case is immediate; a `.inl` (uniform /
+random-oracle) step leaves the flag at `s.2 = b` (`gpvRealImplFlag_run_inl`) and the IH applies; a
+`.inr` (signing) step is excluded because the query bound forbids it (`0 < 0` is false).
+
+This is the key fact that keeps the verify-Bool lift on the *same* `collisionBound`: appending the
+verification read (a signing-free `.inl` continuation) after `adv.main pk` adds no flag mass, so no
+extra `qHash` budget is charged. -/
+theorem gpvRealImplFlag_run_no_sign_flag_eq [Inhabited Range] (pk : PK) (sk : SK) :
+    ∀ {γ : Type}
+      (ob : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ)
+      (cache : (Salt × M →ₒ Range).QueryCache) (b : Bool),
+      ob.IsQueryBoundP (· matches .inr _) 0 →
+      ∀ z ∈ support ((simulateQ (gpvRealImplFlag psf hr M Salt pk sk) ob).run (cache, b)),
+        z.2.2 = b := by
+  intro γ ob
+  induction ob using OracleComp.inductionOn with
+  | pure x =>
+      intro cache b _ z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; rfl
+  | query_bind t mx ih =>
+      intro cache b hQ z hz
+      rw [simulateQ_query_bind, StateT.run_bind] at hz
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQ
+      obtain ⟨hQ0, hQrec⟩ := hQ
+      simp only [mem_support_bind_iff] at hz
+      obtain ⟨w, hw, hz⟩ := hz
+      rcases t with q | msg
+      · -- non-signing step: the flag stays `s.2 = b`, then apply the IH.
+        simp only [OracleQuery.input_query, monadLift_self, gpvRealImplFlag_run_inl] at hw
+        simp only [support_map] at hw
+        obtain ⟨v, _, hv⟩ := hw
+        have hwb : w.2.2 = b := by rw [← hv]
+        have hbS := hQrec w.1
+        simp only [Bool.false_eq_true, if_false] at hbS
+        have := ih w.1 w.2.1 w.2.2 hbS z hz
+        rw [this, hwb]
+      · -- signing step is excluded: `0 < 0` is false.
+        simp only [or_false, lt_self_iff_false] at hQ0
+        exact absurd trivial hQ0
+
+omit [Fintype Salt] in
+/-- **A signing-free continuation cannot increase the collision flag (real flag handler).**
+Appending a signing-free continuation `kont` (each `kont x` makes no signing query, e.g. the GPV
+verification read) after `oa` does not increase the run-level collision-flag probability of
+`gpvRealImplFlag`: the flag fires only on signing steps, so by `gpvRealImplFlag_run_no_sign_flag_eq`
+the final flag of the `kont`-run equals the flag at the end of `oa` on every support point (and the
+`kont` run may only lose mass on failure).  This is the run-level statement of the off-by-one
+resolution: the verification read carries no flag mass. -/
+theorem probEvent_flag_bind_no_sign_le [Inhabited Range] (pk : PK) (sk : SK)
+    {β γ : Type}
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (kont : β → OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ)
+    (cache : (Salt × M →ₒ Range).QueryCache) (b : Bool)
+    (hkont : ∀ x, (kont x).IsQueryBoundP (· matches .inr _) 0) :
+    Pr[fun z : γ × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+        (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (oa >>= kont)).run (cache, b)]
+      ≤ Pr[fun w : β × ((Salt × M →ₒ Range).QueryCache × Bool) => w.2.2 = true |
+        (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run (cache, b)] := by
+  classical
+  rw [simulateQ_bind, StateT.run_bind]
+  rw [probEvent_bind_eq_tsum, probEvent_eq_tsum_ite]
+  refine ENNReal.tsum_le_tsum fun w => ?_
+  -- Inner event probability is `≤ 1{w.2.2 = true}`: on every support point the flag equals `w.2.2`.
+  have hinner :
+      Pr[fun z : γ × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+          (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (kont w.1)).run w.2]
+        ≤ (if w.2.2 = true then 1 else 0) := by
+    by_cases hw : w.2.2 = true
+    · rw [if_pos hw]; exact probEvent_le_one
+    · rw [if_neg hw]
+      refine le_of_eq (probEvent_eq_zero_iff.2 (fun z hz => ?_))
+      obtain ⟨a, c', b'⟩ := w
+      have := gpvRealImplFlag_run_no_sign_flag_eq psf hr M Salt pk sk (kont a) c' b'
+        (hkont a) z hz
+      simp only [this]
+      simpa using hw
+  calc Pr[= w | (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run (cache, b)] *
+        Pr[fun z : γ × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+            (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (kont w.1)).run w.2]
+      ≤ Pr[= w | (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run (cache, b)] *
+          (if w.2.2 = true then 1 else 0) := by gcongr
+    _ = (if w.2.2 = true then
+          Pr[= w | (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run (cache, b)]
+          else 0) := by
+        by_cases hw : w.2.2 = true <;> simp [hw]
+
+open Classical in
+/-- **Verify-Bool coupling (fixed key pair).** Running the adversary `adv.main pk` followed by a
+signing-free continuation `kont` (the verification read, kept *inside the shared random-oracle
+cache*) on the two flag-instrumented original GPV handlers stays within `collisionBound`.
+
+This is the genuine verify-Bool content of the lift: the framework identical-until-bad reduction
+`tvDist_simulateQ_run_le_probEvent_output_bad` applies *verbatim* to the verify-extended computation
+`adv.main pk >>= kont` (its conclusion keeps the final state, so the verification reads against the
+shared cache), bounding the TV by the run-level collision flag.  Because `kont` issues no signing
+query, the flag carries no extra mass (`probEvent_flag_bind_no_sign_le`), so the flag probability is
+the *same* `collisionBound Salt qSign qHash` as for `adv.main pk` alone
+(`gpv_orig_flag_le_collisionBound`) — no `qHash` off-by-one from the verification read. -/
+theorem gpv_tvDist_orig_verify_le_collisionBound [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) {γ : Type}
+    (kont : M × (Salt × Domain) →
+      OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) γ)
+    (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
+    (hkont : ∀ x, (kont x).IsQueryBoundP (· matches .inr _) 0)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    tvDist ((simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk >>= kont)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), false))
+        ((simulateQ (progGameRunImplNoRecFlag psf M Salt domainSample pk)
+            (adv.main pk >>= kont)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), false))
+      ≤ (collisionBound Salt qSign qHash).toReal := by
+  -- Framework identical-until-bad on the verify-extended computation: the conclusion keeps the
+  -- final cache, so `kont` reads against the shared random oracle.
+  refine le_trans
+    (OracleComp.ProgramLogic.Relational.tvDist_simulateQ_run_le_probEvent_output_bad
+      (gpvRealImplFlag psf hr M Salt pk sk) (progGameRunImplNoRecFlag psf M Salt domainSample pk)
+      (adv.main pk >>= kont) (∅ : (Salt × M →ₒ Range).QueryCache)
+      (gpvImplFlag_h_agree_good psf hr M Salt pk sk domainSample hNF hreg)
+      (gpvRealImplFlag_bad_mono psf hr M Salt pk sk)
+      (progGameRunImplNoRecFlag_bad_mono psf M Salt domainSample pk)) ?_
+  -- The verify-extended flag probability is ≤ the flag probability of `adv.main pk` alone
+  -- (no signing query in `kont`), which the cardinality telescope bounds by `collisionBound`.
+  refine ENNReal.toReal_mono ?_ ?_
+  · unfold collisionBound
+    exact ENNReal.div_ne_top (by simp) (by simp [Fintype.card_ne_zero])
+  · refine le_trans (probEvent_flag_bind_no_sign_le psf hr M Salt pk sk (adv.main pk) kont
+      (∅ : (Salt × M →ₒ Range).QueryCache) false hkont) ?_
+    have hreal := gpv_orig_flag_le_collisionBound psf hr M Salt pk sk adv qSign qHash hQ
+    have hne : (collisionBound Salt qSign qHash) ≠ ⊤ := by
+      unfold collisionBound
+      exact ENNReal.div_ne_top (by simp) (by simp [Fintype.card_ne_zero])
+    exact (ENNReal.toReal_le_toReal probEvent_ne_top hne).mp hreal
+
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the original-run flag residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
