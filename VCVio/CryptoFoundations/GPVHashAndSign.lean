@@ -5988,6 +5988,41 @@ theorem gpv_progGameVerifyFreshAvg_le_of_perKey [DecidableEq Domain]
   rw [mul_left_comm (↑(qSign + qHash) : ENNReal), ← mul_add]
   exact mul_le_mul' le_rfl (h x)
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Hidden programmed preimages are short.** Every preimage `s` in the support of the forward
+sampler `domainSample pk` is accepted by the verifier's shortness predicate (`psf.isShort s`),
+under PSF correctness `hcorrect` and the regularity equality `hreg` at `(pk, sk)`.
+
+The forward-sampled `(psf.eval pk s, s)` lands in the support of the regularity LHS, hence — by the
+distributional equality `hreg` — in the support of the RHS `do c ← $ᵗ Range; s' ← trapdoorSample pk
+sk c; pure (c, s')`.  That exhibits `s` as a trapdoor preimage of the matching target `c`, so
+`hcorrect` certifies `psf.isShort s`.  This is the shortness witness for the simulator's hidden
+preimage recorded at each programmed random-oracle entry by the collision reduction. -/
+lemma isShort_of_mem_support_domainSample
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK)
+    (hcorrect : psf.Correct)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (s : Domain) (hs : s ∈ support (domainSample pk)) :
+    psf.isShort s = true := by
+  classical
+  have hmemL : (psf.eval pk s, s) ∈
+      support (do let s' ← domainSample pk; pure (psf.eval pk s', s') :
+        ProbComp (Range × Domain)) := by
+    simp only [support_bind, support_pure, Set.mem_iUnion]
+    exact ⟨s, hs, rfl⟩
+  have hmemR : (psf.eval pk s, s) ∈
+      support (do let c ← ($ᵗ Range); let s' ← psf.trapdoorSample pk sk c; pure (c, s') :
+        ProbComp (Range × Domain)) := by
+    rw [← mem_support_evalDist_iff, ← hreg, mem_support_evalDist_iff]
+    exact hmemL
+  simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+    Prod.mk.injEq] at hmemR
+  obtain ⟨c, _hc, s', hs', heq1, heq2⟩ := hmemR
+  subst heq2
+  exact (hcorrect pk sk c s hs').2
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Step 2 (collision extraction): the keygen-averaged programmed freshness verify-Bool game is
