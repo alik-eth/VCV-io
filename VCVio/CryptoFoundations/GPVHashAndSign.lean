@@ -5662,6 +5662,121 @@ lemma simulateQ_writerImpl_verify_fold (pk : PK) (sk : SK)
     EmptyCollection.emptyCollection]
   rfl
 
+open Classical in
+omit [Fintype Salt] in
+/-- **Per-key game-identification (N)(a): WriterT-log unforgeability experiment ≡ freshness
+verify-Bool game.**
+The per-key body of the GPV unforgeability experiment (the keygen-peel summand of
+`probOutput_unforgeableExp_eq_keygen_average`) — running `adv.main pk` under the WriterT signing-log
+handler stack, then `verify`, then masking with the WriterT-log freshness check
+`!log.wasQueried msg` — coincides with the freshness verify-Bool game `realGameVerifyFresh`, whose
+winning Bool reads the `Finset M` signed-set carried by `gpvRealImplFlagFresh`.  This identifies the
+WriterT signing log with the reconstructed signed-set across the WriterT/StateT divide, folding in
+the verification continuation; it is the per-key bridge of the game-identification (N)(a). -/
+lemma signedSet_eq_wasQueried
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    (SPMFSemantics.withStateOracle
+      (randomOracle : QueryImpl (Salt × M →ₒ Range)
+        (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) ∅).evalDist
+      (letI : DecidableEq M := Classical.decEq M
+       letI : DecidableEq (Salt × Domain) := Classical.decEq (Salt × Domain)
+       do
+        let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+          (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+            (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+            (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+              psf hr M Salt).signingOracle pk sk
+        let ((msg, σ), log) ← (simulateQ impl (adv.main pk)).run
+        let verified ← (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+          psf hr M Salt).verify pk msg σ
+        return !log.wasQueried msg && verified)
+      = realGameVerifyFresh psf hr M Salt adv pk sk := by
+  classical
+  -- Reassociate the verification continuation into the WriterT run
+  -- (`simulateQ_writerImpl_verify_fold`) at the `OracleComp` level, before exposing the bundled
+  -- `withStateOracle` semantics.
+  have heq : (letI : DecidableEq M := Classical.decEq M
+       letI : DecidableEq (Salt × Domain) := Classical.decEq (Salt × Domain)
+       do
+        let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) :=
+          (HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+            (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+            (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+              psf hr M Salt).signingOracle pk sk
+        let ((msg, σ), log) ← (simulateQ impl (adv.main pk)).run
+        let verified ← (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+          psf hr M Salt).verify pk msg σ
+        return !log.wasQueried msg && verified)
+      = (fun w : ((M × (Salt × Domain)) × Bool) × QueryLog (M →ₒ (Salt × Domain)) =>
+            !w.2.wasQueried w.1.1.1 && w.1.2) <$>
+          (simulateQ ((HasQuery.toQueryImpl (spec := (unifSpec + (Salt × M →ₒ Range)))
+              (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+              (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+              (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                psf hr M Salt).signingOracle pk sk)
+            (adv.main pk >>= fun out =>
+              (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run := by
+    rw [← simulateQ_writerImpl_verify_fold]
+    simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+    refine bind_congr fun x => bind_congr fun v => congrArg pure ?_
+    congr!
+  rw [heq, withStateOracle_evalDist_eq, simulateQ_map, StateT.run'_eq, StateT.run_map]
+  simp only [Functor.map_map]
+  simp only [not_wasQueried_eq_decide_not_mem_toFinset]
+  -- Factor the freshness mask through the kernel's `(output, cache, signedSet)` reshaping, then
+  -- rewrite the WriterT run as the freshness vehicle `gpvRealImplFresh` via the kernel.
+  rw [show ((fun a : (((M × (Salt × Domain)) × Bool) × QueryLog (M →ₒ (Salt × Domain))) ×
+        (Salt × M →ₒ Range).QueryCache =>
+      decide (a.1.1.1.1 ∉ (List.map (fun e => e.1) a.1.2).toFinset) && a.1.1.2) <$>
+      (simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+          (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) +
+          (randomOracle : QueryImpl (Salt × M →ₒ Range)
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)))
+        ((simulateQ ((HasQuery.toQueryImpl (spec := unifSpec + (Salt × M →ₒ Range))
+            (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+              (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+            (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+              psf hr M Salt).signingOracle pk sk)
+          (adv.main pk >>= fun out =>
+            (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run)).run
+        (∅ : (Salt × M →ₒ Range).QueryCache))
+      = (fun z : ((M × (Salt × Domain)) × Bool) ×
+            (Salt × M →ₒ Range).QueryCache × Finset M =>
+          decide (z.1.1.1 ∉ z.2.2) && z.1.2) <$>
+        ((fun z : (((M × (Salt × Domain)) × Bool) × QueryLog (M →ₒ (Salt × Domain))) ×
+              (Salt × M →ₒ Range).QueryCache =>
+            (z.1.1, z.2, (z.1.2.map (fun e => e.1)).toFinset)) <$>
+          (simulateQ (gpvOuter M Salt)
+            ((simulateQ ((HasQuery.toQueryImpl (spec := unifSpec + (Salt × M →ₒ Range))
+                (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+                  (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+                    (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+                (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+                  psf hr M Salt).signingOracle pk sk)
+              (adv.main pk >>= fun out =>
+                (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run)).run
+            (∅ : (Salt × M →ₒ Range).QueryCache)) from by rw [Functor.map_map]; rfl,
+    map_simulateQ_gpvOuter_writerLog_eq_gpvRealImplFresh]
+  -- Bridge the flag-free run back to the flag handler that `realGameVerifyFresh` carries: the flag
+  -- is passive, so projecting it away (`map_run_gpvRealImplFlagFresh_proj_flag`) recovers the
+  -- flag-free run.
+  rw [realGameVerifyFresh, ← map_run_gpvRealImplFlagFresh_proj_flag psf hr M Salt pk sk
+    (adv.main pk >>= fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)
+    ((∅, ∅), false)]
+  simp only [Functor.map_map, Prod.map, id_eq]
+
 omit [Fintype Salt] in
 /-- **GPV freshness-drop (Phase-B game-hop), mechanical.** The GPV EUF-CMA advantage is bounded by
 the success probability of the same experiment with the freshness check dropped
