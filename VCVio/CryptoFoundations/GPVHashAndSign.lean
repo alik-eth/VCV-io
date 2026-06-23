@@ -6811,6 +6811,143 @@ lemma distinct_implies_collision_pointwise [DecidableEq Domain]
   simp only [hsHidden_ne, hverify_eq, hshort_star, hHidden_short, heval, decide_true,
     Bool.and_self, ne_eq, not_false_eq_true]
 
+omit [SampleableType Range] [SampleableType Salt] in
+/-- **Table-domain of a combined-run state.** The finite set of random-oracle keys `(r, m)` at
+which the hidden-preimage table `s.2` of a `progGameRunImplCombined` state has recorded an entry.
+Each entry was programmed by exactly one signing (`.inr`) or random-oracle-miss (`.inl (.inr)`)
+query, so its cardinality is the number of programmed entries — the reservoir over which the
+exact-match reduction guesses (`combined_run_table_card_le`). -/
+noncomputable def combinedTableSupport [Fintype M]
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) :
+    Finset (Salt × M) :=
+  Finset.univ.filter (fun t => s.2 t ≠ none)
+
+omit [DecidableEq Range] [SampleableType Range] [SampleableType Salt] in
+/-- **Table-domain growth on writing one entry.** Overwriting the table at a single key `q` with
+`some sd` enlarges the table-domain by at most one element (the key `q`); every other key's status
+is unchanged. -/
+lemma combinedTableSupport_write_card_le [Fintype M]
+    (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (q : Salt × M) (sd : Domain)
+    (s' : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (hs' : s'.2 = fun t' => if t' = q then some sd else s.2 t') :
+    (combinedTableSupport M Salt s').card ≤ (combinedTableSupport M Salt s).card + 1 := by
+  classical
+  refine le_trans (Finset.card_le_card ?_)
+    (le_trans (Finset.card_insert_le q (combinedTableSupport M Salt s)) (by rw [add_comm]))
+  intro t ht
+  simp only [combinedTableSupport, Finset.mem_filter, Finset.mem_univ, true_and, hs'] at ht
+  simp only [Finset.mem_insert, combinedTableSupport, Finset.mem_filter, Finset.mem_univ, true_and]
+  by_cases htq : t = q
+  · exact Or.inl htq
+  · rw [if_neg htq] at ht
+    exact Or.inr ht
+
+omit [DecidableEq Range] [SampleableType Range] in
+/-- **Table-domain growth through the whole combined run.** Over any adversary computation `oa`
+making at most `qS` signing queries and `qH` random-oracle queries, every final state of the
+combined run `progGameRunImplCombined` enlarges the table-domain by at most `qS + qH` entries:
+uniform steps and random-oracle cache hits leave the table untouched, while each signing step and
+each random-oracle miss writes a single key (`combinedTableSupport_write_card_le`), charged against
+the residual signing or hash budget. -/
+lemma combinedTableSupport_run_card_le [Fintype M] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+      (qS qH : ℕ),
+      oa.IsQueryBoundP (· matches .inr _) qS →
+      oa.IsQueryBoundP (· matches .inl (.inr _)) qH →
+      ∀ y ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run s),
+        (combinedTableSupport M Salt y.2).card
+          ≤ (combinedTableSupport M Salt s).card + qS + qH := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s qS qH _ _ y hy
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hy
+      subst hy
+      exact le_add_right (Nat.le_add_right _ _)
+  | query_bind t mx ih =>
+      intro s qS qH hQS hQH y hy
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hy
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQS hQH
+      obtain ⟨hQS1, hQS2⟩ := hQS
+      obtain ⟨hQH1, hQH2⟩ := hQH
+      rcases (mem_support_bind_iff _ _ _).1 hy with ⟨⟨pv, pst⟩, hps, hy⟩
+      rcases t with (n | mc) | msg
+      · -- uniform query: table untouched, both budgets pass through
+        rw [progGameRunImplCombined_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, hpv, hpst⟩ := hps
+        subst pst
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        exact ih pv s qS qH hbS hbH y hy
+      · -- random-oracle query: hit leaves the table fixed, miss writes one key
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqH : 0 < qH := by simpa using hQH1
+        rw [progGameRunImplCombined_run_inl_inr] at hps
+        cases hq : s.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            subst pst
+            exact le_trans (ih pv s qS (qH - 1) hbS hbH y hy) (by omega)
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨sd, -, -, hpst⟩ := hps
+            have hgrow : (combinedTableSupport M Salt pst).card
+                ≤ (combinedTableSupport M Salt s).card + 1 :=
+              combinedTableSupport_write_card_le M Salt s mc sd pst (by rw [hpst])
+            exact le_trans (ih pv pst qS (qH - 1) hbS hbH y hy) (by omega)
+      · -- signing query: writes one key, charged against the signing budget
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqS : 0 < qS := by simpa using hQS1
+        rw [progGameRunImplCombined_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, sd, -, -, hpst⟩ := hps
+        have hgrow : (combinedTableSupport M Salt pst).card
+            ≤ (combinedTableSupport M Salt s).card + 1 :=
+          combinedTableSupport_write_card_le M Salt s (r, msg) sd pst (by rw [hpst])
+        exact le_trans (ih pv pst (qS - 1) qH hbS hbH y hy) (by omega)
+
+omit [DecidableEq Range] [SampleableType Range] in
+/-- **D1 — entry-count bound.** Starting from the empty hidden-preimage table, every final state of
+the combined run of an adversary `oa` obeying `signHashQueryBound` records at most `qSign + qHash`
+table entries.  This is the reservoir size over which the exact-match programmed-preimage reduction
+samples its embedding slot in the GPV Step-2 collision extraction. -/
+lemma combined_run_table_card_le [Fintype M] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (qSign qHash : ℕ)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := β)
+      (oa := oa) (qSign := qSign) (qHash := qHash))
+    {y : β × ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+      ((Salt × M) → Option Domain))}
+    (hmem : y ∈ support ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk) oa).run
+      ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none))) :
+    (combinedTableSupport M Salt y.2).card ≤ qSign + qHash := by
+  have hbase : (combinedTableSupport M Salt
+      (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+        (fun _ => none : (Salt × M) → Option Domain)))).card = 0 := by
+    simp [combinedTableSupport]
+  refine le_trans (combinedTableSupport_run_card_le psf M Salt domainSample pk oa _ qSign qHash
+    hQ.1 hQ.2 y hmem) ?_
+  rw [hbase]
+  omega
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Distinct-collision transfer (probability level).** The distinct-preimage winning mass on the
@@ -6888,6 +7025,10 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
     (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
     (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
     (hQ : signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
@@ -6905,6 +7046,10 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
           let x ← psf.trapdoorSample pk sk y
           let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
           pure (decide (x' = x)) : ProbComp Bool)] := by
+  -- `hreg` (per-key regularity) and `hNF` (trapdoor totality) are threaded down for the reservoir
+  -- assembly; they are consumed here to keep them in scope for the residual proof.
+  let _hreg := hreg
+  let _hNF := hNF
   sorry
 
 open Classical in
@@ -6941,6 +7086,7 @@ theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq 
       𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
       𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
             : ProbComp (Range × Domain))])
+    (hNF : ∀ (pk : PK) (sk : SK) (c : Range), NeverFail (psf.trapdoorSample pk sk c))
     (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
     (hQ : ∀ pk, signHashQueryBound
       (S' := Salt × Domain) (α := M × (Salt × Domain))
@@ -6978,7 +7124,7 @@ theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq 
   · exact gpv_perKey_distinct_le_collision psf hr M Salt domainSample pksk.1 pksk.2 hcorrect
       (hreg pksk.1 pksk.2) adv hForge
   · exact gpv_perKey_exactMatch_le_reservoir psf hr M Salt domainSample pksk.1 pksk.2 qSign qHash
-      adv hForge (hQ pksk.1)
+      adv (hreg pksk.1 pksk.2) (hNF pksk.1 pksk.2) hForge (hQ pksk.1)
 
 /-- **Full split GPV game-hop**: every successful fresh forgery falls into one of two cases.
 
@@ -7027,7 +7173,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
     qSign qHash adv domainSample hreg hNF hQ) ?_
   gcongr
   exact gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv psf hr M Salt
-    hcorrect qSign qHash adv domainSample hreg hForge hQ
+    hcorrect qSign qHash adv domainSample hreg hNF hForge hQ
 
 /-- **Collision-only specialization of the GPV split bound under a PSF preimage min-entropy
 bound.**  This is `forgery_yields_collision_or_exact_match` with the exact-match
