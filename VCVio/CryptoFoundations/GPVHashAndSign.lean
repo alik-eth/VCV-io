@@ -4682,6 +4682,172 @@ theorem gpv_tvDist_orig_verify_fresh_le_collisionBound [Inhabited Range] [Nonemp
       exact ENNReal.div_ne_top (by simp) (by simp [Fintype.card_ne_zero])
     exact (ENNReal.toReal_le_toReal probEvent_ne_top hne).mp hreal
 
+open Classical in
+/-- **Flag-free freshness-tracking real handler.** `gpvRealImplFlagFresh` with the passive
+salt-collision `Bool` flag removed, leaving the state `(QueryCache × Finset M)`. The signing step
+draws its fresh inline salt, runs the real signing body on the cache, and inserts the message into
+the signed-set; non-signing queries leave the signed-set untouched. Projecting the flag away from
+`gpvRealImplFlagFresh` recovers this handler.  Because the winning Bool of the freshness verify
+games (`decide (msg ∉ signedSet) && verified`) never reads the flag, the flag-free vehicle carries
+exactly the information the game observes. -/
+noncomputable def gpvRealImplFresh (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × Finset M) ProbComp) :=
+  fun t => StateT.mk fun s =>
+    match t with
+    | .inl q =>
+        (fun p => (p.1, (p.2, s.2))) <$>
+          (gpvRealImpl psf hr M Salt pk sk (.inl q)).run s.1
+    | .inr msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+        let sgn ← psf.trapdoorSample pk sk p.1
+        pure ((r, sgn), (p.2, insert msg s.2))
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImplFresh` on a non-signing query.** -/
+lemma gpvRealImplFresh_run_inl (pk : PK) (sk : SK)
+    (q : (unifSpec + (Salt × M →ₒ Range)).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × Finset M) :
+    (gpvRealImplFresh psf hr M Salt pk sk (.inl q)).run s =
+      (fun p => (p.1, (p.2, s.2))) <$>
+        (gpvRealImpl psf hr M Salt pk sk (.inl q)).run s.1 := rfl
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImplFresh` on a signing query.** -/
+lemma gpvRealImplFresh_run_inr (pk : PK) (sk : SK) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × Finset M) :
+    (gpvRealImplFresh psf hr M Salt pk sk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+        let sgn ← psf.trapdoorSample pk sk p.1
+        pure ((r, sgn), (p.2, insert msg s.2))) := rfl
+
+omit [Fintype Salt] in
+/-- **Per-query flag projection of the fresh flag handler.** Dropping the passive collision flag
+(`Prod.map id Prod.fst`, keeping the cache and the signed-set) from one `gpvRealImplFlagFresh` query
+step recovers the corresponding `gpvRealImplFresh` step. The flag is written by the signing step but
+never affects the output, the cache, or the signed-set, so projecting it away yields the flag-free
+fresh handler. This is the per-query hypothesis of the state-projection transport
+`map_run_simulateQ_eq_of_query_map_eq`. -/
+lemma gpvRealImplFlagFresh_proj_flag (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool →
+        (Salt × M →ₒ Range).QueryCache × Finset M) <$>
+        (gpvRealImplFlagFresh psf hr M Salt pk sk t).run s =
+      (gpvRealImplFresh psf hr M Salt pk sk t).run s.1 := by
+  cases t with
+  | inl q =>
+      rw [gpvRealImplFlagFresh_run_inl, gpvRealImplFresh_run_inl]
+      simp only [Functor.map_map, Prod.map, id_eq]
+  | inr msg =>
+      rw [gpvRealImplFlagFresh_run_inr, gpvRealImplFresh_run_inr]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [Fintype Salt] in
+/-- **Run-level flag projection of the fresh flag handler.** Dropping the collision flag from the
+full simulated run of `gpvRealImplFlagFresh` over `oa` recovers the run of the flag-free handler
+`gpvRealImplFresh`. Transports the per-query `gpvRealImplFlagFresh_proj_flag` through the whole
+computation via `map_run_simulateQ_eq_of_query_map_eq`: the flag is a passive instrument. -/
+lemma map_run_gpvRealImplFlagFresh_proj_flag (pk : PK) (sk : SK) {β : Type}
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool →
+        (Salt × M →ₒ Range).QueryCache × Finset M) <$>
+        (simulateQ (gpvRealImplFlagFresh psf hr M Salt pk sk) oa).run s =
+      (simulateQ (gpvRealImplFresh psf hr M Salt pk sk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (Prod.fst : ((Salt × M →ₒ Range).QueryCache × Finset M) × Bool →
+      (Salt × M →ₒ Range).QueryCache × Finset M)
+    (gpvRealImplFlagFresh_proj_flag psf hr M Salt pk sk) oa s
+
+/-! ### Cross-monad WriterT-log → signed-set reconstruction
+
+The unforgeability experiment runs the adversary under the WriterT signing-log handler stack
+`baseW + signingOracle pk sk` (logging each signing query) inside the runtime's
+`withStateOracle randomOracle ∅` bundle, and its winning Bool reads the freshness mask
+`!log.wasQueried msg` off the WriterT log.  The freshness vehicle `gpvRealImplFresh` instead
+threads a `Finset M` signed-set through the random-oracle `StateT QueryCache ProbComp` surface.
+The lemmas in this block reconstruct the WriterT log as that signed-set, identifying the two runs
+across the WriterT/StateT monad divide.  The route mirrors the FiatShamir kernel inside
+`FiatShamirWithAbort.probOutput_unforgeableExp_eq_hybridExpAtKey_real`: fuse the inner WriterT pass
+with the outer cache simulation (`writerTMapBase`), replay the WriterT log into a `StateT (List M)`
+input log (`appendInputLog`), flatten the nested `StateT` (`flattenStateT`), and project the
+flattened handler onto `gpvRealImplFresh` with the signed-set reconstructed as the logged messages'
+`toFinset`. -/
+
+/-- **The fused real WriterT handler over the random-oracle cache.** The signing handler of the
+unforgeability experiment, with the public/random-oracle base simulated by the runtime's
+`withStateOracle` interpreter (`outerLift + randomOracle` over `StateT QueryCache ProbComp`).  This
+is the GPV analogue of FiatShamir's fused `base.writerTMapBase implW`: it equals
+`baseW + withLogging signBody`, where `signBody msg = gpvRealImpl … (Sum.inr msg)` is the real GPV
+signing body run on the cache (`reconstructImplW_eq`). -/
+noncomputable def gpvOuter :
+    QueryImpl (unifSpec + (Salt × M →ₒ Range))
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) :=
+  (QueryImpl.ofLift unifSpec ProbComp).liftTarget
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) +
+    (randomOracle : QueryImpl (Salt × M →ₒ Range)
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp))
+
+omit [Fintype Salt] in
+/-- **`gpvRealImpl` is `gpvOuter ∘ₛ realGameRunImplNoLog`.** Restates the definition of
+`gpvRealImpl` in terms of the named base handler `gpvOuter`. -/
+lemma gpvRealImpl_eq_compose (pk : PK) (sk : SK) :
+    gpvRealImpl psf hr M Salt pk sk =
+      (gpvOuter M Salt ∘ₛ realGameRunImplNoLog psf hr M Salt pk sk) := rfl
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Handler fusion: the fused WriterT stack is `baseW + withLogging signBody`.** Pushing the
+runtime's `withStateOracle` interpreter `gpvOuter` through the base monad of the unforgeability
+experiment's WriterT handler stack `baseW + signingOracle pk sk` (via `writerTMapBase`) yields the
+WriterT handler `baseW' + withLogging signBody` over `StateT QueryCache ProbComp`, where the
+public/random-oracle base re-emits its query through the cache (`baseW'`) and the signing body is
+the real GPV signing computation run on the cache (`signBody msg = gpvRealImpl … (Sum.inr msg)`).
+This is the GPV analogue of the FiatShamir `hHandler` step. -/
+lemma gpvOuter_writerTMapBase_implW (pk : PK) (sk : SK) :
+    (gpvOuter M Salt).writerTMapBase
+        ((HasQuery.toQueryImpl (spec := unifSpec + (Salt × M →ₒ Range))
+          (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))).liftTarget
+            (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+              (OracleComp (unifSpec + (Salt × M →ₒ Range)))) +
+          (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range)))
+            psf hr M Salt).signingOracle pk sk) =
+      (gpvOuter M Salt).liftTarget
+          (WriterT (QueryLog (M →ₒ (Salt × Domain)))
+            (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) +
+        QueryImpl.withLogging
+          (fun msg => gpvRealImpl psf hr M Salt pk sk (Sum.inr msg) :
+            QueryImpl (M →ₒ (Salt × Domain))
+              (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)) := by
+  funext t
+  rcases t with bq | sq
+  · -- public/random-oracle base query: `writerTMapBase` runs the lifted query through `gpvOuter`.
+    ext s
+    simp only [QueryImpl.writerTMapBase, QueryImpl.add_apply_inl, QueryImpl.liftTarget_apply,
+      QueryImpl.toHasQuery_query, WriterT.mk, HasQuery.toQueryImpl_apply]
+    rfl
+  · -- signing query: `signingOracle = withLogging sign`; `(withLogging sign sq).run = sign sq >>=
+    -- fun u => (u, [⟨sq, u⟩])` re-emits the log, so the fused LHS commutes the monad-morphism
+    -- `simulateQ gpvOuter` through that base bind, and the RHS `withLogging` of `gpvRealImpl`
+    -- (`= simulateQ gpvOuter ∘ sign` by the `∘ₛ` definition) is the same bind.
+    ext s
+    -- `gpvRealImpl … (Sum.inr msg) = simulateQ gpvOuter ((GPVHashAndSign …).sign pk sk msg)` holds
+    -- definitionally (the `∘ₛ` definition), so expanding both `withLogging` bodies and commuting
+    -- the monad-morphism `simulateQ gpvOuter` through the `sign >>= fun u => (u, [⟨sq, u⟩])` bind
+    -- aligns the two runs.  Mirrors the FiatShamir `fsBaseImpl_writerTMapBase_signingOracle_eq`
+    -- signing case.
+    simp [QueryImpl.writerTMapBase, SignatureAlg.signingOracle, QueryImpl.withLogging_apply,
+      GPVHashAndSign, gpvRealImpl, gpvOuter, QueryImpl.compose, realGameRunImplNoLog,
+      QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_pure,
+      simulateQ_bind, simulateQ_pure, WriterT.run_bind, WriterT.run_liftM,
+      WriterT.run_tell, WriterT.run_pure, map_eq_bind_pure_comp]
+    simp only [HAdd.hAdd, QueryImpl.add, simulateQ_bind, simulateQ_pure,
+      StateT.run_bind, StateT.run_pure, bind_assoc, pure_bind, Function.comp_def]
+
 /-! ### Verify-Bool games on the freshness-tracking vehicle
 
 The verification read `gpvVerifyRead` recomputes the random-oracle value at the forged `(r, msg)`
@@ -4762,6 +4928,18 @@ lemma gpvVerifyKont_no_sign (pk : PK) (out : M × (Salt × Domain)) :
       (· matches .inr _) 0 := by
   rw [OracleComp.isQueryBoundP_map_iff]
   exact gpvVerifyRead_no_sign psf M Salt pk out
+
+/-- **Freshness-mask reconstruction bridge.** The EUF-CMA freshness check
+`!log.wasQueried msg`, reading the WriterT signing log, equals the freshness predicate
+`decide (msg ∉ (log.map fst).toFinset)` reading the signed-set reconstructed from the log: the
+message is fresh iff it is not among the logged signing inputs. This is the pointwise identity that
+lets the WriterT-log-keyed mask of the unforgeability experiment be read off the `Finset M`
+signed-set carried by `gpvRealImplFlagFresh`. -/
+lemma not_wasQueried_eq_decide_not_mem_toFinset {κ : Type} {spec : OracleSpec κ}
+    [spec.DecidableEq] (log : QueryLog spec) (t : spec.Domain) :
+    (!log.wasQueried t) = decide (t ∉ (log.map (fun e => e.1)).toFinset) := by
+  rw [QueryLog.wasQueried_eq_decide_mem_map_fst]
+  simp only [List.mem_toFinset, decide_not]
 
 /-- **Coupling hop (b) on the freshness-tracking verify-Bool games.** The real freshness verify-Bool
 game's success probability is bounded by the programmed one plus `collisionBound`.
