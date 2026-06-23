@@ -2119,9 +2119,17 @@ open Classical in
 /-- **Flag-instrumented real tape handler.** `gpvRealImplTape` threaded with a collision flag: the
 state is `((QueryCache × List Salt) × Bool)`. Uniform and random-oracle queries leave the flag
 untouched; a signing query, before consuming its head salt `r`, sets the flag if `r` is already a
-key of the cache (`saltKeyed`), monotonically OR-ing into the prior flag, then runs the underlying
+key of the cache (`saltKeyed`) on a non-empty tape, or unconditionally when the tape is *empty*
+(no head salt to consume), monotonically OR-ing into the prior flag, then runs the underlying
 `gpvRealImplTape` signing step. Its `run'`-projection (dropping the flag) is the original
-`gpvRealImplTape`. -/
+`gpvRealImplTape`.
+
+The empty-tape signing case fires the flag because there the underlying handler falls back to an
+*inline* fresh salt draw that the tape-collision flag does not track, so the real and programmed
+runs may diverge off-flag there; firing the flag makes the empty-tape signing state lie *inside*
+the bad set, which is what makes the off-bad per-query agreement (`h_agree_good`) universal over all
+states. In the actual `qSign`-salt run this branch is unreachable (the query bound permits at most
+`qSign` signing queries and the tape holds `qSign` salts), so it contributes no probability mass. -/
 noncomputable def gpvRealImplTapeFlag (pk : PK) (sk : SK) :
     QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
       (StateT (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) ProbComp) :=
@@ -2131,7 +2139,7 @@ noncomputable def gpvRealImplTapeFlag (pk : PK) (sk : SK) :
         (fun p => (p.1, (p.2, s.2))) <$> (gpvRealImplTape psf M Salt pk sk (.inl q)).run s.1
     | .inr msg =>
         let flag' : Bool := s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r
-                                                      | [] => false)
+                                                      | [] => true)
         (fun p => (p.1, (p.2, flag'))) <$> (gpvRealImplTape psf M Salt pk sk (.inr msg)).run s.1
 
 open Classical in
@@ -2149,7 +2157,7 @@ noncomputable def progGameRunImplTapeFlag (domainSample : PK → ProbComp Domain
           (progGameRunImplTape psf M Salt domainSample pk (.inl q)).run s.1
     | .inr msg =>
         let flag' : Bool := s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r
-                                                      | [] => false)
+                                                      | [] => true)
         (fun p => (p.1, (p.2, flag'))) <$>
           (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run s.1
 
@@ -2180,7 +2188,7 @@ lemma gpvRealImplTapeFlag_run_inr (pk : PK) (sk : SK) (msg : M)
     (gpvRealImplTapeFlag psf M Salt pk sk (.inr msg)).run s =
       (fun p => (p.1, (p.2, s.2 || (match s.1.2 with
                                     | r :: _ => saltKeyed M Salt s.1.1 r
-                                    | [] => false)))) <$>
+                                    | [] => true)))) <$>
         (gpvRealImplTape psf M Salt pk sk (.inr msg)).run s.1 := rfl
 
 omit [Fintype Salt] [DecidableEq Range] [SampleableType Range] in
@@ -2191,7 +2199,7 @@ lemma progGameRunImplTapeFlag_run_inr (domainSample : PK → ProbComp Domain) (p
     (progGameRunImplTapeFlag psf M Salt domainSample pk (.inr msg)).run s =
       (fun p => (p.1, (p.2, s.2 || (match s.1.2 with
                                     | r :: _ => saltKeyed M Salt s.1.1 r
-                                    | [] => false)))) <$>
+                                    | [] => true)))) <$>
         (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run s.1 := rfl
 
 omit [Fintype Salt] [DecidableEq Range] in
@@ -2212,7 +2220,7 @@ lemma gpvRealImplTapeFlag_proj_fst (pk : PK) (sk : SK)
   | inl q => rw [gpvRealImplTapeFlag_run_inl]; simp [Functor.map_map, Prod.map]
   | inr msg =>
       change Prod.map id Prod.fst <$> ((fun p => (p.1, (p.2,
-          s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r | [] => false)))) <$>
+          s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r | [] => true)))) <$>
         (gpvRealImplTape psf M Salt pk sk (.inr msg)).run s.1) = _
       simp [Functor.map_map, Prod.map]
 
@@ -2230,7 +2238,7 @@ lemma progGameRunImplTapeFlag_proj_fst (domainSample : PK → ProbComp Domain) (
   | inl q => rw [progGameRunImplTapeFlag_run_inl]; simp [Functor.map_map, Prod.map]
   | inr msg =>
       change Prod.map id Prod.fst <$> ((fun p => (p.1, (p.2,
-          s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r | [] => false)))) <$>
+          s.2 || (match s.1.2 with | r :: _ => saltKeyed M Salt s.1.1 r | [] => true)))) <$>
         (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run s.1) = _
       simp [Functor.map_map, Prod.map]
 
@@ -2285,9 +2293,9 @@ lemma gpvRealImplTapeFlag_bad_mono (pk : PK) (sk : SK)
       simp [← hw, hp]
   | inr msg =>
       have : z.2.2 = (p.2 || (match p.1.2 with
-          | r :: _ => saltKeyed M Salt p.1.1 r | [] => false)) := by
+          | r :: _ => saltKeyed M Salt p.1.1 r | [] => true)) := by
         change z ∈ support ((fun w => (w.1, (w.2,
-            p.2 || (match p.1.2 with | r :: _ => saltKeyed M Salt p.1.1 r | [] => false)))) <$>
+            p.2 || (match p.1.2 with | r :: _ => saltKeyed M Salt p.1.1 r | [] => true)))) <$>
           (gpvRealImplTape psf M Salt pk sk (.inr msg)).run p.1) at hz
         simp only [support_map, Set.mem_image] at hz
         obtain ⟨w, _, hw⟩ := hz
@@ -2310,9 +2318,9 @@ lemma progGameRunImplTapeFlag_bad_mono (domainSample : PK → ProbComp Domain) (
       simp [← hw, hp]
   | inr msg =>
       have : z.2.2 = (p.2 || (match p.1.2 with
-          | r :: _ => saltKeyed M Salt p.1.1 r | [] => false)) := by
+          | r :: _ => saltKeyed M Salt p.1.1 r | [] => true)) := by
         change z ∈ support ((fun w => (w.1, (w.2,
-            p.2 || (match p.1.2 with | r :: _ => saltKeyed M Salt p.1.1 r | [] => false)))) <$>
+            p.2 || (match p.1.2 with | r :: _ => saltKeyed M Salt p.1.1 r | [] => true)))) <$>
           (progGameRunImplTape psf M Salt domainSample pk (.inr msg)).run p.1) at hz
         simp only [support_map, Set.mem_image] at hz
         obtain ⟨w, _, hw⟩ := hz
@@ -2364,6 +2372,38 @@ theorem evalDist_gpvImplTapeFlag_run_sign_offbad_eq (pk : PK) (sk : SK)
   exact evalDist_map_eq_of_evalDist_eq
     (evalDist_gpvImplTape_run_sign_miss_eq psf M Salt pk sk domainSample msg r tl cache hmiss hreg)
     _
+
+/-- **Constant-flag map projection of a `false`-tagged output probability.** For the flag-tagging
+map `fun p => (p.1, (p.2, F))` (the post-processing common to both flag-instrumented tape handlers
+on a single query step), the probability of a `false`-flag output `(u, (s', false))` is exactly the
+underlying probability of `(u, s')` when the flag value `F` is `false`, and `0` when `F` is `true`.
+
+This is the bookkeeping that turns the per-query agreement of the *underlying* tape handlers into
+the flag-level off-bad agreement `h_agree_good`: where the flag stays `false` the two flagged steps
+agree because their underlying steps agree, and where the flag fires the `false`-output probability
+is `0` on both sides regardless. -/
+lemma probOutput_flagTag_false {α' σ' : Type}
+    (m : ProbComp (α' × σ')) (F : Bool) (u : α') (s' : σ') :
+    Pr[= (u, (s', false)) |
+        ((fun p : α' × σ' => (p.1, (p.2, F))) <$> m : ProbComp (α' × σ' × Bool))]
+      = if F = false then Pr[= (u, s') | m] else 0 := by
+  classical
+  rw [probOutput_map_eq_tsum_ite]
+  by_cases hF : F = false
+  · subst hF
+    rw [if_pos rfl, ← tsum_ite_eq (u, s') (fun x => Pr[= x | m])]
+    refine tsum_congr fun x => ?_
+    congr 1
+    rw [eq_iff_iff, Prod.ext_iff, Prod.ext_iff, Prod.ext_iff]
+    constructor
+    · rintro ⟨h1, h2, _⟩; exact ⟨h1.symm, h2.symm⟩
+    · rintro ⟨h1, h2⟩; exact ⟨h1.symm, h2.symm, rfl⟩
+  · rw [if_neg hF, ENNReal.tsum_eq_zero]
+    intro x
+    rw [if_neg]
+    rw [Prod.ext_iff, Prod.ext_iff]
+    rintro ⟨_, _, h3⟩
+    exact hF h3.symm
 
 /-! ### Per-query tape↔unified-impl bridges (the Fiat–Shamir-template second block)
 
@@ -3281,6 +3321,202 @@ theorem evalDist_gpvImplTape_run_read_miss_eq (pk : PK) (sk : SK)
     simp only [hg, map_bind, map_pure, Function.comp_def]
   exact hLHS.trans ((evalDist_map_eq_of_evalDist_eq hfst.symm g).trans hRHS.symm)
 
+omit [DecidableEq Range] [Fintype Salt] in
+open Classical in
+/-- **Universal off-bad per-query agreement of the two flag-instrumented tape handlers (the
+framework `h_agree_good`).** For *every* query `t` and *every* off-bad input state `(s, false)`,
+the two flag handlers `gpvRealImplTapeFlag` / `progGameRunImplTapeFlag` assign equal probability to
+every *off-bad output* `(u, (s', false))`.
+
+This is the exact `h_agree_good` hypothesis of the framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad`, made **universal** by the empty-tape-fires-the-flag
+tweak in the flag handlers: the only state where the underlying tape handlers disagree off-flag is
+the *empty-tape signing* state (where the underlying handler falls back to an inline fresh salt
+draw); firing the flag there places that state inside the bad set, so on every off-bad output the
+flag value is `false` exactly when the head salt is present and unkeyed — precisely the case the
+banked per-query agreements (`gpvImplTape_run_unif_eq` for uniform, `gpvImplTape_run_read_hit_eq` /
+`evalDist_gpvImplTape_run_read_miss_eq` for random-oracle reads, and
+`evalDist_gpvImplTapeFlag_run_sign_offbad_eq` for unkeyed-head signing) cover. The flag bookkeeping
+is `probOutput_flagTag_false`: where the flag fires the off-bad output probability is `0` on both
+sides; where it stays `false` the two flagged steps reduce to their agreeing underlying steps.
+
+It is *true-as-stated* and *pinned* to the concrete flag handlers (no free parameters); it is the
+off-collision no-divergence ingredient the per-tape identical-until-bad coupling residual
+`gpv_tvDist_tape_runs_le_collisionBound` consumes (the remaining open content is the cardinality
+telescope bounding the run-level flag probability by `collisionBound`). -/
+theorem gpvImplTapeFlag_h_agree_good (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))])
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × List Salt)
+    (u : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range t)
+    (s' : (Salt × M →ₒ Range).QueryCache × List Salt) :
+    Pr[= (u, (s', false)) | (gpvRealImplTapeFlag psf M Salt pk sk t).run (s, false)]
+      = Pr[= (u, (s', false)) |
+          (progGameRunImplTapeFlag psf M Salt domainSample pk t).run (s, false)] := by
+  cases t with
+  | inl q =>
+      -- Non-signing query: flag is passive (`F = false`), reduce to the underlying tape agreement.
+      rw [gpvRealImplTapeFlag_run_inl, progGameRunImplTapeFlag_run_inl]
+      rw [probOutput_flagTag_false, probOutput_flagTag_false, if_pos rfl, if_pos rfl]
+      cases q with
+      | inl n =>
+          -- Uniform query: the two underlying handlers are literally identical.
+          rw [gpvImplTape_run_unif_eq psf M Salt pk sk domainSample n s]
+      | inr mc =>
+          -- Random-oracle read: cache hit ⇒ identical; cache miss ⇒ agree by `hreg`.
+          rcases h : s.1 mc with _ | v
+          · exact probOutput_congr rfl
+              (evalDist_gpvImplTape_run_read_miss_eq psf M Salt pk sk domainSample mc s h hNF hreg)
+          · rw [gpvImplTape_run_read_hit_eq psf M Salt pk sk domainSample mc s v h]
+  | inr msg =>
+      -- Signing query: split on the tape.  Empty tape or keyed head ⇒ flag fires ⇒ both `0`.
+      rw [gpvRealImplTapeFlag_run_inr, progGameRunImplTapeFlag_run_inr]
+      rw [probOutput_flagTag_false, probOutput_flagTag_false]
+      simp only [Bool.false_or]
+      cases htape : s.2 with
+      | nil =>
+          -- Empty tape: the flag fires (`true`), both `false`-outputs have probability `0`.
+          simp only [reduceCtorEq, if_false]
+      | cons r tl =>
+          -- Non-empty tape head `r`: split on whether it is already keyed.
+          rcases hkey : saltKeyed M Salt s.1 r with _ | _
+          · -- Unkeyed head: flag stays `false`; reduce to the underlying signing-miss agreement.
+            simp only [hkey, if_true]
+            have hmiss : s.1 (r, msg) = none := (saltKeyed_eq_false_iff M Salt s.1 r).1 hkey msg
+            -- The underlying tape steps agree off-collision (joint `hreg` substitution).
+            rw [show s = (s.1, r :: tl) from by rw [← htape]]
+            exact probOutput_congr rfl
+              (evalDist_gpvImplTape_run_sign_miss_eq psf M Salt pk sk domainSample
+                msg r tl s.1 hmiss hreg)
+          · -- Keyed head: the flag fires (`true`), both `false`-outputs have probability `0`.
+            simp only [hkey, reduceCtorEq, if_false]
+
+omit [Fintype Salt] in
+open Classical in
+/-- **Per-tape framework reduction of (A) to the run-level collision flag.** For a *fixed* salt
+tape, the total-variation distance between the output-projected real and programmed tape-consuming
+runs of `adv.main pk` (the per-tape summand of `(A)`'s tape average) is bounded by the run-level
+collision flag probability of the flag-instrumented real run.
+
+This is the direct application of the framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad` to the flag-instrumented tape handlers
+`gpvRealImplTapeFlag` / `progGameRunImplTapeFlag`, fed the **universal** off-bad per-query agreement
+`gpvImplTapeFlag_h_agree_good` (made universal by the empty-tape-fires-the-flag tweak) and the
+bad-monotonicity `gpvRealImplTapeFlag_bad_mono` / `progGameRunImplTapeFlag_bad_mono` (the `h_mono`
+hypotheses).  The run-level flag projection `map_run_gpvRealImplTapeFlag_eq` (and its programmed
+dual) identifies the output projection of the flagless tape run with that of the flagged tape run,
+so the framework total-variation bound (on the full flagged-run output-and-state distributions)
+reduces — via the data-processing contraction `tvDist_map_le` — to the per-tape summand of `(A)`. -/
+theorem gpv_tvDist_tape_run_le_probEvent_flag (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (tape : List Salt) :
+    tvDist
+        ((fun p : (M × (Salt × Domain)) ×
+              ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+          (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+        ((fun p : (M × (Salt × Domain)) ×
+              ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+          (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+      ≤ Pr[fun z : (M × (Salt × Domain)) ×
+              (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) => z.2.2 = true |
+          (simulateQ (gpvRealImplTapeFlag psf M Salt pk sk) (adv.main pk)).run
+            (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false)].toReal := by
+  -- Output projection of the flagless run = doubly-projected flagged run.
+  have hreal := map_run_gpvRealImplTapeFlag_eq psf M Salt pk sk (adv.main pk)
+    (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false)
+  have hprog := map_run_progGameRunImplTapeFlag_eq psf M Salt domainSample pk (adv.main pk)
+    (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false)
+  -- Rewrite each flagless output projection as the output projection of the flagged run.
+  rw [show ((fun p : (M × (Salt × Domain)) ×
+            ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+          (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+        = (fun z : (M × (Salt × Domain)) ×
+              (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) => z.1) <$>
+          (simulateQ (gpvRealImplTapeFlag psf M Salt pk sk) (adv.main pk)).run
+            (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false) from by
+      rw [← hreal, Functor.map_map]; rfl]
+  rw [show ((fun p : (M × (Salt × Domain)) ×
+            ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+          (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+        = (fun z : (M × (Salt × Domain)) ×
+              (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) => z.1) <$>
+          (simulateQ (progGameRunImplTapeFlag psf M Salt domainSample pk) (adv.main pk)).run
+            (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false) from by
+      rw [← hprog, Functor.map_map]; rfl]
+  -- Data-processing contraction then the framework identical-until-bad bound.
+  refine le_trans (tvDist_map_le _ _ _) ?_
+  exact OracleComp.ProgramLogic.Relational.tvDist_simulateQ_run_le_probEvent_output_bad
+    (gpvRealImplTapeFlag psf M Salt pk sk) (progGameRunImplTapeFlag psf M Salt domainSample pk)
+    (adv.main pk) ((∅ : (Salt × M →ₒ Range).QueryCache), tape)
+    (gpvImplTapeFlag_h_agree_good psf M Salt pk sk domainSample hNF hreg)
+    (gpvRealImplTapeFlag_bad_mono psf M Salt pk sk)
+    (progGameRunImplTapeFlag_bad_mono psf M Salt domainSample pk)
+
+open Classical in
+/-- **(A′) Cardinality telescope: the tape-averaged run-level collision flag is bounded by
+`collisionBound` (the single remaining `#228`-class residual of `(A)`).**
+
+Averaged over the front salt tape `drawList ($ᵗ Salt) qSign`, the run-level collision-flag
+probability of the flag-instrumented real tape run of `adv.main pk` is bounded by
+`(collisionBound Salt qSign qHash).toReal`.
+
+This is the *cardinality-telescope* half of `(A)`: the flag fires when a consumed signing tape head
+salt lands on a key already recorded in the running random-oracle cache.  An
+`OracleComp.inductionOn` over `adv.main pk` threads the partial flag probability
+`Pr[flag fired in the first j queries]` across the adaptive adversary; at the `j`-th signing step
+the consumed head salt is a fresh uniform `$ᵗ Salt` independent of the prior cache, so it lands on
+the cache slice with probability `card (cache j) / |Salt|` (`probEvent_mem_uniformSample`), where
+`card (cache j) ≤ j + qHash` by the cache-growth invariant (`hQ` bounds the adversary to `≤ qSign`
+signing salts and `≤ qHash` hash-query cache entries), and the empty-tape signing branch contributes
+no mass (it is unreachable under `hQ`, which permits at most `qSign` signing queries against the
+`qSign`-salt tape).  Summing
+`∑_{j < qSign} (j + qHash) / |Salt| = (qSign + qHash)² / (2 |Salt|) = collisionBound`
+(`sum_range_div_card_le_collisionBound`) gives the bound.
+
+It is *true-as-stated* (counterexample-checked at `qSign = 0`: the tape average is the single empty
+tape; `hQ` permits no signing query, so the empty-tape signing branch — the only place the flag
+could fire — is never reached, the flag probability is `0`, and `0 ≤ (collisionBound …).toReal`) and
+*pinned* to the concrete flag handler `gpvRealImplTapeFlag` and the actual game-run vehicle
+`adv.main pk` (NOT free parameters).  It is the genuine multi-week deep coupling content the
+campaign has isolated; the off-collision per-query agreement it pairs with is fully discharged
+(`gpvImplTapeFlag_h_agree_good`, universal), and the framework reduction of `(A)`'s per-tape TV to
+this flag probability is fully discharged (`gpv_tvDist_tape_run_le_probEvent_flag`). -/
+theorem gpv_tape_avg_flag_le_collisionBound [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    (∑' tape : List Salt,
+        Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal *
+          Pr[fun z : (M × (Salt × Domain)) ×
+                (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) => z.2.2 = true |
+              (simulateQ (gpvRealImplTapeFlag psf M Salt pk sk) (adv.main pk)).run
+                (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false)].toReal)
+      ≤ (collisionBound Salt qSign qHash).toReal := by
+  -- The cardinality-telescope `OracleComp.inductionOn` over `adv.main pk` with the cache-growth
+  -- invariant `card (cache j) ≤ j + qHash`, charging each fresh uniform tape salt against the
+  -- running cache slice via `probEvent_mem_uniformSample` and summing via
+  -- `sum_range_div_card_le_collisionBound`.  This is the single remaining `#228`-class residual.
+  let _ := hQ
+  sorry
+
 open Classical in
 /-- **(A) Per-tape identical-until-bad coupling of the tape-consuming GPV runs (the single open
 `#228`-class residual, direct front-tape route).**
@@ -3338,27 +3574,47 @@ theorem gpv_tvDist_tape_runs_le_collisionBound [Finite Range] [Inhabited Range] 
                 (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
                   ((∅ : (Salt × M →ₒ Range).QueryCache), tape)) tape))
       ≤ (collisionBound Salt qSign qHash).toReal := by
-  -- The deferred-sampling/identical-until-bad coupling of the two tape-consuming runs over the
-  -- shared front salt tape, via the flag-instrumented handlers `gpvRealImplTapeFlag` /
-  -- `progGameRunImplTapeFlag` (which set a collision flag when a consumed signing tape head salt is
-  -- already a cache key) and the framework lemma `tvDist_simulateQ_run_le_probEvent_output_bad`.
-  -- The flag machinery is banked:
-  --   * the run-level flag-projection `map_run_gpvRealImplTapeFlag_eq` (and prog dual) identifies
-  --     the flagless tape runs (the LHS) with the `Prod.fst`-projection of the flagged runs, so the
-  --     framework TV bound transports to the LHS;
-  --   * the bad-monotonicity `gpvRealImplTapeFlag_bad_mono` / `progGameRunImplTapeFlag_bad_mono`
-  --     supplies the framework `h_mono` hypotheses (the collision flag is absorbing).
-  -- The two genuinely deep remaining ingredients are the framework `h_agree_good` SIGNING-step
-  -- off-collision agreement (the joint `(r, sgn, newcache, false)` agreement from `hreg`, at the
-  -- tape-flag granularity, generalizing `gpvStep_agree` from the cache marginal to the full
-  -- output), and the cardinality telescope identifying `Pr[flag | run]` with the salt-averaged
-  -- `saltSeq` / `tapeCheck` birthday term (cache-slice growth `card (cache j) ≤ j + qHash`).  This
-  -- is the single remaining `#228`-class residual.  Counterexample-checked TRUE at `qSign = 0`.
-  -- `hNF`/`hreg` are the off-collision answer-agreement witnesses consumed by the (not-yet-
-  -- discharged) `h_agree_good` signing case.
-  let _ := hNF
-  let _ := hreg
-  sorry
+  -- The identical-until-bad coupling of the two tape-consuming runs over the shared front salt
+  -- tape, via the flag-instrumented handlers.  The framework reduction of each per-tape TV to the
+  -- run-level collision flag is fully discharged (`gpv_tvDist_tape_run_le_probEvent_flag`,
+  -- consuming the universal off-bad agreement `gpvImplTapeFlag_h_agree_good` and the
+  -- bad-monotonicity `h_mono`s); the remaining cardinality telescope is `(A′)`
+  -- `gpv_tape_avg_flag_le_collisionBound`.  Chain the tape average of the TV bound with `(A′)`.
+  refine le_trans ?_ (gpv_tape_avg_flag_le_collisionBound psf hr M Salt pk sk adv qSign qHash hQ)
+  -- Per-tape monotonicity: each `Pr[tape] · TV ≤ Pr[tape] · Pr[flag]` summand-wise.
+  have hsummand : ∀ tape : List Salt,
+      Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal *
+          tvDist
+            ((fun p : (M × (Salt × Domain)) ×
+                  ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+              (simulateQ (gpvRealImplTape psf M Salt pk sk) (adv.main pk)).run
+                ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+            ((fun p : (M × (Salt × Domain)) ×
+                  ((Salt × M →ₒ Range).QueryCache × List Salt) => p.1) <$>
+              (simulateQ (progGameRunImplTape psf M Salt domainSample pk) (adv.main pk)).run
+                ((∅ : (Salt × M →ₒ Range).QueryCache), tape))
+        ≤ Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal *
+          Pr[fun z : (M × (Salt × Domain)) ×
+                (((Salt × M →ₒ Range).QueryCache × List Salt) × Bool) => z.2.2 = true |
+              (simulateQ (gpvRealImplTapeFlag psf M Salt pk sk) (adv.main pk)).run
+                (((∅ : (Salt × M →ₒ Range).QueryCache), tape), false)].toReal := fun tape =>
+    mul_le_mul_of_nonneg_left
+      (gpv_tvDist_tape_run_le_probEvent_flag psf hr M Salt pk sk adv domainSample hNF hreg tape)
+      ENNReal.toReal_nonneg
+  -- Summability of both sides (each summand ≤ `Pr[tape]`, which sums to ≤ 1).
+  set P : List Salt → ℝ := fun tape =>
+    Pr[= tape | OracleComp.drawList ($ᵗ Salt : ProbComp Salt) qSign].toReal with hP
+  have hPsummable : Summable P := by
+    refine ENNReal.summable_toReal (ne_top_of_le_ne_top one_ne_top ?_)
+    exact tsum_probOutput_le_one
+  refine Summable.tsum_le_tsum hsummand ?_ ?_
+  · refine Summable.of_nonneg_of_le (fun tape => mul_nonneg ENNReal.toReal_nonneg
+      (tvDist_nonneg _ _)) (fun tape => ?_) hPsummable
+    exact mul_le_of_le_one_right ENNReal.toReal_nonneg (tvDist_le_one _ _)
+  · refine Summable.of_nonneg_of_le (fun tape => mul_nonneg ENNReal.toReal_nonneg
+      ENNReal.toReal_nonneg) (fun tape => ?_) hPsummable
+    exact mul_le_of_le_one_right ENNReal.toReal_nonneg
+      (by simpa using ENNReal.toReal_mono one_ne_top probEvent_le_one)
 
 /-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the direct front-tape residual.**
 
