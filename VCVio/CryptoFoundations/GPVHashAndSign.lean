@@ -3616,11 +3616,509 @@ theorem gpv_tvDist_tape_runs_le_collisionBound [Finite Range] [Inhabited Range] 
     exact mul_le_of_le_one_right ENNReal.toReal_nonneg
       (by simpa using ENNReal.toReal_mono one_ne_top probEvent_le_one)
 
-/-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the direct front-tape residual.**
+/-! ### Flag-instrumented original (inline-salt) handlers (the original-run re-route)
+
+The front-tape route above front-loads every signing salt into an upfront `drawList ($ᵗ Salt) qSign`
+block, which forces the cardinality telescope `(A′)` to *re-interleave* the upfront tape back to the
+per-signing-step draws before the proven `saltSeq` telescope applies — a deferred-sampling fold
+commutation that is the remaining deep obstruction.
+
+The handlers below side-step that obstruction entirely by flag-instrumenting the *original*
+inline-salt handlers `gpvRealImpl` / `progGameRunImplNoRec` (round-6), where each signing query
+draws its fresh salt `r ← $ᵗ Salt` *at* its signing step. The collision flag fires when the
+inline-drawn salt `r` is already a key of the running random-oracle cache (`saltKeyed`). Because the
+salt is drawn at the step (not upfront), the run-level flag probability telescopes *directly* to the
+`saltSeq` form (each salt is fresh uniform against the cache slice it is checked against) — no
+re-interleaving is needed. The framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad` applied to these flag handlers bounds the
+total-variation distance of the two original game runs by the run-level flag probability. -/
+
+open Classical in
+/-- **Flag-instrumented original real handler.** `gpvRealImpl` threaded with a collision flag: the
+state is `((Salt × M →ₒ Range).QueryCache × Bool)`. Uniform and random-oracle-read queries leave the
+flag untouched; a signing query draws its fresh inline salt `r ← $ᵗ Salt`, sets the flag if `r` is
+already a key of the cache (`saltKeyed`), monotonically OR-ing into the prior flag, then runs the
+underlying `gpvRealImpl` signing body on it. Its `run'`-projection (dropping the flag) is the
+original `gpvRealImpl`.
+
+Unlike the tape handler `gpvRealImplTapeFlag`, the salt is drawn *inline at the signing step*, so
+the collision decision is made against the cache the body actually queries, and there is no
+empty-tape fallback branch: the off-bad per-query agreement is genuinely universal (no spurious bad
+state). -/
+noncomputable def gpvRealImplFlag (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × Bool) ProbComp) :=
+  fun t => StateT.mk fun s =>
+    match t with
+    | .inl q =>
+        (fun p => (p.1, (p.2, s.2))) <$> (gpvRealImpl psf hr M Salt pk sk (.inl q)).run s.1
+    | .inr msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+        let sgn ← psf.trapdoorSample pk sk p.1
+        pure ((r, sgn), (p.2, s.2 || saltKeyed M Salt s.1 r))
+
+open Classical in
+/-- **Flag-instrumented original programmed handler.** The programmed dual of `gpvRealImplFlag`:
+`progGameRunImplNoRec` threaded with the same collision flag (set on a signing step when the
+inline-drawn salt `r` is already a key of the cache). Its `run'`-projection is the original
+`progGameRunImplNoRec`. -/
+noncomputable def progGameRunImplNoRecFlag (domainSample : PK → ProbComp Domain) (pk : PK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × Bool) ProbComp) :=
+  fun t => StateT.mk fun s =>
+    match t with
+    | .inl q =>
+        (fun p => (p.1, (p.2, s.2))) <$>
+          (progGameRunImplNoRec psf M Salt domainSample pk (.inl q)).run s.1
+    | .inr msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sgn ← (domainSample pk : ProbComp Domain)
+        pure ((r, sgn), (s.1.cacheQuery (r, msg) (psf.eval pk sgn), s.2 || saltKeyed M Salt s.1 r))
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImplFlag` on a non-signing query.** The flag is untouched; the
+underlying `gpvRealImpl` runs on the cache component. -/
+lemma gpvRealImplFlag_run_inl (pk : PK) (sk : SK)
+    (q : (unifSpec + (Salt × M →ₒ Range)).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    (gpvRealImplFlag psf hr M Salt pk sk (.inl q)).run s =
+      (fun p => (p.1, (p.2, s.2))) <$> (gpvRealImpl psf hr M Salt pk sk (.inl q)).run s.1 := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRecFlag` on a non-signing query.** -/
+lemma progGameRunImplNoRecFlag_run_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (q : (unifSpec + (Salt × M →ₒ Range)).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    (progGameRunImplNoRecFlag psf M Salt domainSample pk (.inl q)).run s =
+      (fun p => (p.1, (p.2, s.2))) <$>
+        (progGameRunImplNoRec psf M Salt domainSample pk (.inl q)).run s.1 := rfl
+
+omit [Fintype Salt] in
+/-- **One-step unfolding of `gpvRealImplFlag` on a signing query.** The fresh inline salt `r` is
+drawn, the real signing body runs the lazy random oracle at `(r, msg)` and trapdoor-samples, and the
+flag is OR-ed with the collision predicate `saltKeyed` on the inline salt. -/
+lemma gpvRealImplFlag_run_inr (pk : PK) (sk : SK) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    (gpvRealImplFlag psf hr M Salt pk sk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run s.1
+        let sgn ← psf.trapdoorSample pk sk p.1
+        pure ((r, sgn), (p.2, s.2 || saltKeyed M Salt s.1 r))) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplNoRecFlag` on a signing query.** -/
+lemma progGameRunImplNoRecFlag_run_inr (domainSample : PK → ProbComp Domain) (pk : PK) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    (progGameRunImplNoRecFlag psf M Salt domainSample pk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sgn ← (domainSample pk : ProbComp Domain)
+        pure ((r, sgn),
+          (s.1.cacheQuery (r, msg) (psf.eval pk sgn), s.2 || saltKeyed M Salt s.1 r))) := rfl
+
+omit [Fintype Salt] in
+/-- **Per-query flag-projection of the real flag handler.** Dropping the flag component
+(`Prod.map id Prod.fst`) from one `gpvRealImplFlag` query step recovers the corresponding
+`gpvRealImpl` step on the flagless cache state. The flag is a passive auxiliary: it is written by
+the signing step but never affects the output or the cache, so projecting it away yields the
+original handler. This is the per-query hypothesis of the state-projection transport
+`map_run_simulateQ_eq_of_query_map_eq`. -/
+lemma gpvRealImplFlag_proj_fst (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    Prod.map id (Prod.fst : (Salt × M →ₒ Range).QueryCache × Bool →
+        (Salt × M →ₒ Range).QueryCache) <$>
+        (gpvRealImplFlag psf hr M Salt pk sk t).run s =
+      (gpvRealImpl psf hr M Salt pk sk t).run s.1 := by
+  cases t with
+  | inl q => rw [gpvRealImplFlag_run_inl]; simp [Functor.map_map, Prod.map]
+  | inr msg =>
+      rw [gpvRealImplFlag_run_inr, gpvRealImpl_run_sign]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-query flag-projection of the programmed flag handler.** The programmed dual of
+`gpvRealImplFlag_proj_fst`: dropping the flag recovers `progGameRunImplNoRec`. -/
+lemma progGameRunImplNoRecFlag_proj_fst (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    Prod.map id (Prod.fst : (Salt × M →ₒ Range).QueryCache × Bool →
+        (Salt × M →ₒ Range).QueryCache) <$>
+        (progGameRunImplNoRecFlag psf M Salt domainSample pk t).run s =
+      (progGameRunImplNoRec psf M Salt domainSample pk t).run s.1 := by
+  cases t with
+  | inl q => rw [progGameRunImplNoRecFlag_run_inl]; simp [Functor.map_map, Prod.map]
+  | inr msg =>
+      rw [progGameRunImplNoRecFlag_run_inr, progGameRunImplNoRec_run_sign]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [Fintype Salt] in
+/-- **Run-level flag-projection of the real flag handler.** Dropping the flag from the full
+simulated run of `gpvRealImplFlag` over `adv.main pk` recovers the flagless run of `gpvRealImpl`.
+This transports the per-query projection `gpvRealImplFlag_proj_fst` through the whole adversary via
+`map_run_simulateQ_eq_of_query_map_eq`, witnessing that the collision flag is a passive instrument:
+its addition does not change the output-and-cache distribution. -/
+lemma map_run_gpvRealImplFlag_eq (pk : PK) (sk : SK)
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (M × (Salt × Domain)))
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    Prod.map id (Prod.fst : (Salt × M →ₒ Range).QueryCache × Bool →
+        (Salt × M →ₒ Range).QueryCache) <$>
+        (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) oa).run s =
+      (simulateQ (gpvRealImpl psf hr M Salt pk sk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _ Prod.fst
+    (gpvRealImplFlag_proj_fst psf hr M Salt pk sk) oa s
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Run-level flag-projection of the programmed flag handler.** The programmed dual of
+`map_run_gpvRealImplFlag_eq`. -/
+lemma map_run_progGameRunImplNoRecFlag_eq (domainSample : PK → ProbComp Domain) (pk : PK)
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (M × (Salt × Domain)))
+    (s : (Salt × M →ₒ Range).QueryCache × Bool) :
+    Prod.map id (Prod.fst : (Salt × M →ₒ Range).QueryCache × Bool →
+        (Salt × M →ₒ Range).QueryCache) <$>
+        (simulateQ (progGameRunImplNoRecFlag psf M Salt domainSample pk) oa).run s =
+      (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _ Prod.fst
+    (progGameRunImplNoRecFlag_proj_fst psf M Salt domainSample pk) oa s
+
+omit [Fintype Salt] in
+/-- **Bad-monotonicity of the real flag handler.** Once the collision flag is set on the input state
+(`p.2 = true`), every output of one `gpvRealImplFlag` query step also carries the flag set: the
+non-signing branch preserves `s.2`, and the signing branch only OR-s a new collision indicator into
+it. This is the `h_mono` hypothesis the framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad` consumes: the bad event is absorbing. -/
+lemma gpvRealImplFlag_bad_mono (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (p : (Salt × M →ₒ Range).QueryCache × Bool) (hp : p.2 = true) :
+    ∀ z ∈ support ((gpvRealImplFlag psf hr M Salt pk sk t).run p), z.2.2 = true := by
+  intro z hz
+  cases t with
+  | inl q =>
+      rw [gpvRealImplFlag_run_inl] at hz
+      simp only [support_map, Set.mem_image] at hz
+      obtain ⟨w, _, hw⟩ := hz
+      simp [← hw, hp]
+  | inr msg =>
+      rw [gpvRealImplFlag_run_inr] at hz
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hz
+      obtain ⟨r, _, c, _, sgn, _, hw⟩ := hz
+      subst hw; simp [hp]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Bad-monotonicity of the programmed flag handler.** The programmed dual of
+`gpvRealImplFlag_bad_mono`. -/
+lemma progGameRunImplNoRecFlag_bad_mono (domainSample : PK → ProbComp Domain) (pk : PK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (p : (Salt × M →ₒ Range).QueryCache × Bool) (hp : p.2 = true) :
+    ∀ z ∈ support ((progGameRunImplNoRecFlag psf M Salt domainSample pk t).run p),
+      z.2.2 = true := by
+  intro z hz
+  cases t with
+  | inl q =>
+      rw [progGameRunImplNoRecFlag_run_inl] at hz
+      simp only [support_map, Set.mem_image] at hz
+      obtain ⟨w, _, hw⟩ := hz
+      simp [← hw, hp]
+  | inr msg =>
+      rw [progGameRunImplNoRecFlag_run_inr] at hz
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hz
+      obtain ⟨r, _, sgn, _, hw⟩ := hz
+      subst hw; simp [hp]
+
+omit [Fintype Salt] [DecidableEq Range] [SampleableType Salt] in
+/-- **Off-bad joint agreement of the two original-run flag signing steps on a fresh inline salt (the
+`hreg` substitution bridge, inline-salt signing case).** With the inline salt `r` *fixed* and *not
+yet keyed* in the cache (`cache (r, msg) = none`, so the collision flag stays `false`), the full
+signing-step body output distributions of `gpvRealImplFlag` and `progGameRunImplNoRecFlag` — the
+returned signature `(r, sgn)`, the updated cache, and the (still `false`) flag — *coincide*.
+
+The real side runs the lazy random oracle at `(r, msg)` (a miss, so it draws a fresh uniform target
+`c ← $ᵗ Range`, records `(r, msg) ↦ c`), draws a trapdoor preimage `sgn ← trapdoorSample pk sk c`,
+and tags the flag `false`; the programmed side forward-samples `sgn ← domainSample pk`, records
+`(r, msg) ↦ psf.eval pk sgn`, and tags the flag `false`. Both apply the *same* deterministic
+post-processing `fun (c, s) => ((r, s), cache.cacheQuery (r, msg) c, false)` to a `(target,
+preimage)` pair drawn from two distributions that coincide by PSF regularity `hreg`. This is the
+inline-salt analogue of `evalDist_gpvImplTape_run_sign_miss_eq`, the signing-query case of the
+universal off-bad agreement `gpvImplFlag_h_agree_good`. It is *pinned* to the concrete flag handlers
+(no free parameters). -/
+theorem evalDist_gpvImplFlag_run_sign_offbad_eq (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain) (msg : M) (r : Salt)
+    (cache : (Salt × M →ₒ Range).QueryCache) (hmiss : cache (r, msg) = none)
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(do
+        let p ← (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+        let sgn ← psf.trapdoorSample pk sk p.1
+        pure (((r, sgn), (p.2, false)) :
+          (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × Bool)))]
+      = 𝒟[(do
+          let sgn ← (domainSample pk : ProbComp Domain)
+          pure (((r, sgn), (cache.cacheQuery (r, msg) (psf.eval pk sgn), false)) :
+            (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × Bool)))] := by
+  classical
+  set g : Range × Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × Bool) :=
+    fun cs => ((r, cs.2), (cache.cacheQuery (r, msg) cs.1, false)) with hg
+  rw [show (randomOracle (spec := (Salt × M →ₒ Range)) (r, msg)).run cache
+        = (fun u => (u, cache.cacheQuery (r, msg) u)) <$> ($ᵗ Range : ProbComp Range)
+      from QueryImpl.withCaching_run_none uniformSampleImpl hmiss]
+  have hLHS :
+      𝒟[(do
+          let p ← (fun u => (u, cache.cacheQuery (r, msg) u)) <$> ($ᵗ Range : ProbComp Range)
+          let sgn ← psf.trapdoorSample pk sk p.1
+          pure (((r, sgn), (p.2, false)) :
+            (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × Bool)))]
+        = 𝒟[g <$> (do let c ← ($ᵗ Range); let sgn ← psf.trapdoorSample pk sk c; pure (c, sgn)
+              : ProbComp (Range × Domain))] := by
+    simp only [hg, map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+  have hRHS :
+      𝒟[(do
+          let sgn ← (domainSample pk : ProbComp Domain)
+          pure (((r, sgn), (cache.cacheQuery (r, msg) (psf.eval pk sgn), false)) :
+            (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × Bool)))]
+        = 𝒟[g <$> (do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+              : ProbComp (Range × Domain))] := by
+    simp only [hg, map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+  refine hLHS.trans (Eq.trans ?_ hRHS.symm)
+  exact evalDist_map_eq_of_evalDist_eq hreg.symm g
+
+omit [Fintype Salt] in
+open Classical in
+/-- **Off-bad random-oracle-read agreement of the two original handlers.** On a random-oracle read
+the underlying `gpvRealImpl` and `progGameRunImplNoRec` agree in distribution: on a cache hit both
+return the recorded value with the cache unchanged; on a cache miss the real lazy oracle draws a
+fresh uniform answer while the programmed oracle answers `psf.eval pk (domainSample pk)` and records
+it, and these two answers are equally distributed by the first marginal of `hreg`. This is the
+random-oracle-read case of the universal off-bad agreement `gpvImplFlag_h_agree_good`. -/
+theorem evalDist_gpvImpl_run_read_eq (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
+    (mc : Salt × M) (cache : (Salt × M →ₒ Range).QueryCache)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))]) :
+    𝒟[(gpvRealImpl psf hr M Salt pk sk (.inl (.inr mc))).run cache]
+      = 𝒟[(progGameRunImplNoRec psf M Salt domainSample pk (.inl (.inr mc))).run cache] := by
+  classical
+  rw [gpvRealImpl_run_read, progGameRunImplNoRec_run_read]
+  rcases h : cache mc with _ | v
+  · -- Cache miss: real draws a fresh uniform answer; prog programs `eval ∘ domainSample`.
+    rw [QueryImpl.withCaching_run_none uniformSampleImpl h]
+    simp only []
+    -- The first marginal of `hreg`: `eval ∘ domainSample ~ $ᵗ Range`.
+    have hfst := evalDist_eval_domainSample_eq_uniform psf pk sk domainSample hNF hreg
+    -- Both sides are `g <$> (·)` for `g w = (w, cache.cacheQuery mc w)` on the equal answers.
+    calc 𝒟[(fun u => (u, cache.cacheQuery mc u)) <$>
+            (uniformSampleImpl (spec := (Salt × M →ₒ Range)) mc)]
+        = 𝒟[(fun w : Range => (w, cache.cacheQuery mc w)) <$> ($ᵗ Range : ProbComp Range)] := rfl
+      _ = 𝒟[(fun w : Range => (w, cache.cacheQuery mc w)) <$>
+            (do let sd ← domainSample pk; pure (psf.eval pk sd) : ProbComp Range)] :=
+          evalDist_map_eq_of_evalDist_eq hfst.symm _
+      _ = 𝒟[(fun sd : Domain => (psf.eval pk sd, cache.cacheQuery mc (psf.eval pk sd))) <$>
+            (domainSample pk : ProbComp Domain)] := by
+          simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_def]
+  · -- Cache hit: both return the recorded value, cache unchanged.
+    rw [QueryImpl.withCaching_run_some uniformSampleImpl h]
+    rfl
+
+omit [Fintype Salt] in
+open Classical in
+/-- **Universal off-bad per-query agreement of the two original-run flag handlers (the framework
+`h_agree_good`).** For *every* query `t` and *every* off-bad input state `(s, false)`, the two flag
+handlers `gpvRealImplFlag` / `progGameRunImplNoRecFlag` assign equal probability to every *off-bad
+output* `(u, (s', false))`.
+
+This is the exact `h_agree_good` hypothesis of the framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad`. It is genuinely *universal* without any spurious
+"empty-tape" bad state: the salt of each signing query is drawn *inline at the step*, so on a
+signing query the off-bad output probability splits (over the inline salt `r`) into a sum whose
+keyed-`r` summands vanish (the flag fires, so the `false`-flag output has probability `0` on both
+sides) and whose unkeyed-`r` summands agree by the inline-salt signing-miss bridge
+`evalDist_gpvImplFlag_run_sign_offbad_eq`. Non-signing queries reduce to the underlying
+`gpvRealImpl` / `progGameRunImplNoRec` agreement (uniform: literally identical; random-oracle read:
+cache hit identical, cache miss distributional by `hreg`).
+
+It is *true-as-stated* and *pinned* to the concrete flag handlers (no free parameters). -/
+theorem gpvImplFlag_h_agree_good (pk : PK) (sk : SK) (domainSample : PK → ProbComp Domain)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let sd ← domainSample pk; pure (psf.eval pk sd, sd)
+            : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let sd ← psf.trapdoorSample pk sk c; pure (c, sd)
+            : ProbComp (Range × Domain))])
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache)
+    (u : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range t)
+    (s' : (Salt × M →ₒ Range).QueryCache) :
+    Pr[= (u, (s', false)) | (gpvRealImplFlag psf hr M Salt pk sk t).run (s, false)]
+      = Pr[= (u, (s', false)) |
+          (progGameRunImplNoRecFlag psf M Salt domainSample pk t).run (s, false)] := by
+  cases t with
+  | inl q =>
+      -- Non-signing query: flag is passive (`F = false`), reduce to the underlying agreement.
+      rw [gpvRealImplFlag_run_inl, progGameRunImplNoRecFlag_run_inl]
+      rw [probOutput_flagTag_false, probOutput_flagTag_false, if_pos rfl, if_pos rfl]
+      cases q with
+      | inl n =>
+          -- Uniform query: the two underlying handlers are literally identical.
+          rw [gpvRealImpl_run_unif, progGameRunImplNoRec_run_unif]
+      | inr mc =>
+          -- Random-oracle read: agree by the underlying read agreement (hit/miss by `hreg`).
+          exact probOutput_congr rfl
+            (evalDist_gpvImpl_run_read_eq psf hr M Salt pk sk domainSample mc s hNF hreg)
+  | inr msg =>
+      -- Signing query: split over the inline salt `r`.  Keyed `r` ⇒ flag fires ⇒ both `0`;
+      -- unkeyed `r` ⇒ flag stays `false` ⇒ bodies agree by the inline-salt signing-miss bridge.
+      rw [gpvRealImplFlag_run_inr, progGameRunImplNoRecFlag_run_inr]
+      simp only [Bool.false_or]
+      rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
+      refine tsum_congr (fun r => ?_)
+      refine congrArg _ ?_
+      rcases hkey : saltKeyed M Salt s r with _ | _
+      · -- Unkeyed salt `r`: flag stays `false`; bodies agree.
+        have hmiss : s (r, msg) = none := (saltKeyed_eq_false_iff M Salt s r).1 hkey msg
+        exact probOutput_congr rfl
+          (evalDist_gpvImplFlag_run_sign_offbad_eq psf M Salt pk sk domainSample
+            msg r s hmiss hreg)
+      · -- Keyed salt `r`: the flag fires (`true`); the `false`-flag output has probability `0`.
+        rw [probOutput_eq_zero_of_not_mem_support, probOutput_eq_zero_of_not_mem_support]
+        · -- Real side support: every output carries flag `true`.
+          intro hmem
+          simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+            Prod.mk.injEq] at hmem
+          tauto
+        · -- Programmed side support: every output carries flag `true`.
+          intro hmem
+          simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+            Prod.mk.injEq] at hmem
+          tauto
+
+omit [Fintype Salt] in
+open Classical in
+/-- **Original-run framework reduction of Step 1 to the run-level collision flag.** The
+total-variation distance between the two *original* GPV game runs `realGameRun` / `progGameRun` is
+bounded by the run-level collision-flag probability of the flag-instrumented real run
+`gpvRealImplFlag`.
+
+This is the direct application of the framework identical-until-bad lemma
+`tvDist_simulateQ_run_le_probEvent_output_bad` to the flag-instrumented original handlers
+`gpvRealImplFlag` / `progGameRunImplNoRecFlag`, fed the universal off-bad per-query agreement
+`gpvImplFlag_h_agree_good` and the bad-monotonicity `gpvRealImplFlag_bad_mono` /
+`progGameRunImplNoRecFlag_bad_mono` (the `h_mono` hypotheses).  The run-level flag projection
+`map_run_gpvRealImplFlag_eq` / `map_run_progGameRunImplNoRecFlag_eq` identifies the output
+projection of the flagless original run with that of the flagged run, and
+`realGameRun_eq_run'_implReal` / `progGameRun_eq_run'_implNoRec` pin those flagless output
+projections to the actual game runs; the data-processing contraction `tvDist_map_le` then reduces
+the framework total-variation bound to the original-run TV distance.
+
+Unlike the front-tape reduction `gpv_tvDist_tape_run_le_probEvent_flag`, there is **no upfront salt
+tape**: each signing salt is drawn inline at its step, so the run-level flag probability telescopes
+*directly* to the salt-averaged birthday term (no re-interleaving). -/
+theorem gpv_tvDist_orig_run_le_probEvent_flag (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (hNF : ∀ c, NeverFail (psf.trapdoorSample pk sk c))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))]) :
+    SPMF.tvDist (realGameRun psf hr M Salt adv pk sk)
+        (progGameRun psf hr M Salt adv domainSample pk)
+      ≤ Pr[fun z : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+          (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), false)].toReal := by
+  -- Pin both game runs to the output projections of the flagless original runs.
+  rw [realGameRun_eq_run'_implReal, progGameRun_eq_run'_implNoRec, StateT.run', StateT.run']
+  -- Move to the `OracleComp.tvDist` form (`SPMF.tvDist 𝒟[·] 𝒟[·] = tvDist · ·`).
+  change tvDist (Prod.fst <$> (simulateQ (gpvRealImpl psf hr M Salt pk sk) (adv.main pk)).run
+        (∅ : (Salt × M →ₒ Range).QueryCache))
+      (Prod.fst <$> (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk) (adv.main pk)).run
+        (∅ : (Salt × M →ₒ Range).QueryCache)) ≤ _
+  -- The output projection of each flagless run equals the doubly-projected flagged run.
+  have hreal := map_run_gpvRealImplFlag_eq psf hr M Salt pk sk (adv.main pk)
+    ((∅ : (Salt × M →ₒ Range).QueryCache), false)
+  have hprog := map_run_progGameRunImplNoRecFlag_eq psf M Salt domainSample pk (adv.main pk)
+    ((∅ : (Salt × M →ₒ Range).QueryCache), false)
+  rw [show (Prod.fst <$> (simulateQ (gpvRealImpl psf hr M Salt pk sk) (adv.main pk)).run
+          (∅ : (Salt × M →ₒ Range).QueryCache))
+        = (fun z : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × Bool) => z.1) <$>
+          (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), false) from by
+      rw [← hreal, Functor.map_map]; rfl]
+  rw [show (Prod.fst <$> (simulateQ (progGameRunImplNoRec psf M Salt domainSample pk)
+          (adv.main pk)).run (∅ : (Salt × M →ₒ Range).QueryCache))
+        = (fun z : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × Bool) => z.1) <$>
+          (simulateQ (progGameRunImplNoRecFlag psf M Salt domainSample pk) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), false) from by
+      rw [← hprog, Functor.map_map]; rfl]
+  -- Data-processing contraction then the framework identical-until-bad bound.
+  refine le_trans (tvDist_map_le _ _ _) ?_
+  exact OracleComp.ProgramLogic.Relational.tvDist_simulateQ_run_le_probEvent_output_bad
+    (gpvRealImplFlag psf hr M Salt pk sk) (progGameRunImplNoRecFlag psf M Salt domainSample pk)
+    (adv.main pk) (∅ : (Salt × M →ₒ Range).QueryCache)
+    (gpvImplFlag_h_agree_good psf hr M Salt pk sk domainSample hNF hreg)
+    (gpvRealImplFlag_bad_mono psf hr M Salt pk sk)
+    (progGameRunImplNoRecFlag_bad_mono psf M Salt domainSample pk)
+
+open Classical in
+/-- **(A2) Original-run cardinality telescope: the run-level collision flag of the inline-salt real
+handler is bounded by `collisionBound`.**
+
+The run-level collision-flag probability of the flag-instrumented *original* real run of
+`adv.main pk` (started from the empty cache and an unset flag) is bounded by
+`(collisionBound Salt qSign qHash).toReal`.
+
+The flag fires when an inline-drawn signing salt `r ← $ᵗ Salt` lands on a key already recorded in
+the running random-oracle cache.  Because the salt is drawn *at* its signing step (not pre-drawn
+into an upfront tape), an `OracleComp.inductionOn` over `adv.main pk` threads the partial flag
+probability `Pr[flag fired in the first j queries]` across the adaptive adversary; at the `j`-th
+signing step the inline salt `r` is a fresh uniform `$ᵗ Salt` *independent of the running cache*
+(it has not yet been
+revealed at that point), so it lands on the cache slice with probability `card (cache j) / |Salt|`
+(`probEvent_mem_uniformSample`), where `card (cache j) ≤ j + qHash` by the cache-growth invariant
+(`hQ` bounds the adversary to `≤ qSign` signing salts and `≤ qHash` hash-query cache entries).
+Summing
+`∑_{j < qSign} (j + qHash) / |Salt| = (qSign + qHash)² / (2 |Salt|) = collisionBound`
+(`sum_range_div_card_le_collisionBound`) gives the bound, mapping onto the proven
+`probEvent_saltSeq_le_collisionBound` telescope — *without* the front-tape re-interleaving that the
+upfront-tape residual `(A′)` `gpv_tape_avg_flag_le_collisionBound` requires.
+
+It is *true-as-stated* (counterexample-checked at `qSign = 0`: `hQ` permits no signing query, so the
+flag — which only fires on a signing step — is never set, the flag probability is `0`, and
+`0 ≤ (collisionBound …).toReal`) and *pinned* to the concrete flag handler `gpvRealImplFlag` and the
+actual game-run vehicle `adv.main pk` (NOT free parameters).  It is the genuine `#228`-class deep
+coupling content the campaign has isolated; the off-collision per-query agreement it pairs with is
+fully discharged (`gpvImplFlag_h_agree_good`, universal), and the framework reduction of Step 1's TV
+to this flag probability is fully discharged (`gpv_tvDist_orig_run_le_probEvent_flag`). -/
+theorem gpv_orig_flag_le_collisionBound [Inhabited Range] [Nonempty Salt]
+    (pk : PK) (sk : SK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (qSign qHash : ℕ)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    Pr[fun z : (M × (Salt × Domain)) × ((Salt × M →ₒ Range).QueryCache × Bool) => z.2.2 = true |
+        (simulateQ (gpvRealImplFlag psf hr M Salt pk sk) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), false)].toReal
+      ≤ (collisionBound Salt qSign qHash).toReal := by
+  -- The original-run cardinality telescope `OracleComp.inductionOn` over `adv.main pk` with the
+  -- cache-growth invariant `card (cache j) ≤ j + qHash`, charging each fresh inline signing salt
+  -- against the running cache slice via `probEvent_mem_uniformSample` (the salt is drawn at its
+  -- step, so no re-interleaving is needed) and summing via `sum_range_div_card_le_collisionBound`.
+  -- This is the single remaining `#228`-class residual.
+  let _ := hQ
+  sorry
+
+/-- **Step 1 (sign-then-hash ≡ real) TV bound — proven, consuming the original-run flag residual.**
 
 This is the salt-inclusive sign-then-hash hop *over the pinned GPV game runs*, with the deep
-coupling supplied by the per-tape identical-until-bad residual
-`gpv_tvDist_tape_runs_le_collisionBound`.
+coupling supplied by the original-run cardinality telescope `(A2)`
+`gpv_orig_flag_le_collisionBound`.
 The real run `realGameRun … adv pk sk` (the real EUF-CMA game) and the programmed run
 `progGameRun … adv domainSample pk` (the randomized sign-then-hash game of the collision reduction)
 are the two distributions of the sign-then-hash hop; given the query bound `hQ`, the trapdoor
@@ -3631,13 +4129,15 @@ It is the GPV instance of the U2 surface
 `tvDist_runtime_real_programmed_le_collisionBound_saltInclusive`, but unconditional and over the
 actual game run.
 
-**Proof route (direct front-tape).** The proof chains the banked front-tape
-factorization bridges (`realGameRun_eq_drawList_gpvRealImplTape` /
-`progGameRun_eq_drawList_progGameRunImplTape`, putting both pinned game runs into the front-tape
-`drawList ($ᵗ Salt) qSign >>= tape-run` shape) with two direct pieces: the data-processing
-reduction `tvDist_drawList_bind_le` `(C)`, and the per-tape identical-until-bad coupling
-`gpv_tvDist_tape_runs_le_collisionBound` `(A)`, which already bounds the tape-averaged TV directly
-by `(collisionBound …).toReal`. -/
+**Proof route (original-run, inline salt).** The proof chains the framework identical-until-bad
+reduction `gpv_tvDist_orig_run_le_probEvent_flag` — which bounds the Step-1 TV directly by the
+run-level collision-flag probability of the flag-instrumented *original* (inline-salt) real handler
+`gpvRealImplFlag` (consuming the universal off-bad agreement `gpvImplFlag_h_agree_good` and the
+bad-monotonicity `h_mono`s) — with the original-run cardinality telescope `(A2)`
+`gpv_orig_flag_le_collisionBound`, which bounds that flag probability by
+`(collisionBound …).toReal`.  Because each signing salt is drawn inline at its step, this route
+side-steps the upfront-tape re-interleaving that the front-tape residual
+`gpv_tvDist_tape_runs_le_collisionBound` `(A)` requires. -/
 theorem gpv_tvDist_real_programmed_le_collisionBound
     [Finite Range] [Inhabited Range] [Nonempty Salt]
     (pk : PK) (sk : SK)
@@ -3655,15 +4155,13 @@ theorem gpv_tvDist_real_programmed_le_collisionBound
         (progGameRun psf hr M Salt adv domainSample pk)
       ≤ (collisionBound Salt qSign qHash).toReal := by
   classical
-  -- (C): the data-processing reduction over the front salt tape, fed by the banked bridges.
-  refine le_trans (tvDist_drawList_bind_le (Salt := Salt) qSign _ _ _ _
-    (realGameRun_eq_drawList_gpvRealImplTape psf hr M Salt pk sk adv qSign qHash hQ)
-    (progGameRun_eq_drawList_progGameRunImplTape psf hr M Salt pk adv domainSample qSign qHash hQ))
-    ?_
-  -- (A): the tape-averaged identical-until-bad bound directly bounds the averaged TV by
-  -- `(collisionBound …).toReal`.
-  exact gpv_tvDist_tape_runs_le_collisionBound psf hr M Salt pk sk adv domainSample
-    qSign qHash hQ hNF hreg
+  -- Original-run re-route: the framework identical-until-bad reduction bounds the Step-1 TV by the
+  -- run-level collision-flag probability of the inline-salt flag handler
+  -- (`gpv_tvDist_orig_run_le_probEvent_flag`), which the original-run cardinality telescope `(A2)`
+  -- `gpv_orig_flag_le_collisionBound` bounds by `(collisionBound …).toReal`.
+  refine le_trans
+    (gpv_tvDist_orig_run_le_probEvent_flag psf hr M Salt pk sk adv domainSample hNF hreg) ?_
+  exact gpv_orig_flag_le_collisionBound psf hr M Salt pk sk adv qSign qHash hQ
 
 /-! ## State-threading bridge: runtime ↦ bare random oracle
 
