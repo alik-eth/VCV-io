@@ -8339,6 +8339,31 @@ lemma embedTrapImpl_run_step_indep_of_target (pk : PK) (sk : SK) (j : ℕ) (y₁
           | none => simp only [if_neg (hoff q rfl hq)]
   | inr msg => rw [embedTrapImpl_run_inr, embedTrapImpl_run_inr]
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Front-draw commute past one trap-sibling embed step (the answer-irrelevant case).** A leading
+independent draw `od : ProbComp ρ` feeding a continuation that runs one `embedTrapImpl … j y` step
+and then consumes `od`'s value commutes past that step: the step's answer draw and `od` are
+independent `ProbComp`s, so they may be drawn in either order (`evalDist_bind_comm`).
+
+This is the distribution-level building block of the GPV Step-2 embed-side front-loading: it is what
+lets the externally-averaged target `y ← $ᵗ Range` be pushed *past* each non-winner step of the
+`simulateQ (embedTrapImpl … j y)` fold (combined with `embedTrapImpl_run_step_indep_of_target`,
+which makes every off-`j` step literally independent of `y`).  It is fully generic in the step
+constructor `t`, so it applies uniformly to uniform queries, random-oracle cache hits/misses, and
+signing steps; the genuine residual is only the single count-`j` miss at which `y` is consumed. -/
+theorem embedTrapImpl_frontDraw_commute {ρ γ : Type} (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    (od : ProbComp ρ)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ)
+    (k : ρ → (((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range t ×
+      ((Salt × M →ₒ Range).QueryCache × ℕ)) → ProbComp γ) :
+    𝒟[od >>= fun r =>
+        (embedTrapImpl psf M Salt pk sk j y t).run s >>= fun pq => k r pq] =
+      𝒟[(embedTrapImpl psf M Salt pk sk j y t).run s >>= fun pq =>
+        od >>= fun r => k r pq] :=
+  OracleComp.DeferredSampling.evalDist_bind_comm od
+    ((embedTrapImpl psf M Salt pk sk j y t).run s) (fun r pq => k r pq)
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
@@ -8399,26 +8424,41 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- `y ← $ᵗ Range` *outside* the fold and runs `embedTrapImpl … j y`, which caches `y` at its
   -- count-`j` random-oracle miss and draws fresh uniform images everywhere else.
   --
-  -- The remaining content is the *front-loading commute*: push the inline `v⋆` to the front of the
-  -- fold and re-express it as the externally-averaged `y` (both `$ᵗ Range`).  The scaffold is in
-  -- place: by `embedTrapImpl_run_step_indep_of_target`, `embedTrapImpl … j y` depends on `y` at
-  -- *exactly* the count-`j` miss, so at every other step the front `y`-draw commutes past the step
-  -- (`OracleComp.DeferredSampling.evalDist_bind_comm` / `evalDist_step_commute_tape`), mirroring
-  -- the non-drawing cases of `evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`; the off-`j` cache
-  -- equality and the write-only-table↔external-`trapdoorSample` independence are the
-  -- `hreg`/`hNF`-discharged content of `evalDist_run_embedAtIndexImpl_eq_embedTrap` (N3/N4).  The
-  -- residual is the *single* count-`j` step at which `v⋆` and `y` are substituted, plus the
-  -- adaptive-position bookkeeping (the `j`-th programming step is determined by the transcript, not
-  -- fixed syntactically) — a genuine `PMF × PMF` joint coupling between the inline draw and the
-  -- external average that the per-step commute scaffold does not by itself discharge.
+  -- **Step 1 (sorry-free): fold the `y`-average into a single front draw.** The right-hand `∑' y`
+  -- weighted by `Pr[= y | $ᵗ Range]` is exactly the output probability of the bind that draws
+  -- `y ← $ᵗ Range` first and then runs the per-target win game (`probOutput_bind_eq_tsum`).  This
+  -- puts the right side in the *front-loaded* form `Pr[= true | y ← $ᵗ Range; …]`, matching the
+  -- trap run's inline `v⋆ ← $ᵗ Range` up to the adaptive count-`j` position.
+  rw [← probOutput_bind_eq_tsum]
+  -- **Step 2 (the isolated residual): the adaptive count-`j` substitution.**
+  --
+  -- The goal is now `LHS_trap ≤ Pr[= true | y ← $ᵗ Range; x ← trapdoorSample pk sk y;
+  --   r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
+  --   pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]`, i.e. both sides now carry
+  -- a single `$ᵗ Range` draw: the trap run draws it *inline* at the adaptively-determined `j`-th
+  -- programming step, the embed game draws it at the *front* (consumed at its count-`j` miss).
+  --
+  -- The front-`y` draw commutes past every *non*-count-`j` embed step — each such step is literally
+  -- `y`-independent (`embedTrapImpl_run_step_indep_of_target`) and an independent `ProbComp` draw,
+  -- so the front draw exchanges with it (`embedTrapImpl_frontDraw_commute`, banked above) — leaving
+  -- only the single count-`j` miss at which `y` is consumed.  The off-`j` cache equality and the
+  -- write-only-table↔external-`trapdoorSample` independence are the `hreg`/`hNF`-discharged content
+  -- of `evalDist_run_embedAtIndexImpl_eq_embedTrap` (N3/N4).
+  --
+  -- The residual is the *single* count-`j` step at which the trap's inline `v⋆` and the embed's
+  -- front `y` are substituted, plus the adaptive-position bookkeeping: the `j`-th programming step
+  -- is determined by the transcript, not fixed syntactically, and the embed draws are conditional
+  -- on a *runtime* cache miss (not a syntactic query constructor), so a fixed-position `drawList`
+  -- tape does not capture the coupling.  This is a genuine `PMF × PMF` joint coupling: the inline
+  -- draw at the adaptive fold position and the external front draw — the multi-week residual that
+  -- the per-step commute building blocks do not by themselves discharge.
   --
   -- Unsolved goal (verbatim):
   --   ⊢ Pr[<trap-event w ∧ recorded-index(forged) = some j>
   --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
-  --     ≤ ∑' y, Pr[= y | $ᵗ Range] *
-  --         Pr[= true | x ← trapdoorSample pk sk y;
-  --                     r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
-  --                     pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]
+  --     ≤ Pr[= true | y ← $ᵗ Range; x ← trapdoorSample pk sk y;
+  --                   r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
+  --                   pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]
   sorry
 
 open Classical in
