@@ -7345,6 +7345,54 @@ lemma probOutput_reservoirWinnerIndex_eq :
         push_cast
         ring_nf
 
+/-- **D2b — the reservoir winner index always lands on a programmed entry.** Starting from at least
+one programmed entry, the reservoir winner marginal places no mass on `none`: every run of
+`reservoirWinnerIndex (N + 1)` selects one of the recorded slots.  This is the exhaustiveness fact
+the in-fold lift consumes: the union of the per-slot winning events `{winner = some j}` exhausts the
+winner marginal, so summing the per-slot uniform mass `1 / N` (`probOutput_reservoirWinnerIndex_eq`)
+over the `N` slots recovers the whole probability with no leftover `none` branch. Proved by
+partitioning the unit total mass (`tsum_probOutput_reservoirWinnerIndex`) into the `none` atom and
+the `some j` atoms, the latter summing to `∑_{j < N} 1 / N = 1` by D2a together with the support
+bound `reservoirWinnerIndex_support_lt`. -/
+lemma probOutput_reservoirWinnerIndex_none_eq_zero (N : ℕ) (hN : N ≠ 0) :
+    Pr[= (none : Option ℕ) | reservoirWinnerIndex N] = 0 := by
+  have hsplit : ∑' w : Option ℕ, Pr[= w | reservoirWinnerIndex N]
+      = Pr[= (none : Option ℕ) | reservoirWinnerIndex N]
+        + ∑' j : ℕ, Pr[= some j | reservoirWinnerIndex N] := by
+    rw [tsum_option _ ENNReal.summable]
+  rw [tsum_probOutput_reservoirWinnerIndex] at hsplit
+  have hsome : ∑' j : ℕ, Pr[= some j | reservoirWinnerIndex N] = 1 := by
+    have hpt : ∀ j : ℕ,
+        Pr[= some j | reservoirWinnerIndex N] = if j < N then (N : ℝ≥0∞)⁻¹ else 0 := by
+      intro j
+      by_cases hj : j < N
+      · rw [if_pos hj, probOutput_reservoirWinnerIndex_eq N j hj]
+      · rw [if_neg hj]
+        exact probOutput_eq_zero_of_not_mem_support
+          (fun hmem => hj (reservoirWinnerIndex_support_lt N (some j) hmem j rfl))
+    rw [tsum_congr hpt,
+      tsum_eq_sum (s := Finset.range N) (fun j hj => by rw [if_neg]; simpa using hj)]
+    rw [Finset.sum_congr rfl (fun j hj => by rw [if_pos (Finset.mem_range.mp hj)])]
+    rw [Finset.sum_const, Finset.card_range, nsmul_eq_mul,
+      ENNReal.mul_inv_cancel (by exact_mod_cast hN) (by simp)]
+  rw [hsome] at hsplit
+  have h1 : Pr[= (none : Option ℕ) | reservoirWinnerIndex N] + 1 = 0 + 1 := by
+    rw [zero_add]; exact hsplit.symm
+  exact WithTop.add_right_cancel one_ne_top h1
+
+/-- **D2b — reservoir winner uniform lower bound.** When the realized programmed-entry count `N` is
+at most the multi-target budget `Q := qSign + qHash`, the reservoir winner lands on any fixed slot
+`j < N` with probability at least `1 / Q`.  This converts the exact per-`N` uniformity of D2a
+(`probOutput_reservoirWinnerIndex_eq`, each slot has mass exactly `1 / N`) into the budget-uniform
+lower bound `1 / Q` that the multi-target factor `qSign + qHash` of the exact-match reduction pays:
+since `N ≤ Q`, `1 / N ≥ 1 / Q`.  Lifting this per-slot bound into the in-fold run (where `N` and the
+slot identities are adaptive, but always `N ≤ qSign + qHash` by `combined_run_table_card_le`) is the
+data-independent core of the reservoir close. -/
+lemma probOutput_reservoirWinnerIndex_ge (N j Q : ℕ) (hj : j < N) (hNQ : N ≤ Q) :
+    (Q : ℝ≥0∞)⁻¹ ≤ Pr[= some j | reservoirWinnerIndex N] := by
+  rw [probOutput_reservoirWinnerIndex_eq N j hj]
+  exact ENNReal.inv_le_inv.mpr (by exact_mod_cast hNQ)
+
 omit [Fintype Salt] in
 /-- **D0 — exact-match advantage as a target-averaged reservoir win.** The per-key exact-match term
 of the programmed-preimage reduction expands, over the uniform target draw `y ← $ᵗ Range`, into the
