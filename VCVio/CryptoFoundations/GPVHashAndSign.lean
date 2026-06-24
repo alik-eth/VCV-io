@@ -8633,6 +8633,493 @@ lemma evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh [Inhabited Range]
         refine evalDist_bind_congr' _ (fun p => ?_)
         exact ih p.1 p.2
 
+/-- **Index-augmented trap-sibling embed handler.** Identical to `embedTrapImpl … j y` on its
+`cache × ℕ` state component (winner branch `if st.2 = j then embed y` included), but additionally
+threads a passive insertion-index table `(Salt × M) → Option ℕ`: at each programming event
+(random-oracle miss or signing step) it records the current counter value into the index table at
+the freshly written key.  The index table is never *read* during the run, so it is distributionally
+passive: projecting it away recovers `embedTrapImpl … j y` exactly (`embedTrapIdxImpl_proj`).
+
+The point of the augmentation is that at the count-`j` winner random-oracle miss the cached image is
+`y` *and* the recorded index is `j`: this is the run-only witness that the forged point being the
+embedded winner slot (`cache(forged) = some y`) coincides with `idx(forged) = some j`. -/
+noncomputable def embedTrapIdxImpl (pk : PK) (sk : SK) (j : ℕ) (y : Range) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) ProbComp) :=
+  let State := ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1.1 t with
+      | some v => pure v
+      | none => do
+          let v ← ($ᵗ Range : ProbComp Range)
+          if st.1.2 = j then
+            set (((st.1.1.cacheQuery t y, st.1.2 + 1),
+              fun t' => if t' = t then some st.1.2 else st.2 t') : State)
+            pure y
+          else
+            set (((st.1.1.cacheQuery t v, st.1.2 + 1),
+              fun t' => if t' = t then some st.1.2 else st.2 t') : State)
+            pure v
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let c ← ($ᵗ Range : ProbComp Range)
+      let x ← (psf.trapdoorSample pk sk c : ProbComp Domain)
+      let st ← get
+      set (((st.1.1.cacheQuery (r, msg) c, st.1.2 + 1),
+        fun t' => if t' = (r, msg) then some st.1.2 else st.2 t') : State)
+      pure (r, x)
+  (unifImpl + roImpl) + signImpl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapIdxImpl` on a uniform query. -/
+lemma embedTrapIdxImpl_run_inl_inl (pk : PK) (sk : SK) (j : ℕ) (y : Range) (q : unifSpec.Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    (embedTrapIdxImpl psf M Salt pk sk j y (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapIdxImpl` on a random-oracle query. -/
+lemma embedTrapIdxImpl_run_inl_inr (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    (q : (Salt × M →ₒ Range).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    ((embedTrapIdxImpl psf M Salt pk sk j y (.inl (.inr q))).run s :
+        ProbComp (Range × (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))) =
+      (match s.1.1 q with
+        | some v => pure (v, s)
+        | none =>
+            (fun v : Range =>
+              (if s.1.2 = j then
+                  (y, ((s.1.1.cacheQuery q y, s.1.2 + 1),
+                    fun t' => if t' = q then some s.1.2 else s.2 t'))
+                else
+                  (v, ((s.1.1.cacheQuery q v, s.1.2 + 1),
+                    fun t' => if t' = q then some s.1.2 else s.2 t')) :
+                Range × (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ))))
+              <$> ($ᵗ Range : ProbComp Range)) := by
+  cases hq : s.1.1 q with
+  | none =>
+      simp only [add_apply_inl, add_apply_inr, embedTrapIdxImpl, bind_pure_comp,
+        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
+        Function.comp_apply]
+      refine bind_congr fun v => ?_
+      split_ifs with hb <;> simp [StateT.run_set]
+  | some v =>
+      simp [embedTrapIdxImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, hq]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapIdxImpl` on a signing query. -/
+lemma embedTrapIdxImpl_run_inr (pk : PK) (sk : SK) (j : ℕ) (y : Range) (msg : M)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    ((embedTrapIdxImpl psf M Salt pk sk j y (.inr msg)).run s :
+        ProbComp ((Salt × Domain) ×
+          (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))) =
+      (($ᵗ Salt : ProbComp Salt) >>= fun r =>
+        ($ᵗ Range : ProbComp Range) >>= fun c =>
+          (fun x : Domain =>
+            ((r, x), ((s.1.1.cacheQuery (r, msg) c, s.1.2 + 1),
+              fun t' => if t' = (r, msg) then some s.1.2 else s.2 t')) :
+              Domain → (Salt × Domain) ×
+                (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))
+            <$> (psf.trapdoorSample pk sk c : ProbComp Domain)) := by
+  simp only [add_apply_inr, embedTrapIdxImpl, bind_pure_comp, map_eq_bind_pure_comp,
+    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
+    StateT.run_get, Function.comp_apply, pure_bind, StateT.run_set, StateT.run_pure]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Per-query passive projection of `embedTrapIdxImpl`.** Dropping the insertion-index table from
+one `embedTrapIdxImpl` query step recovers the corresponding `embedTrapImpl … j y` step. -/
+lemma embedTrapIdxImpl_proj (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+        (Salt × M →ₒ Range).QueryCache × ℕ) <$>
+        (embedTrapIdxImpl psf M Salt pk sk j y t).run s =
+      (embedTrapImpl psf M Salt pk sk j y t).run s.1 := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [embedTrapIdxImpl_run_inl_inl, embedTrapImpl_run_inl_inl]
+          simp [map_eq_bind_pure_comp, Prod.map]
+      | inr q =>
+          rw [embedTrapIdxImpl_run_inl_inr, embedTrapImpl_run_inl_inr]
+          cases s.1.1 q with
+          | none =>
+              simp only [Functor.map_map]
+              refine congrArg (fun f => f <$> ($ᵗ Range : ProbComp Range)) ?_
+              funext v; split_ifs <;> rfl
+          | some v => simp [Prod.map]
+  | inr msg =>
+      rw [embedTrapIdxImpl_run_inr, embedTrapImpl_run_inr]
+      simp [Functor.map_map, Prod.map, map_bind]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Run-level passive projection of `embedTrapIdxImpl`.** Dropping the insertion-index table from
+the full simulated run of `embedTrapIdxImpl` over `oa` recovers the run of `embedTrapImpl … j y`. -/
+lemma map_run_embedTrapIdxImpl_proj (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+        (Salt × M →ₒ Range).QueryCache × ℕ) <$>
+        (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) oa).run s =
+      (simulateQ (embedTrapImpl psf M Salt pk sk j y) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+      (Salt × M →ₒ Range).QueryCache × ℕ)
+    (embedTrapIdxImpl_proj psf M Salt pk sk j y) oa s
+
+/-- **Index-augmented inline-fresh embed handler.** Identical to `embedTrapFreshImpl` on its
+`cache × ℕ` state component, but additionally threads a passive insertion-index table
+`(Salt × M) → Option ℕ`: at each programming event (random-oracle miss or signing step) it records
+the current counter value into the index table at the freshly written key.  The index table is
+never *read* during the run, so it is distributionally passive: projecting it away recovers
+`embedTrapFreshImpl` exactly (`embedTrapFreshIdxImpl_proj`).
+
+This is the embed-side mirror of `progGameRunImplCombinedTrapCount`'s index instrument: both record,
+at each fresh random-oracle miss, the running counter value into an index table keyed at the missed
+point.  It is the run-only bookkeeping that replaces the `y`-reading win literal
+`cache(forged) = some y` of `embedTrapImpl` by the run-only predicate `idx(forged) = some j`. -/
+noncomputable def embedTrapFreshIdxImpl (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) ProbComp) :=
+  let State := ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1.1 t with
+      | some v => pure v
+      | none => do
+          let v ← ($ᵗ Range : ProbComp Range)
+          set (((st.1.1.cacheQuery t v, st.1.2 + 1),
+            fun t' => if t' = t then some st.1.2 else st.2 t') : State)
+          pure v
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let c ← ($ᵗ Range : ProbComp Range)
+      let x ← (psf.trapdoorSample pk sk c : ProbComp Domain)
+      let st ← get
+      set (((st.1.1.cacheQuery (r, msg) c, st.1.2 + 1),
+        fun t' => if t' = (r, msg) then some st.1.2 else st.2 t') : State)
+      pure (r, x)
+  (unifImpl + roImpl) + signImpl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapFreshIdxImpl` on a uniform query. -/
+lemma embedTrapFreshIdxImpl_run_inl_inl (pk : PK) (sk : SK) (q : unifSpec.Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    (embedTrapFreshIdxImpl psf M Salt pk sk (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapFreshIdxImpl` on a random-oracle query. -/
+lemma embedTrapFreshIdxImpl_run_inl_inr (pk : PK) (sk : SK) (q : (Salt × M →ₒ Range).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    ((embedTrapFreshIdxImpl psf M Salt pk sk (.inl (.inr q))).run s :
+        ProbComp (Range × (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))) =
+      (match s.1.1 q with
+        | some v => pure (v, s)
+        | none =>
+            (fun v : Range =>
+              ((v, ((s.1.1.cacheQuery q v, s.1.2 + 1),
+                fun t' => if t' = q then some s.1.2 else s.2 t')) :
+                Range × (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ))))
+              <$> ($ᵗ Range : ProbComp Range)) := by
+  cases hq : s.1.1 q with
+  | none =>
+      simp only [add_apply_inl, add_apply_inr, embedTrapFreshIdxImpl, bind_pure_comp,
+        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
+        Function.comp_apply, StateT.run_set, StateT.run_pure]
+  | some v =>
+      simp [embedTrapFreshIdxImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, hq]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapFreshIdxImpl` on a signing query. -/
+lemma embedTrapFreshIdxImpl_run_inr (pk : PK) (sk : SK) (msg : M)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    ((embedTrapFreshIdxImpl psf M Salt pk sk (.inr msg)).run s :
+        ProbComp ((Salt × Domain) ×
+          (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))) =
+      (($ᵗ Salt : ProbComp Salt) >>= fun r =>
+        ($ᵗ Range : ProbComp Range) >>= fun c =>
+          (fun x : Domain =>
+            ((r, x), ((s.1.1.cacheQuery (r, msg) c, s.1.2 + 1),
+              fun t' => if t' = (r, msg) then some s.1.2 else s.2 t')) :
+              Domain → (Salt × Domain) ×
+                (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))
+            <$> (psf.trapdoorSample pk sk c : ProbComp Domain)) := by
+  simp only [add_apply_inr, embedTrapFreshIdxImpl, bind_pure_comp, map_eq_bind_pure_comp,
+    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
+    StateT.run_get, Function.comp_apply, pure_bind, StateT.run_set, StateT.run_pure]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Per-query passive projection of `embedTrapFreshIdxImpl`.** Dropping the insertion-index table
+from one `embedTrapFreshIdxImpl` query step recovers the corresponding `embedTrapFreshImpl` step:
+the index table is written by a deterministic update that does not feed the answer draw or the
+`cache × ℕ` update, so it is distributionally passive. -/
+lemma embedTrapFreshIdxImpl_proj (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+        (Salt × M →ₒ Range).QueryCache × ℕ) <$>
+        (embedTrapFreshIdxImpl psf M Salt pk sk t).run s =
+      (embedTrapFreshImpl psf M Salt pk sk t).run s.1 := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [embedTrapFreshIdxImpl_run_inl_inl, embedTrapFreshImpl_run_inl_inl]
+          simp [map_eq_bind_pure_comp, Prod.map]
+      | inr q =>
+          rw [embedTrapFreshIdxImpl_run_inl_inr, embedTrapFreshImpl_run_inl_inr]
+          cases s.1.1 q with
+          | none => simp [map_eq_bind_pure_comp, Prod.map]
+          | some v => simp [Prod.map]
+  | inr msg =>
+      rw [embedTrapFreshIdxImpl_run_inr, embedTrapFreshImpl_run_inr]
+      simp [Functor.map_map, Prod.map, map_bind]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Run-level passive projection of `embedTrapFreshIdxImpl`.** Dropping the insertion-index table
+from the full simulated run of `embedTrapFreshIdxImpl` over `oa` recovers the run of
+`embedTrapFreshImpl` from the projected start state.  Transports the per-query
+`embedTrapFreshIdxImpl_proj` through the whole computation via
+`map_run_simulateQ_eq_of_query_map_eq`. -/
+lemma map_run_embedTrapFreshIdxImpl_proj (pk : PK) (sk : SK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) :
+    Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+        (Salt × M →ₒ Range).QueryCache × ℕ) <$>
+        (simulateQ (embedTrapFreshIdxImpl psf M Salt pk sk) oa).run s =
+      (simulateQ (embedTrapFreshImpl psf M Salt pk sk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+      (Salt × M →ₒ Range).QueryCache × ℕ)
+    (embedTrapFreshIdxImpl_proj psf M Salt pk sk) oa s
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Off the winner slot the idx-augmented trap-sibling embed step *is* the idx-augmented
+inline-fresh step.** Away from the count-`j` random-oracle miss the special winner branch never
+fires, so `embedTrapIdxImpl … j y` and `embedTrapFreshIdxImpl` run identically (the idx-table update
+is identical on both sides).  Idx-augmented mirror of `embedTrapImpl_run_step_eq_embedTrapFresh`. -/
+lemma embedTrapIdxImpl_run_step_eq_embedTrapFreshIdx (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ))
+    (hoff : ∀ q : (Salt × M →ₒ Range).Domain, t = .inl (.inr q) → s.1.1 q = none → s.1.2 ≠ j) :
+    (embedTrapIdxImpl psf M Salt pk sk j y t).run s =
+      (embedTrapFreshIdxImpl psf M Salt pk sk t).run s := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q => rw [embedTrapIdxImpl_run_inl_inl, embedTrapFreshIdxImpl_run_inl_inl]
+      | inr q =>
+          rw [embedTrapIdxImpl_run_inl_inr, embedTrapFreshIdxImpl_run_inl_inr]
+          cases hq : s.1.1 q with
+          | some v => rfl
+          | none => simp only [if_neg (hoff q rfl hq)]
+  | inr msg => rw [embedTrapIdxImpl_run_inr, embedTrapFreshIdxImpl_run_inr]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Per-step the idx-augmented trap-sibling embed counter never decreases.** Idx-augmented mirror
+of `embedTrapImpl_run_step_count_le`. -/
+lemma embedTrapIdxImpl_run_step_count_le (pk : PK) (sk : SK) (j : ℕ) (y : Range)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ))
+    (z : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Range t ×
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)))
+    (hz : z ∈ support ((embedTrapIdxImpl psf M Salt pk sk j y t).run s)) :
+    s.1.2 ≤ z.2.1.2 := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [embedTrapIdxImpl_run_inl_inl, map_eq_bind_pure_comp] at hz
+          obtain ⟨v, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hz
+          simp only [Function.comp_apply] at hh
+          subst hh
+          rfl
+      | inr q =>
+          rw [embedTrapIdxImpl_run_inl_inr] at hz
+          cases hq : s.1.1 q with
+          | some v =>
+              rw [hq, support_pure, Set.mem_singleton_iff] at hz
+              subst hz; rfl
+          | none =>
+              rw [hq, map_eq_bind_pure_comp] at hz
+              obtain ⟨v, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hz
+              simp only [Function.comp_apply, support_pure, Set.mem_singleton_iff] at hh
+              subst hh; split_ifs <;> simp
+  | inr msg =>
+      rw [embedTrapIdxImpl_run_inr] at hz
+      obtain ⟨r, -, hz⟩ := (mem_support_bind_iff _ _ _).1 hz
+      obtain ⟨c, -, hz⟩ := (mem_support_bind_iff _ _ _).1 hz
+      rw [map_eq_bind_pure_comp] at hz
+      obtain ⟨x, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hz
+      simp only [Function.comp_apply] at hh
+      subst hh; simp
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Post-winner coincidence (idx-augmented).** Once the running counter has passed the winner slot
+(`j < s.1.2`), `embedTrapIdxImpl … j y` and `embedTrapFreshIdxImpl` produce identical output
+distributions over any `oa`.  Idx-augmented mirror of
+`evalDist_run_embedTrapImpl_eq_embedTrapFresh_of_lt`. -/
+lemma evalDist_run_embedTrapIdxImpl_eq_embedTrapFreshIdx_of_lt (pk : PK) (sk : SK) (j : ℕ)
+    (y : Range)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β) :
+    ∀ (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)), j < s.1.2 →
+      𝒟[(simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) oa).run s] =
+        𝒟[(simulateQ (embedTrapFreshIdxImpl psf M Salt pk sk) oa).run s] := by
+  induction oa using OracleComp.inductionOn with
+  | pure a => intro s _; rfl
+  | query_bind t ob ih =>
+      intro s hs
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind]
+      have hstep : (embedTrapIdxImpl psf M Salt pk sk j y t).run s =
+          (embedTrapFreshIdxImpl psf M Salt pk sk t).run s :=
+        embedTrapIdxImpl_run_step_eq_embedTrapFreshIdx psf M Salt pk sk j y t s
+          (fun q _ _ => by omega)
+      rw [hstep]
+      refine evalDist_bind_congr (fun p hp => ?_)
+      have hcount : s.1.2 ≤ p.2.1.2 :=
+        embedTrapIdxImpl_run_step_count_le psf M Salt pk sk j y t s p (by rw [hstep]; exact hp)
+      exact ih p.1 p.2 (by omega)
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **The idx-augmented GPV Step-2 front-loading lift.** Averaging the idx-augmented trap-sibling
+embed run over an external target draw `y ← $ᵗ Range` equals the idx-augmented inline-fresh run
+`embedTrapFreshIdxImpl`.  Idx-augmented mirror of
+`evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh`: off-winner steps commute the front `y` past
+`y`-independent steps; at the count-`j` winner miss the front `y` is the immediately consumed draw
+(cached at the slot tagged `idx = some j`), so the front `y` *is* the inline-fresh winner draw, and
+post-winner the two runs coincide (`evalDist_run_embedTrapIdxImpl_eq_embedTrapFreshIdx_of_lt`). -/
+lemma evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx [Inhabited Range]
+    (pk : PK) (sk : SK) (j : ℕ)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β) :
+    ∀ (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)),
+      𝒟[(($ᵗ Range : ProbComp Range) >>= fun y =>
+          (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) oa).run s)] =
+        𝒟[(simulateQ (embedTrapFreshIdxImpl psf M Salt pk sk) oa).run s] := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s
+      simp only [simulateQ_pure, StateT.run_pure]
+      rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+        (probFailure_uniformSample Range)]
+  | query_bind t ob ih =>
+      intro s
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind]
+      by_cases hwin : ∃ q : (Salt × M →ₒ Range).Domain,
+          t = .inl (.inr q) ∧ s.1.1 q = none ∧ s.1.2 = j
+      · -- **Winner step.** Substitute the front `y` for the inline fresh winner draw.
+        obtain ⟨q, rfl, hmiss, hcount⟩ := hwin
+        rw [show (fun y => (embedTrapIdxImpl psf M Salt pk sk j y (.inl (.inr q))).run s >>=
+                fun p => (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (ob p.1)).run p.2)
+              = (fun y => (($ᵗ Range : ProbComp Range) >>= fun _ =>
+                  (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (ob y)).run
+                    ((s.1.1.cacheQuery q y, s.1.2 + 1),
+                      fun t' => if t' = q then some s.1.2 else s.2 t'))) from by
+          funext y
+          rw [embedTrapIdxImpl_run_inl_inr, hmiss, hcount]
+          simp only [↓reduceIte, map_eq_bind_pure_comp, bind_assoc, pure_bind,
+            Function.comp_apply]]
+        rw [show ((embedTrapFreshIdxImpl psf M Salt pk sk (.inl (.inr q))).run s >>= fun p =>
+                (simulateQ (embedTrapFreshIdxImpl psf M Salt pk sk) (ob p.1)).run p.2)
+              = (($ᵗ Range : ProbComp Range) >>= fun v =>
+                  (simulateQ (embedTrapFreshIdxImpl psf M Salt pk sk) (ob v)).run
+                    ((s.1.1.cacheQuery q v, s.1.2 + 1),
+                      fun t' => if t' = q then some s.1.2 else s.2 t')) from by
+          rw [embedTrapFreshIdxImpl_run_inl_inr, hmiss]
+          simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp_apply]]
+        refine evalDist_bind_congr' _ (fun y => ?_)
+        rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+          (probFailure_uniformSample Range)]
+        exact evalDist_run_embedTrapIdxImpl_eq_embedTrapFreshIdx_of_lt psf M Salt pk sk j y (ob y)
+          ((s.1.1.cacheQuery q y, s.1.2 + 1),
+            fun t' => if t' = q then some s.1.2 else s.2 t') (by simp only [hcount]; omega)
+      · -- **Off-winner step.** The step is `y`-independent; commute the front `y` past it.
+        push Not at hwin
+        have hoff : ∀ q : (Salt × M →ₒ Range).Domain,
+            t = .inl (.inr q) → s.1.1 q = none → s.1.2 ≠ j := by
+          intro q hq hm; exact hwin q hq hm
+        rw [show (fun y => (embedTrapIdxImpl psf M Salt pk sk j y t).run s >>= fun p =>
+                (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (ob p.1)).run p.2)
+              = (fun y => (embedTrapFreshIdxImpl psf M Salt pk sk t).run s >>= fun p =>
+                (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (ob p.1)).run p.2) from by
+          funext y
+          rw [embedTrapIdxImpl_run_step_eq_embedTrapFreshIdx psf M Salt pk sk j y t s hoff]]
+        rw [OracleComp.DeferredSampling.evalDist_bind_comm ($ᵗ Range : ProbComp Range)
+          ((embedTrapFreshIdxImpl psf M Salt pk sk t).run s)
+          (fun y p => (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (ob p.1)).run p.2)]
+        refine evalDist_bind_congr' _ (fun p => ?_)
+        exact ih p.1 p.2
+
+open Classical in
+omit [Fintype Salt] in
+/-- **Index-augmented winner-slot restriction of the per-target embedding win is a lower bound.**
+Running the embed game on the index-augmented handler `embedTrapIdxImpl … j y` and conjoining the
+win predicate with the run-only winner-slot witness `idx(forged) = some j` can only *decrease* the
+win mass relative to the un-augmented per-target win on `embedTrapImpl … j y`:
+
+* the index table is passive, so the augmented run projects onto the un-augmented run
+  (`map_run_embedTrapIdxImpl_proj`) — the win predicate and the trapdoor draw read only the shared
+  output/cache components;
+* the extra conjunct `idx(forged) = some j` only restricts the event (`probOutput_bind_mono`).
+
+Averaged over the front target `y ← $ᵗ Range` this gives the winner-slot-restricted lower bound
+that the trap-count run's index-tagged trap mass couples to. -/
+lemma reservoir_embed_winnerIdx_le [DecidableEq Domain] [Inhabited Range] (pk : PK) (sk : SK)
+    (j : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    (∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+        Pr[= true | (do
+          let r ← (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (adv.main pk)).run
+            (((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)), (fun _ => none))
+          let x ← psf.trapdoorSample pk sk ((r.2.1.1 (r.1.2.1, r.1.1)).getD y)
+          pure (decide (r.1.2.2 = x) && decide (r.2.1.1 (r.1.2.1, r.1.1) = some y) &&
+            decide (r.2.2 (r.1.2.1, r.1.1) = some j)) : ProbComp Bool)]) ≤
+      Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        let x ← psf.trapdoorSample pk sk ((r.2.1 (r.1.2.1, r.1.1)).getD y)
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] := by
+  rw [probOutput_bind_eq_tsum]
+  refine ENNReal.tsum_le_tsum fun y => ?_
+  refine mul_le_mul' le_rfl ?_
+  -- Rewrite the un-augmented embed run as the projection of the index-augmented run.
+  rw [show (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+        ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+      = Prod.map id (Prod.fst : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ) →
+          (Salt × M →ₒ Range).QueryCache × ℕ) <$>
+        (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (adv.main pk)).run
+          (((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)), (fun _ => none)) from
+    (map_run_embedTrapIdxImpl_proj psf M Salt pk sk j y (adv.main pk)
+      (((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)), (fun _ => none))).symm]
+  rw [bind_map_left]
+  -- Both sides now share the index-augmented run; compare per output `r`.
+  refine probOutput_bind_mono (fun r _ => ?_)
+  simp only [Prod.map, id_eq]
+  -- Per output `r` the trapdoor draws agree; the augmented win adds the conjunct
+  -- `idx(forged) = some j`, which can only restrict.
+  refine probOutput_bind_mono (fun x _ => ?_)
+  simp only [probOutput_pure]
+  split_ifs with h1 h2 <;> first | rfl | simp_all
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
@@ -8800,33 +9287,55 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
             ((hNF y).probFailure_eq_zero),
           OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
             ((hNF yv).probFailure_eq_zero)]]
-  -- **The single remaining residual (strictly smaller than the original): the cache-pinned
-  -- win-event same-randomness coupling.**  After Phases 1–2 the right game runs the embed *first*,
-  -- then draws the trapdoor preimage of the *cached image at the forged point*
-  -- `x ← trapdoorSample pk sk ((r.2.1 (forged)).getD y)`, so the only remaining occurrence of the
-  -- free front target `y` is the cache-comparison literal `decide (r.2.1 (forged) = some y)`.  This
-  -- literal couples the front draw `y` to the embed run's cached image at the forged point.
+  -- **Step 3 (sorry-free): index-augment the embed run and restrict the win to the winner slot.**
+  -- The win predicate `decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y)` reads only the
+  -- embed run *output* `r.1.2.2` and *cache* `r.2.1`, both of which are recovered from the
+  -- index-augmented run `embedTrapIdxImpl … j y` by the passive projection
+  -- `map_run_embedTrapIdxImpl_proj` (the inserted insertion-index table is never read).  Hence the
+  -- right-hand win mass equals the same win mass on the augmented run, which dominates its
+  -- restriction to the further conjunct `idx(forged) = some j` (the run-only winner-slot witness):
   --
-  -- The genuine deferred-sampling coupling that remains: the LIFT
-  -- `evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh` merges `y ← $ᵗ Range; (embedTrapImpl … j
-  -- y) run` into the inline-fresh run `embedTrapFreshImpl`, but the cache-comparison literal still
-  -- reads `y` as an external value, so the merge cannot fire without first joint-coupling `y` to
-  -- the count-`j` cached image.  On the trap side the count-`j` slot caches a fresh `v` and records
-  -- `table(forged) = trapdoorSample pk sk v` with `idx(forged) = some j`; averaging `y` over
-  -- `$ᵗ Range` reconstitutes that fresh `v`, with `r.1.2.2 = x = trapdoorSample (cache(forged))`
-  -- matching the trap event `table(forged) = w.1.2.2` exactly when the forged point is the
-  -- count-`j` slot.  Formalizing this is the augmented front-draw lift (a trapdoor-table/index-
-  -- augmented sibling of `evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh`, projected onto the
-  -- trap-count run via `map_run_progGameRunImplCombinedTrapCount_proj` and the write-only-table
-  -- invariant).
+  --   `RHS' := ∑'y Pr[=y] · Pr[= true | embedTrapIdxImpl … j y; x ← trapdoorSample (cache forged);
+  --              pure (win ∧ idx(forged) = some j)]  ≤  RHS`.
+  --
+  -- This is the sound monotone reduction (`probOutput` over a conjoined Bool) that re-expresses the
+  -- right side on the index-augmented run with the winner-slot restriction made explicit, so that
+  -- the front target `y` enters only through run-only predicates (`idx(forged) = some j`) — exactly
+  -- the form the trap-count run's `idx(forged) = some j` event couples to.
+  refine le_trans ?_ (reservoir_embed_winnerIdx_le psf hr M Salt pk sk j adv)
+  -- **The single remaining residual (strictly smaller than the original): the index-restricted
+  -- run coupling.**  Both sides now carry the run-only winner-slot witness `idx(forged) = some j`:
+  -- the trap-count run records it via its insertion-index instrument, the embed run via the banked
+  -- `embedTrapIdxImpl` augmentation.  The genuine deferred-sampling content that remains is the
+  -- N4-style same-randomness coupling of the two all-fresh-uniform lazy random oracles: averaging
+  -- the embed-idx run over the front draw `y ← $ᵗ Range` equals the inline-fresh run
+  -- `embedTrapFreshIdxImpl` (the banked augmented lift
+  -- `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx`), and the trap-count run
+  -- `progGameRunImplCombinedTrapCount` is its trapdoor-table augmentation drawing the *same* fresh
+  -- image `v` at each miss and recording `table(forged) = trapdoorSample pk sk v` with
+  -- `idx(forged) = some j`.  Projecting the trap-count run onto the shared `embedTrapFreshIdxImpl`
+  -- cache/counter/index state (`evalDist_simulateQ_run_eq_of_impl_evalDist_eq`) and using the
+  -- write-only-table invariant `table(forged) = trapdoorSample pk sk (cache(forged))` matches the
+  -- trap event `table(forged) = w.1.2.2 = output` to the embed event
+  -- `r.1.2.2 = trapdoorSample (cache(forged))`, closing the bound.
+  --
+  -- The free target `y` remains only in the win literal `decide (r.2.1.1 (forged) = some y)`.  On
+  -- the trap-count side the count-`j` programming event programs the forged random-oracle point
+  -- (the forgery is a queried point, `hForge`), which is a random-oracle *miss*, so the embed
+  -- handler's winner branch fires and caches exactly `y` — hence `idx(forged) = some j` does force
+  -- `cache(forged) = some y` *on the coupled support*.  (This implication is **not** unconditional:
+  -- a signing step landing at counter `j` would tag its salt-keyed key with `idx = some j` while
+  -- caching a fresh image, not `y`; the GPV forgery structure `hForge` is what restricts the
+  -- coupled count-`j` event to random-oracle misses.)  Discharging this is the joint coupling.
   --
   -- Unsolved goal (verbatim):
   --   ⊢ Pr[<trap-event w ∧ recorded-index(forged) = some j>
   --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
-  --     ≤ Pr[= true | y ← $ᵗ Range;
-  --                   r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
-  --                   x ← trapdoorSample pk sk ((r.2.1 (forged)).getD y);
-  --                   pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]
+  --     ≤ ∑'y Pr[= y | $ᵗ Range] ·
+  --         Pr[= true | r ← (simulateQ (embedTrapIdxImpl … j y) (adv.main pk)).run ((∅, 0), ∅idx);
+  --                     x ← trapdoorSample pk sk ((r.2.1.1 (forged)).getD y);
+  --                     pure (decide (r.1.2.2 = x) &&
+  --                       decide (r.2.1.1 (forged) = some y) && decide (r.2.2 (forged) = some j))]
   sorry
 
 open Classical in
