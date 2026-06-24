@@ -7418,6 +7418,59 @@ lemma programmedPreimage_perKey_eq_tsum [DecidableEq Domain]
 
 open Classical in
 omit [Fintype Salt] in
+/-- **Exact-match verify-strip (Step-2).** The exact-match winning mass on the combined
+*verify-extended* run is bounded by the exact-match event on the combined run of `adv.main pk`
+*alone*.  As in the distinct-preimage transfer `gpv_perKey_distinct_le_collision`, the verify
+continuation is table-passive on the forced cache hit at the forged point
+(`run_combined_verifyKont_of_cache_hit`, the forged point is cached by `hForge`), so the
+verify-extended event reduces, support-pointwise, to the corresponding event on the final state of
+`adv.main pk`'s combined run: the forged message is fresh, the recomputed verification holds, and
+the hidden-preimage table records exactly the forged preimage `s⋆` at the forged point.
+
+This is the exact-match twin of the distinct-branch verify-strip embedded in
+`gpv_perKey_distinct_le_collision`; it isolates the verify-elimination bookkeeping from the residual
+reservoir coupling, leaving a per-key bound that reads only `adv.main pk`'s combined final state. -/
+lemma gpv_perKey_exactMatch_verifyStrip_le
+    (domainSample : PK → ProbComp Domain) (pk : PK)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample) :
+    Pr[fun w : ((M × (Salt × Domain)) × Bool) ×
+          ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+            (decide (w.1.1.1 ∉ w.2.1.1.2) && w.1.2) = true ∧
+              w.2.2 (w.1.1.2.1, w.1.1.1) = some w.1.1.2.2 |
+        (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+          (adv.main pk >>= fun out => (fun v => (out, v)) <$> gpvVerifyRead psf M Salt pk out)).run
+          ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
+      ≤ Pr[fun w : (M × (Salt × Domain)) ×
+            ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+              (decide (w.1.1 ∉ w.2.1.1.2) &&
+                  (decide (psf.eval pk w.1.2.2 =
+                      (w.2.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+                    psf.isShort w.1.2.2)) = true ∧
+                w.2.2 (w.1.2.1, w.1.1) = some w.1.2.2 |
+          (simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+            (adv.main pk)).run
+            ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)] := by
+  rw [simulateQ_bind, StateT.run_bind, probEvent_bind_eq_tsum_subtype]
+  conv_rhs => rw [← bind_pure ((simulateQ (progGameRunImplCombined psf M Salt domainSample pk)
+    (adv.main pk)).run ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+      fun _ => none)), probEvent_bind_eq_tsum_subtype]
+  refine ENNReal.tsum_le_tsum fun p => ?_
+  gcongr
+  obtain ⟨⟨out, st⟩, hmem⟩ := p
+  obtain ⟨msg, r, s⟩ := out
+  have hhit : st.1.1.1 (r, msg) = some ((st.1.1.1 (r, msg)).getD (psf.eval pk s)) := by
+    have hcache_ne : st.1.1.1 (r, msg) ≠ none :=
+      combined_cache_forge_point_ne_none psf hr M Salt domainSample pk adv hForge
+        ((msg, (r, s)), st) hmem
+    obtain ⟨v, hv⟩ := Option.ne_none_iff_exists'.mp hcache_ne
+    rw [hv, Option.getD_some]
+  rw [run_combined_verifyKont_of_cache_hit psf M Salt domainSample pk msg r s
+      ((st.1.1.1 (r, msg)).getD (psf.eval pk s)) st hhit, probEvent_pure, probEvent_pure]
+
+open Classical in
+omit [Fintype Salt] in
 /-- **Exact-match reservoir bound (Step-2 residual).** The exact-match winning mass on the combined
 verify-extended run — a verifying fresh forgery `(msg, (r, s⋆))` whose forged preimage `s⋆` exactly
 reproduces the simulator's hidden programmed preimage `sHidden` recorded in the table at the forged
@@ -7456,19 +7509,46 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
           let x ← psf.trapdoorSample pk sk y
           let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
           pure (decide (x' = x)) : ProbComp Bool)] := by
-  -- `hreg` (per-key regularity), `hNF` (trapdoor totality), `hForge`, and `hQ` are threaded down
-  -- for the reservoir assembly; consumed here to keep them in scope for the residual proof.
+  -- `hreg` (per-key regularity), `hNF` (trapdoor totality), and `hQ` (the `N ≤ qSign + qHash`
+  -- entry-count bound, via `combined_run_table_card_le`) are threaded down for the residual
+  -- reservoir coupling; kept in scope here for that proof.
   let _hreg := hreg
   let _hNF := hNF
-  let _hForge := hForge
   let _hQ := hQ
-  -- Rewrite the multi-target factor into the target-averaged reservoir win (D0).  The remaining
-  -- obligation is the reservoir-sampling coupling: the combined-game exact-match mass is at most
-  -- `(qSign + qHash)` times the target-averaged reduction win, because the reservoir embeds the
-  -- uniform target at each of the at most `qSign + qHash` programmed entries with the uniform mass
-  -- `1 / N` (`probOutput_reservoirStep_win` / `probEvent_reservoirStep_miss`), conditioned on which
-  -- the reduction run is distributionally the combined game run (`hreg`).
-  rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk adv]
+  -- **Step A — verify-strip.** Eliminate the verification continuation: the forged point is a
+  -- cache hit (`hForge`), so the verify read is table-passive and the exact-match winning event
+  -- reduces to the corresponding event on the combined run of `adv.main pk` alone
+  -- (`gpv_perKey_exactMatch_verifyStrip_le`).
+  refine le_trans (gpv_perKey_exactMatch_verifyStrip_le psf hr M Salt domainSample pk adv hForge) ?_
+  -- **Step B — target factorization.** Expand the multi-target advantage as the target-averaged
+  -- reservoir win (D0), then push the `(qSign + qHash)` factor inside the uniform target sum.
+  rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk adv,
+    ← ENNReal.tsum_mul_left]
+  -- **Step C — the residual reservoir value-coupling (Step-2 make-or-break).**
+  --
+  -- The remaining obligation bounds the exact-match mass on `adv.main pk`'s combined run — a fresh,
+  -- verifying forgery `(msg, (r, s⋆))` whose forged preimage `s⋆` *exactly equals* the simulator's
+  -- hidden recorded preimage `sd` at the forged point (with `sd ← domainSample pk` the value drawn
+  -- when that entry was programmed) — by `(qSign + qHash)` times the target-averaged reservoir win.
+  --
+  -- The reservoir reduction at target `y` (`reservoirReductionImpl`) embeds `y` at one uniformly
+  -- chosen programmed entry (the *winner*); its winner index is data-independent and uniform over
+  -- the `N ≤ qSign + qHash` programmed entries (`probOutput_reservoirWinnerIndex_eq`,
+  -- `combined_run_table_card_le`), so `(qSign + qHash) · (1 / N) ≥ 1` absorbs the per-entry
+  -- reservoir mass.  Conditioned on the winner being the forged entry, the embedded value `y`
+  -- replaces the combined game's cached image `psf.eval pk sd`, and the reduction wins exactly when
+  -- `s⋆ = trapdoorSample pk sk y` — an *independent* challenger preimage of `y`, re-coupled to the
+  -- drawn `sd` only through the joint regularity `hreg`:
+  --     𝒟[(eval pk sd, sd) | sd ← domainSample pk] = 𝒟[(c, trapdoorSample pk sk c) | c ← $Range].
+  --
+  -- This is the genuine joint-law coupling identified as the campaign's make-or-break step.  The
+  -- distribution-level engine `probEvent_dist_simulateQ_mono` carries only *state*-predicate bad
+  -- events, but both sides here read the adversary's *output* (the forged point `(r⋆, msg⋆)` and
+  -- preimage `s⋆`, unknown during the fold), so it does not apply; the applicable
+  -- `relTriple_simulateQ_run_mono` demands, at the divergent winner step, the construction of the
+  -- full divergent-branch joint coupling (its self-referential continuation hypothesis), with no
+  -- marginal shortcut available.  This reconstructs the PMF×PMF joint law over the embedded image
+  -- versus the drawn preimage, the multi-week residual recorded for the GPV Step-2 reservoir close.
   sorry
 
 open Classical in
