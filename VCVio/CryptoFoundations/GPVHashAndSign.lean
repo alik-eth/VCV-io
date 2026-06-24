@@ -7759,6 +7759,31 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
   -- the data-independent reservoir-indexing close: the joint coupling has collapsed to winner
   -- selection plus the already-banked per-slot uniformity; no PMF×PMF joint law over image vs.
   -- preimage remains.
+  -- Unfold the abstract reduction `programmedPreimageReduction` on the RHS into its concrete
+  -- internal run under `reservoirReductionImpl` (`programmedPreimageReduction_eq_run_…`), so the
+  -- residual is stated purely in terms of the two concrete handlers — the trapdoor-recording trap
+  -- run on the LHS and the reservoir-embedding run on the RHS — with no abstract reduction left.
+  simp only [programmedPreimageReduction_eq_run_reservoirReductionImpl psf hr M Salt adv
+    domainSample pk, bind_assoc, pure_bind]
+  -- **Remaining residual — the winner-conditioned reservoir coupling.**  The LHS is the trap-run
+  -- exact-match mass: a fresh, verifying, short forgery `(msg, (r, s⋆))` whose recorded table entry
+  -- at the forged point `(r, msg)` is `s⋆`, i.e. `s⋆ = trapdoorSample pk sk v⋆` for the uniform
+  -- cached image `v⋆ = cache (r, msg)` (the trap run draws `v ← $ᵗ Range` and records
+  -- `trapdoorSample pk sk v` at every programming step).  The RHS is `(qSign + qHash)` times the
+  -- target-averaged reservoir win: at target `i` the reduction embeds `i` at one uniformly chosen
+  -- programmed entry (the winner) and wins when the forged preimage `s⋆ = trapdoorSample pk sk i`.
+  --
+  -- Conditioned on the winner being the forged entry — an event of probability
+  -- `1 / N ≥ 1 / (qSign + qHash)` (`probOutput_reservoirWinnerIndex_ge`,
+  -- `combined_run_table_card_le`), absorbed by the
+  -- `(qSign + qHash)` factor — the reservoir run caches `i` at the forged point, so the embedded
+  -- uniform `i` plays the role of the trap run's uniform `v⋆`; the two adversary transcripts are
+  -- then equidistributed (uniform cache against uniform cache) and the wins coincide
+  -- (`s⋆ = trapdoorSample pk sk i ≡ s⋆ = trapdoorSample pk sk v⋆`).  Establishing this requires the
+  -- winner-conditioned equidistribution between the trap run (table-valued state) and the reservoir
+  -- run (winner-slot-valued state) threaded through the adaptive fold — a joint law over the two
+  -- distinct state shapes for which no shared-state simulation engine applies; it is the sole
+  -- residual of the GPV Step-2 reservoir close.
   sorry
 
 open Classical in
