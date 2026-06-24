@@ -7035,6 +7035,175 @@ lemma probEvent_reservoirStep_miss (k : ℕ) :
   rw [Finset.filter_ne', Finset.card_erase_of_mem (Finset.mem_univ _)]
   simp [Fintype.card_fin]
 
+/-- **Pure reservoir winner-index process.** This abstracts the winner-selection coins of
+`programmedPreimageReduction` away from all cache/value data: it runs `n` reservoir steps, and at
+step `k` (the `k`-th programmed entry, with running count `k`) draws the reservoir coin
+`b ← $ᵗ Fin (k + 1)`; on `b = 0` the new entry `k` becomes the winner, otherwise the current winner
+survives.  The recorded winner is the index of the entry at which the reduction would embed its
+external target.  Its winner marginal is the data-independent core of the reservoir analysis:
+`probOutput_reservoirWinnerIndex_eq` shows each of the `N` entries is the winner with probability
+exactly `1 / N`. -/
+noncomputable def reservoirWinnerIndex : ℕ → ProbComp (Option ℕ)
+  | 0 => pure none
+  | k + 1 => do
+      let w ← reservoirWinnerIndex k
+      let b ← ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))
+      pure (if b = 0 then some k else w)
+
+/-- One-step unfolding of `reservoirWinnerIndex` as an explicit double bind, used to feed the
+per-step reservoir atoms (`probOutput_reservoirStep_win` / `probEvent_reservoirStep_miss`). -/
+lemma reservoirWinnerIndex_succ (k : ℕ) :
+    reservoirWinnerIndex (k + 1) = (reservoirWinnerIndex k >>= fun w =>
+      ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1))) >>= fun b =>
+        pure (if b = 0 then some k else w)) := rfl
+
+/-- **Reservoir survival sum.** The total mass of the non-winning coins `b ≠ 0` at the `k`-th
+reservoir step is `k / (k + 1)`; this is `probEvent_reservoirStep_miss` rephrased as a `tsum`, the
+per-step survival factor of a fixed prior winner. -/
+lemma tsum_reservoirStep_survival (k : ℕ) :
+    (∑' x : Fin (k + 1),
+        (if x ≠ 0 then Pr[= x | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))] else 0))
+      = (k : ℝ≥0∞) / ((k : ℝ≥0∞) + 1) := by
+  rw [← probEvent_eq_tsum_ite, probEvent_uniformSample]
+  simp only [Fintype.card_fin]
+  rw [Finset.filter_ne', Finset.card_erase_of_mem (Finset.mem_univ _)]
+  simp [Fintype.card_fin]
+
+/-- **Reservoir step, earlier target.** At the `k`-th reservoir step, for a fixed prior winner `w`
+and a target index `j ≠ k`, the step lands on `some j` exactly when the coin misses (`b ≠ 0`) and
+the prior winner already equals `some j`; that mass is the survival factor `k / (k + 1)` when
+`w = some j`, and `0` otherwise. -/
+lemma probOutput_reservoirStep_ne (k : ℕ) (w : Option ℕ) (j : ℕ) (hjk : j ≠ k) :
+    Pr[= some j | (($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1))) >>= fun b =>
+        pure (if b = 0 then some k else w) : ProbComp (Option ℕ))]
+      = (if w = some j then ((k : ℝ≥0∞) / ((k : ℝ≥0∞) + 1)) else 0) := by
+  rw [probOutput_bind_eq_tsum]
+  simp only [probOutput_pure]
+  have hrw : ∀ x : Fin (k + 1),
+      Pr[= x | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))] *
+        (if some j = if x = 0 then some k else w then (1 : ℝ≥0∞) else 0)
+        = (if x ≠ 0 then Pr[= x | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))] else 0) *
+            (if w = some j then (1 : ℝ≥0∞) else 0) := by
+    intro x
+    by_cases hx : x = 0
+    · subst hx
+      simp only [if_true, ne_eq, not_true_eq_false, if_false, zero_mul]
+      rw [if_neg (fun h => hjk (Option.some.inj h)), mul_zero]
+    · rw [if_neg hx, if_pos (show x ≠ 0 from hx)]
+      by_cases hw : w = some j
+      · rw [if_pos hw, if_pos hw.symm]
+      · rw [if_neg hw, if_neg (fun h => hw h.symm), mul_zero]
+  rw [tsum_congr hrw, ENNReal.tsum_mul_right, tsum_reservoirStep_survival]
+  by_cases hw : w = some j
+  · rw [if_pos hw, if_pos hw, mul_one]
+  · rw [if_neg hw, if_neg hw, mul_zero]
+
+/-- **Reservoir step, new target.** At the `k`-th reservoir step, for any prior winner `w ≠ some k`,
+the step lands on the new entry `some k` exactly when the coin hits (`b = 0`), with probability
+`1 / (k + 1)` (`probOutput_reservoirStep_win`). -/
+lemma probOutput_reservoirStep_eq (k : ℕ) (w : Option ℕ) (hw : w ≠ some k) :
+    Pr[= some k | (($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1))) >>= fun b =>
+        pure (if b = 0 then some k else w) : ProbComp (Option ℕ))]
+      = ((k : ℝ≥0∞) + 1)⁻¹ := by
+  rw [probOutput_bind_eq_tsum]
+  simp only [probOutput_pure]
+  have hrw : ∀ x : Fin (k + 1),
+      Pr[= x | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))] *
+        (if some k = if x = 0 then some k else w then (1 : ℝ≥0∞) else 0)
+        = (if x = 0 then Pr[= x | ($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1)))] else 0) := by
+    intro x
+    by_cases hx : x = 0
+    · subst hx
+      simp only [if_true, mul_one]
+    · simp only [if_neg hx]
+      rw [if_neg (fun h => hw h.symm), mul_zero]
+  rw [tsum_congr hrw, tsum_eq_single 0 (fun x hx => by rw [if_neg hx]), if_pos rfl,
+    probOutput_uniformSample]
+  simp [Fintype.card_fin]
+
+/-- **Reservoir winner index is bounded.** Every winner index in the support of an `n`-step
+reservoir run is strictly below `n`: a winner is only ever recorded at an entry that has already
+been processed.  This guarantees the prior winner `w` from `reservoirWinnerIndex k` is never the
+yet-unseen index `k`, the side condition consumed by `probOutput_reservoirStep_eq`. -/
+lemma reservoirWinnerIndex_support_lt :
+    ∀ (n : ℕ) (w : Option ℕ), w ∈ support (reservoirWinnerIndex n) →
+      ∀ i, w = some i → i < n
+  | 0, w, hw, i, hi => by
+      simp only [reservoirWinnerIndex, support_pure, Set.mem_singleton_iff] at hw
+      rw [hw] at hi; exact absurd hi (by simp)
+  | k + 1, w, hw, i, hi => by
+      rw [reservoirWinnerIndex_succ] at hw
+      simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff] at hw
+      obtain ⟨w', hw', b, _, hwb⟩ := hw
+      by_cases hb0 : b = 0
+      · rw [if_pos hb0] at hwb
+        rw [hwb] at hi
+        have : i = k := Option.some.inj hi.symm
+        omega
+      · rw [if_neg hb0] at hwb
+        rw [hwb] at hi
+        exact Nat.lt_succ_of_lt (reservoirWinnerIndex_support_lt k w' hw' i hi)
+
+/-- The pure reservoir winner-index process never fails: it is built from `pure` and the
+never-failing uniform coin draws `$ᵗ Fin (k + 1)`. -/
+lemma reservoirWinnerIndex_neverFail : ∀ n, NeverFail (reservoirWinnerIndex n)
+  | 0 => by rw [reservoirWinnerIndex]; infer_instance
+  | k + 1 => by
+      rw [reservoirWinnerIndex]
+      have := reservoirWinnerIndex_neverFail k
+      exact NeverFail.bind_of_forall
+
+/-- The winner marginal of the reservoir process is a genuine distribution: its outputs sum to `1`
+(it never fails), so the per-index probabilities partition the unit mass. -/
+lemma tsum_probOutput_reservoirWinnerIndex (n : ℕ) :
+    ∑' w : Option ℕ, Pr[= w | reservoirWinnerIndex n] = 1 :=
+  tsum_probOutput_eq_one' (reservoirWinnerIndex_neverFail n).probFailure_eq_zero
+
+/-- **D2a — reservoir winner uniformity.** After `N` programmed entries, the reservoir winner is
+each entry with probability exactly `1 / N`.  The winner marginal depends only on the reservoir
+coins `b_k ← $ᵗ Fin (k + 1)` — drawn independently of every cache value — so it is computed purely
+by the recursion `reservoirWinnerIndex`; the telescoping of the per-step embedding mass
+`1 / (k + 1)` against the survival product `∏ k / (k + 1)` collapses to the uniform `1 / N`. This is
+the
+data-independent winner-selection core of the GPV Step-2 reservoir close, separable from the
+embedding-indistinguishability coupling `hreg`. -/
+lemma probOutput_reservoirWinnerIndex_eq :
+    ∀ (N j : ℕ), j < N → Pr[= some j | reservoirWinnerIndex N] = (N : ℝ≥0∞)⁻¹
+  | 0, j, hj => absurd hj (by omega)
+  | k + 1, j, hj => by
+      rw [reservoirWinnerIndex_succ, probOutput_bind_eq_tsum]
+      by_cases hjk : j = k
+      · -- the target is the new entry; every prior winner `w ≠ some j` loses to it
+        subst hjk
+        have hcongr : ∀ w : Option ℕ,
+            Pr[= w | reservoirWinnerIndex j] *
+              Pr[= some j | (($ᵗ Fin (j + 1) : ProbComp (Fin (j + 1))) >>= fun b =>
+                pure (if b = 0 then some j else w) : ProbComp (Option ℕ))]
+              = Pr[= w | reservoirWinnerIndex j] * ((j : ℝ≥0∞) + 1)⁻¹ := by
+          intro w
+          by_cases hw : w ∈ support (reservoirWinnerIndex j)
+          · rw [probOutput_reservoirStep_eq j w (fun hwk =>
+              absurd (reservoirWinnerIndex_support_lt j w hw j hwk) (by omega))]
+          · rw [probOutput_eq_zero_of_not_mem_support hw, zero_mul, zero_mul]
+        rw [tsum_congr hcongr, ENNReal.tsum_mul_right,
+          tsum_probOutput_reservoirWinnerIndex, one_mul]
+        push_cast; ring_nf
+      · -- the target is an earlier entry `j < k`; it must survive (`b ≠ 0`) and already be `w`
+        rw [tsum_congr (fun w => by rw [probOutput_reservoirStep_ne k w j hjk] :
+          ∀ w : Option ℕ, Pr[= w | reservoirWinnerIndex k] *
+              Pr[= some j | (($ᵗ Fin (k + 1) : ProbComp (Fin (k + 1))) >>= fun b =>
+                pure (if b = 0 then some k else w) : ProbComp (Option ℕ))]
+            = Pr[= w | reservoirWinnerIndex k] *
+                (if w = some j then ((k : ℝ≥0∞) / ((k : ℝ≥0∞) + 1)) else 0))]
+        rw [tsum_eq_single (some j) (fun w hw => by rw [if_neg (fun h => hw h), mul_zero]),
+          if_pos rfl, probOutput_reservoirWinnerIndex_eq k j (by omega)]
+        have hk : (k : ℝ≥0∞) ≠ 0 := by
+          simp only [ne_eq, Nat.cast_eq_zero]; omega
+        rw [ENNReal.div_eq_inv_mul, ← mul_assoc, mul_comm ((k : ℝ≥0∞))⁻¹ ((k : ℝ≥0∞) + 1)⁻¹,
+          mul_assoc, ENNReal.inv_mul_cancel hk (by simp), mul_one]
+        push_cast
+        ring_nf
+
 omit [Fintype Salt] in
 /-- **D0 — exact-match advantage as a target-averaged reservoir win.** The per-key exact-match term
 of the programmed-preimage reduction expands, over the uniform target draw `y ← $ᵗ Range`, into the
