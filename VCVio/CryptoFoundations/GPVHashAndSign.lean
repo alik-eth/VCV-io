@@ -8129,9 +8129,301 @@ theorem probEvent_eq_tsum_probEvent_index_aux {ι : Type} {m : Type → Type} [M
     refine ENNReal.tsum_eq_zero.mpr fun j => ?_
     rw [if_neg (fun h => hPx h.1)]
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 counter bound.** From any start state, every final state of the counter-augmented trap run
+of an adversary `oa` bounded by `(qS, qH)` (signing / hash queries) has its running programming
+counter at most `s.counter + qS + qH`: the counter is incremented exactly once per programming event
+(random-oracle miss or signing step), each charged against the corresponding query budget; uniform
+queries and random-oracle cache hits leave the counter fixed.  This is the trapCount-run dual of
+`embedAtIndexImpl_run_count_le`. -/
+lemma progGameRunImplCombinedTrapCount_run_count_le (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+        (((Salt × M) → Option ℕ) × ℕ)) (qS qH : ℕ),
+      oa.IsQueryBoundP (· matches .inr _) qS →
+      oa.IsQueryBoundP (· matches .inl (.inr _)) qH →
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        z.2.2.2 ≤ s.2.2 + qS + qH := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s qS qH _ _ z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz
+      exact le_add_right (Nat.le_add_right _ _)
+  | query_bind t mx ih =>
+      intro s qS qH hQS hQH z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQS hQH
+      obtain ⟨hQS1, hQS2⟩ := hQS
+      obtain ⟨hQH1, hQH2⟩ := hQH
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · -- uniform query: counter untouched
+        rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have := ih pv pst qS qH hbS hbH z hz
+        rw [hpst] at this; exact le_trans this (by omega)
+      · -- random-oracle query: hit leaves the counter fixed, miss increments by one
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqH : 0 < qH := by simpa using hQH1
+        rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            have := ih pv pst qS (qH - 1) hbS hbH z hz
+            rw [hpst] at this; exact le_trans this (by omega)
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, -, x, -, -, hpst⟩ := hps
+            have := ih pv pst qS (qH - 1) hbS hbH z hz
+            have hc : pst.2.2 = s.2.2 + 1 := by rw [hpst]
+            rw [hc] at this; exact le_trans this (by omega)
+      · -- signing query: increments the counter
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqS : 0 < qS := by simpa using hQS1
+        rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, -, -, hpst⟩ := hps
+        have := ih pv pst (qS - 1) qH hbS hbH z hz
+        have hc : pst.2.2 = s.2.2 + 1 := by rw [hpst]
+        rw [hc] at this; exact le_trans this (by omega)
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 recorded-index range.** From a start state whose insertion-index table only records indices
+strictly below the running counter, every state reachable in the counter-augmented trap run
+preserves that bound: every recorded insertion index is `< counter`.  Each programming event records
+the *current* counter value and then increments the counter, so the freshly recorded index is `<`
+the new counter; previously recorded indices stay below the (only larger) counter; uniform queries
+and cache hits leave both unchanged. -/
+lemma progGameRunImplCombinedTrapCount_idx_lt_count (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+        (((Salt × M) → Option ℕ) × ℕ)),
+      (∀ k i, s.2.1 k = some i → i < s.2.2) →
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        ∀ k i, z.2.2.1 k = some i → i < z.2.2.2 := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s hs z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz
+      exact hs
+  | query_bind t mx ih =>
+      intro s hs z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · -- uniform query: instrument untouched
+        rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        refine ih pv pst ?_ z hz
+        rw [hpst]; exact hs
+      · -- random-oracle query: hit unchanged, miss records `counter` and increments
+        rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            refine ih pv pst ?_ z hz
+            rw [hpst]; exact hs
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, -, x, -, -, hpst⟩ := hps
+            refine ih pv pst ?_ z hz
+            intro k i hki
+            have hcnt : pst.2.2 = s.2.2 + 1 := by rw [hpst]
+            have hidx : pst.2.1 = fun t' => if t' = mc then some s.2.2 else s.2.1 t' := by
+              rw [hpst]
+            rw [hcnt]
+            rw [hidx] at hki
+            by_cases hk : k = mc
+            · subst hk; simp only [if_true] at hki
+              rw [Option.some.injEq] at hki; omega
+            · simp only [if_neg hk] at hki
+              exact Nat.lt_succ_of_lt (hs k i hki)
+      · -- signing query: records `counter` and increments
+        rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, -, -, hpst⟩ := hps
+        refine ih pv pst ?_ z hz
+        intro k i hki
+        have hcnt : pst.2.2 = s.2.2 + 1 := by rw [hpst]
+        have hidx : pst.2.1 = fun t' => if t' = (r, msg) then some s.2.2 else s.2.1 t' := by
+          rw [hpst]
+        rw [hcnt]
+        rw [hidx] at hki
+        by_cases hk : k = (r, msg)
+        · subst hk; simp only [if_true] at hki
+          rw [Option.some.injEq] at hki; omega
+        · simp only [if_neg hk] at hki
+          exact Nat.lt_succ_of_lt (hs k i hki)
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 recorded-index budget.** From the empty/zero start state, every recorded insertion index of
+the counter-augmented trap run of an adversary obeying `signHashQueryBound` is `< qSign + qHash`:
+the index is `< counter` (`progGameRunImplCombinedTrapCount_idx_lt_count`) and the counter is
+`≤ qSign + qHash` (`progGameRunImplCombinedTrapCount_run_count_le`).  This bounds the realized
+programming index that the reservoir winner `reservoirWinnerIndex (qSign + qHash)` samples over. -/
+lemma progGameRunImplCombinedTrapCount_idx_lt_budget (pk : PK) (sk : SK) (qSign qHash : ℕ)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (hQ : signHashQueryBound (S' := Salt × Domain) (α := β)
+      (oa := oa) (qSign := qSign) (qHash := qHash))
+    {z : β × (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+      ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ))}
+    (hmem : z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run
+      (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+        (fun _ => none), 0)))
+    {k : Salt × M} {i : ℕ} (hki : z.2.2.1 k = some i) : i < qSign + qHash := by
+  have hidx := progGameRunImplCombinedTrapCount_idx_lt_count psf M Salt pk sk oa
+    (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+      (fun _ => none), 0) (by intro k i hk; simp at hk) z hmem k i hki
+  have hcnt := progGameRunImplCombinedTrapCount_run_count_le psf M Salt pk sk oa
+    (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+      (fun _ => none), 0) qSign qHash hQ.1 hQ.2 z hmem
+  simp only at hcnt
+  omega
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N4 (scaffold) — off-slot target independence of the trap-sibling embed step.** The embedded
+target `y` enters the trap-sibling handler `embedTrapImpl … j y` at *exactly one* query step: the
+random-oracle **miss** whose running count equals the winner slot `j`.  Everywhere else — uniform
+queries, random-oracle cache hits, off-`j` random-oracle misses (`s.2 ≠ j`), and signing steps — the
+per-step run is *literally independent* of `y`, drawing and caching a fresh uniform image (or, on a
+hit, returning the cached value) with no reference to `y`.
+
+This is the structural foundation of the GPV Step-2 front-loading commute: it is what lets the
+externally-averaged target `y ← $ᵗ Range` be pushed *past* every non-winner step of the
+`simulateQ (embedTrapImpl … j y)` fold (each such step commutes with the front draw by
+`OracleComp.DeferredSampling.evalDist_bind_comm`), leaving only the single count-`j` miss at which
+`y` is consumed — the slot the inline trap winner draw `v⋆ ← $ᵗ Range` must be coupled to. -/
+lemma embedTrapImpl_run_step_indep_of_target (pk : PK) (sk : SK) (j : ℕ) (y₁ y₂ : Range)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ)
+    (hoff : ∀ q : (Salt × M →ₒ Range).Domain, t = .inl (.inr q) → s.1 q = none → s.2 ≠ j) :
+    (embedTrapImpl psf M Salt pk sk j y₁ t).run s =
+      (embedTrapImpl psf M Salt pk sk j y₂ t).run s := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q => rw [embedTrapImpl_run_inl_inl, embedTrapImpl_run_inl_inl]
+      | inr q =>
+          rw [embedTrapImpl_run_inl_inr, embedTrapImpl_run_inl_inr]
+          cases hq : s.1 q with
+          | some v => rfl
+          | none => simp only [if_neg (hoff q rfl hq)]
+  | inr msg => rw [embedTrapImpl_run_inr, embedTrapImpl_run_inr]
+
 open Classical in
 omit [Fintype Salt] in
-/-- **The per-slot front-loading deferred-sampling coupling (single isolated `sorry`).**
+/-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
+
+The *index-tagged* trap-exact-match mass at slot `j` — the trap event on the counter-augmented run
+`progGameRunImplCombinedTrapCount` restricted to the event that the forged point was *programmed at
+counter value `j`* — is bounded by the **floor-free** per-target embedding win
+`S (some j) = ∑' y, Pr[= y | $ᵗ Range] · Pr[win | embedTrapImpl … j y]`, with **no** budget /
+reservoir factor.  This is the genuine deferred-sampling content of GPV Step-2: at the fixed slot
+`j` the trap run's inline uniform winner draw `v⋆ ← $ᵗ Range` (drawn *inside* the `simulateQ` fold
+at the adaptively-determined `j`-th programming step) must be pushed to the front and re-expressed
+as the embedded target `y ← $ᵗ Range` (drawn *outside* the fold), mirroring
+`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`; the embedded slot is then `j` and the win event
+couples to the trap run's write-only `table(forged) = trapdoorSample (cache(forged))`.
+
+The budget-scaled form `reservoir_embed_commute_winner` follows from this by the reservoir floor
+arithmetic (`probOutput_reservoirWinnerIndex_eq` at `j < qSign + qHash`, the recorded-index budget
+`progGameRunImplCombinedTrapCount_idx_lt_budget` clearing the `j ≥ qSign + qHash` tail). -/
+lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) (j : ℕ) :
+    Pr[fun w : (M × (Salt × Domain)) ×
+          (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+            (((Salt × M) → Option ℕ) × ℕ)) =>
+          ((decide (w.1.1 ∉ w.2.1.1.1.2) &&
+              (decide (psf.eval pk w.1.2.2 =
+                  (w.2.1.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+                psf.isShort w.1.2.2)) = true ∧
+            w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2) ∧
+            w.2.2.1 (w.1.2.1, w.1.1) = some j |
+        (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+          (adv.main pk)).run
+          (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+            (fun _ => none), 0)]
+      ≤ ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+            Pr[= true | (do
+              let x ← psf.trapdoorSample pk sk y
+              let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+                ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+              pure (decide (r.1.2.2 = x) &&
+                decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] := by
+  -- **The single isolated obligation of GPV Step-2: the per-slot front-loading joint coupling.**
+  --
+  -- This is the make-or-break deferred-sampling content.  The left mass lives on the
+  -- counter-augmented trap run `progGameRunImplCombinedTrapCount`: at the *adaptively-determined*
+  -- `j`-th programming step, an inline uniform winner image `v⋆ ← $ᵗ Range` is drawn *inside* the
+  -- `simulateQ` fold, cached at the forged point, and the write-only trapdoor preimage
+  -- `trapdoorSample (pk, sk) v⋆` is recorded.  The right mass averages the embedded target
+  -- `y ← $ᵗ Range` *outside* the fold and runs `embedTrapImpl … j y`, which caches `y` at its
+  -- count-`j` random-oracle miss and draws fresh uniform images everywhere else.
+  --
+  -- The remaining content is the *front-loading commute*: push the inline `v⋆` to the front of the
+  -- fold and re-express it as the externally-averaged `y` (both `$ᵗ Range`).  The scaffold is in
+  -- place: by `embedTrapImpl_run_step_indep_of_target`, `embedTrapImpl … j y` depends on `y` at
+  -- *exactly* the count-`j` miss, so at every other step the front `y`-draw commutes past the step
+  -- (`OracleComp.DeferredSampling.evalDist_bind_comm` / `evalDist_step_commute_tape`), mirroring
+  -- the non-drawing cases of `evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`; the off-`j` cache
+  -- equality and the write-only-table↔external-`trapdoorSample` independence are the
+  -- `hreg`/`hNF`-discharged content of `evalDist_run_embedAtIndexImpl_eq_embedTrap` (N3/N4).  The
+  -- residual is the *single* count-`j` step at which `v⋆` and `y` are substituted, plus the
+  -- adaptive-position bookkeeping (the `j`-th programming step is determined by the transcript, not
+  -- fixed syntactically) — a genuine `PMF × PMF` joint coupling between the inline draw and the
+  -- external average that the per-step commute scaffold does not by itself discharge.
+  --
+  -- Unsolved goal (verbatim):
+  --   ⊢ Pr[<trap-event w ∧ recorded-index(forged) = some j>
+  --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
+  --     ≤ ∑' y, Pr[= y | $ᵗ Range] *
+  --         Pr[= true | x ← trapdoorSample pk sk y;
+  --                     r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
+  --                     pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]
+  sorry
+
+open Classical in
+omit [Fintype Salt] in
+/-- **The per-slot front-loading deferred-sampling coupling (budget-scaled form).**
 
 For a fixed programmed-entry index `j`, the *index-tagged* trap-exact-match mass — the trap event on
 the counter-augmented run `progGameRunImplCombinedTrapCount` further restricted to the event that
@@ -8142,17 +8434,12 @@ where `S (some j)` is the
 winner-slot-restricted per-target embedding win of `embedTrapImpl … j y` averaged over `y ← $ᵗ
 Range`.
 
-This is the make-or-break deferred-sampling content of GPV Step-2: at the fixed slot `j` the trap
-run's inline uniform winner draw `v⋆ ← $ᵗ Range` (drawn *inside* the `simulateQ` fold at the
-adaptively-determined `j`-th programming step) must be pushed to the front and re-expressed as the
-embedded target `y ← $ᵗ Range` (drawn *outside* the fold), mirroring
-`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`; the embedded slot is then `j` and the win event
-couples to the trap run's write-only `table(forged) = trapdoorSample (cache(forged))`.  The
-reservoir mass `Pr[= some j | reservoirWinnerIndex (qSign + qHash)] ≥ 1 / (qSign + qHash)` (slot-`j`
-uniformity, `probOutput_reservoirWinnerIndex_ge`, with the realized count `N ≤ qSign + qHash` from
-`combined_run_table_card_le`) absorbs the per-slot reservoir factor, and the multi-target factor
-`qSign + qHash` pays the guessing loss.  This per-slot fold-commute is the single remaining
-obligation of the GPV Step-2 close. -/
+This is derived from the floor-free form `reservoir_embed_commute_winner_floorFree` by the reservoir
+arithmetic: at `j < qSign + qHash` the winner mass is exactly `(qSign + qHash)⁻¹`
+(`probOutput_reservoirWinnerIndex_eq`), so `(qSign + qHash) · (qSign + qHash)⁻¹ = 1` absorbs the
+budget factor and the floor-free bound passes through; at `j ≥ qSign + qHash` no programmed entry
+can have recorded index `j` (`progGameRunImplCombinedTrapCount_idx_lt_budget`), so the left mass is
+`0`.  The multi-target factor `qSign + qHash` pays the guessing loss. -/
 lemma reservoir_embed_commute_winner [DecidableEq Domain] [Inhabited Range]
     (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
@@ -8187,7 +8474,53 @@ lemma reservoir_embed_commute_winner [DecidableEq Domain] [Inhabited Range]
                 ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
               pure (decide (r.1.2.2 = x) &&
                 decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] := by
-  sorry
+  set Q := qSign + qHash with hQdef
+  set S : ENNReal := ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+      Pr[= true | (do
+        let x ← psf.trapdoorSample pk sk y
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] with hSdef
+  set LHS : ENNReal := Pr[fun w : (M × (Salt × Domain)) ×
+        (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+          (((Salt × M) → Option ℕ) × ℕ)) =>
+        ((decide (w.1.1 ∉ w.2.1.1.1.2) &&
+            (decide (psf.eval pk w.1.2.2 =
+                (w.2.1.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+              psf.isShort w.1.2.2)) = true ∧
+          w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2) ∧
+          w.2.2.1 (w.1.2.1, w.1.1) = some j |
+      (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+        (adv.main pk)).run
+        (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+          (fun _ => none), 0)] with hLHSdef
+  -- Floor-free per-slot bound (the genuine front-loading commute).
+  have hfloorFree : LHS ≤ S :=
+    reservoir_embed_commute_winner_floorFree psf hr M Salt domainSample pk sk qSign qHash adv
+      hreg hNF hForge hQ j
+  change LHS ≤ (Q : ENNReal) * Pr[= some j | reservoirWinnerIndex Q] * S
+  by_cases hj : j < Q
+  · -- Slot `j` is within budget: the winner mass is exactly `Q⁻¹`, so `Q · Q⁻¹ = 1` absorbs the
+    -- budget factor and the floor-free bound passes through.
+    have hres : Pr[= some j | reservoirWinnerIndex Q] = (Q : ℝ≥0∞)⁻¹ :=
+      probOutput_reservoirWinnerIndex_eq Q j hj
+    rw [hres]
+    have hQne : (Q : ℝ≥0∞) ≠ 0 := by
+      simp only [ne_eq, Nat.cast_eq_zero]; omega
+    have hQtop : (Q : ℝ≥0∞) ≠ ⊤ := ENNReal.natCast_ne_top Q
+    rw [ENNReal.mul_inv_cancel hQne hQtop, one_mul]
+    exact hfloorFree
+  · -- Slot `j` is beyond budget: no programmed entry has recorded index `j`, so `LHS = 0`.
+    have hLHS0 : LHS = 0 := by
+      rw [hLHSdef]
+      refine probEvent_eq_zero ?_
+      intro w hmem hP
+      have hidxlt := progGameRunImplCombinedTrapCount_idx_lt_budget psf M Salt pk sk qSign qHash
+        (adv.main pk) hQ hmem hP.2
+      omega
+    rw [hLHS0]
+    exact zero_le'
 
 open Classical in
 omit [Fintype Salt] in
