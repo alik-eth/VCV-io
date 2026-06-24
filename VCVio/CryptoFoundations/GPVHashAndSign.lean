@@ -7974,6 +7974,24 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
   -- run (winner-slot-valued state) threaded through the adaptive fold — a joint law over the two
   -- distinct state shapes for which no shared-state simulation engine applies; it is the sole
   -- residual of the GPV Step-2 reservoir close.
+  --
+  -- Two reduction routes are ruled out, so the `tsum` averaging is genuinely irreducible:
+  --   * **Per-target split (false intermediate).** Refactoring the left-hand mass as
+  --     `∑' i, Pr[= i | $ᵗ Range] * L` and comparing the sum term-by-term would demand
+  --     `L ≤ (qSign + qHash) * Pr[reservoir wins at i]` for *each fixed* target `i`.  That per-`i`
+  --     statement is false: a fixed `i` need not be the forged point, so the average over the
+  --     uniform target — coupling the external `i` to the internal cached image at the adaptive
+  --     winner slot — cannot be pushed inside the sum.
+  --   * **Write-only coin deferral on the index-augmented run.** The winner *index* is write-only
+  --     and its marginal is `reservoirWinnerIndex (count)` (`probOutput_reservoirWinnerIndex_eq`),
+  --     but the index-augmented handler `reservoirIndexImpl` still embeds the target `y` at the
+  --     winner's cache slot (it is a faithful refinement of `reservoirReductionImpl`, embedding `y`
+  --     on the coin hit `b = 0`).  Hence the reservoir *coins* are not write-only for that run:
+  --     they decide which slot the adversary observes as `y`, so the index is *not* independent of
+  --     the transcript there, and `simulateQ_reservoirIndexImpl_run_proj` alone does not give the
+  --     winner-conditioned equidistribution.  Decoupling the coins requires bridging to an
+  --     *honest* (non-embedding) augmented run and then swapping the honest winner value for `y`
+  --     under `hreg` — which is exactly the joint fold-level coupling above.
   sorry
 
 open Classical in
