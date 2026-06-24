@@ -4850,6 +4850,222 @@ lemma embedAtIndexImpl_run_inr (domainSample : PK → ProbComp Domain) (pk : PK)
     bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
     StateT.run_get, Function.comp_apply, pure_bind, StateT.run_set, StateT.run_pure]
 
+/-- **Trapdoor-uniform sibling of the pre-sampled-index handler.** Same state `cache × ℕ`, counter
+logic, and never-overwrite discipline as `embedAtIndexImpl`, but every cached image is drawn
+*uniformly* rather than as `psf.eval pk s`:
+
+* on a non-winner random-oracle miss (`count ≠ w`) it caches a uniform `v ← $ᵗ Range` and returns
+  `v` (output equals the cached value, as in `embedAtIndexImpl`);
+* at the winner random-oracle miss (`count = w`) it still embeds the external target `y`;
+* on a signing query it draws a uniform image `c ← $ᵗ Range`, caches `c`, and returns the
+  *trapdoor preimage* `x ← psf.trapdoorSample pk sk c` as the signature's domain component.
+
+Per-step this handler is equidistributed with `embedAtIndexImpl` under GPV regularity `hreg`
+(`evalDist_embedAtIndex_step_eq_embedTrap`).  On a uniform query and on a random-oracle cache hit
+the two handlers are literally identical.  On a non-winner random-oracle miss the only difference is
+the cached/returned image, whose marginal law `hreg` equates (`psf.eval pk s ≡ $ᵗ Range`).  On a
+signing step the joint law of the `(returned domain component, cached image)` pair is
+`(s, psf.eval pk s)` for `s ← domainSample pk` on the `embedAtIndexImpl` side versus
+`(psf.trapdoorSample pk sk c, c)` for `c ← $ᵗ Range` on this side — the two sides of `hreg`.
+
+Threaded through the adaptive fold by the same-state engine
+(`evalDist_run_embedAtIndexImpl_eq_embedTrap`), it makes the embed run an all-uniform consistent
+random oracle (modulo `y` at the winner), matching the trapdoor-recording combined run's cache. -/
+noncomputable def embedTrapImpl (pk : PK) (sk : SK)
+    (w : ℕ) (y : Range) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ) ProbComp) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ℕ
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1 t with
+      | some v => pure v
+      | none => do
+          let v ← ($ᵗ Range : ProbComp Range)
+          if st.2 = w then
+            set ((st.1.cacheQuery t y, st.2 + 1) : State)
+            pure y
+          else
+            set ((st.1.cacheQuery t v, st.2 + 1) : State)
+            pure v
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let c ← ($ᵗ Range : ProbComp Range)
+      let x ← (psf.trapdoorSample pk sk c : ProbComp Domain)
+      let st ← get
+      set ((st.1.cacheQuery (r, msg) c, st.2 + 1) : State)
+      pure (r, x)
+  (unifImpl + roImpl) + signImpl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapImpl` on a uniform query. -/
+lemma embedTrapImpl_run_inl_inl (pk : PK) (sk : SK)
+    (w : ℕ) (y : Range) (q : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    (embedTrapImpl psf M Salt pk sk w y (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapImpl` on a random-oracle query. -/
+lemma embedTrapImpl_run_inl_inr (pk : PK) (sk : SK)
+    (w : ℕ) (y : Range) (q : (Salt × M →ₒ Range).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    ((embedTrapImpl psf M Salt pk sk w y (.inl (.inr q))).run s :
+        ProbComp (Range × ((Salt × M →ₒ Range).QueryCache × ℕ))) =
+      (match s.1 q with
+        | some v => pure (v, s)
+        | none =>
+            (fun v : Range =>
+              (if s.2 = w then (y, (s.1.cacheQuery q y, s.2 + 1))
+               else (v, (s.1.cacheQuery q v, s.2 + 1)) :
+                Range × ((Salt × M →ₒ Range).QueryCache × ℕ)))
+              <$> ($ᵗ Range : ProbComp Range)) := by
+  cases hq : s.1 q with
+  | none =>
+      simp only [add_apply_inl, add_apply_inr, embedTrapImpl, bind_pure_comp,
+        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
+        Function.comp_apply]
+      refine bind_congr fun v => ?_
+      split_ifs with hb <;> simp [StateT.run_set]
+  | some v =>
+      simp [embedTrapImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, hq]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- One-step unfolding of `embedTrapImpl` on a signing query. -/
+lemma embedTrapImpl_run_inr (pk : PK) (sk : SK)
+    (w : ℕ) (y : Range) (msg : M) (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    ((embedTrapImpl psf M Salt pk sk w y (.inr msg)).run s :
+        ProbComp ((Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))) =
+      (($ᵗ Salt : ProbComp Salt) >>= fun r =>
+        ($ᵗ Range : ProbComp Range) >>= fun c =>
+          (fun x : Domain =>
+            ((r, x), (s.1.cacheQuery (r, msg) c, s.2 + 1)) :
+              Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))
+            <$> (psf.trapdoorSample pk sk c : ProbComp Domain)) := by
+  simp only [add_apply_inr, embedTrapImpl, bind_pure_comp, map_eq_bind_pure_comp,
+    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
+    StateT.run_get, Function.comp_apply, pure_bind, StateT.run_set, StateT.run_pure]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N3 — per-step equidistribution of `embedAtIndexImpl` and `embedTrapImpl`.** For every query
+`t` and every embed state `s`, the two handlers produce *equal output distributions* on the same
+state `s`, under GPV regularity `hreg` and trapdoor totality `hNF` at `(pk, sk)`.
+
+On a uniform query and on a random-oracle cache *hit* the two handlers are literally identical.  On
+a non-winner random-oracle *miss* the only difference is the cached/returned image, equated by the
+first marginal of `hreg` (`psf.eval pk s ≡ $ᵗ Range`); the discarded trapdoor draw on the
+`$ᵗ Range` side collapses by `hNF`.  At the winner random-oracle miss both handlers embed `y` and
+discard the drawn image, so they agree.  On a signing step the joint law of the
+`(returned domain component, cached image)` pair is `(s, psf.eval pk s)` for `s ← domainSample pk`
+on the `embedAtIndexImpl` side versus `(psf.trapdoorSample pk sk c, c)` for `c ← $ᵗ Range` on the
+`embedTrapImpl` side — the two sides of `hreg`, mapped through the (deterministic) cache update.
+This is the local hypothesis of `evalDist_simulateQ_run_eq_of_impl_evalDist_eq`. -/
+lemma evalDist_embedAtIndex_step_eq_embedTrap
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (w : ℕ) (y : Range)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    𝒟[(embedAtIndexImpl psf M Salt domainSample pk w y t).run s] =
+      𝒟[(embedTrapImpl psf M Salt pk sk w y t).run s] := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [embedAtIndexImpl_run_inl_inl, embedTrapImpl_run_inl_inl]
+      | inr q =>
+          rw [embedAtIndexImpl_run_inl_inr, embedTrapImpl_run_inl_inr]
+          cases hq : s.1 q with
+          | some v => rfl
+          | none =>
+              -- Random-oracle miss: the cached/returned image is a function of `psf.eval pk sd`
+              -- alone, so the first marginal of `hreg` (collapsed by `hNF`) suffices.
+              have hfst : 𝒟[(domainSample pk : ProbComp Domain) >>= fun sd =>
+                    (pure (psf.eval pk sd) : ProbComp Range)]
+                  = 𝒟[($ᵗ Range : ProbComp Range)] :=
+                evalDist_eval_domainSample_eq_uniform psf pk sk domainSample hNF hreg
+              calc 𝒟[(fun sd : Domain =>
+                      (if s.2 = w then (y, (s.1.cacheQuery q y, s.2 + 1))
+                       else (psf.eval pk sd, (s.1.cacheQuery q (psf.eval pk sd), s.2 + 1)) :
+                        Range × ((Salt × M →ₒ Range).QueryCache × ℕ)))
+                    <$> (domainSample pk : ProbComp Domain)]
+                  = 𝒟[(fun v : Range =>
+                      (if s.2 = w then (y, (s.1.cacheQuery q y, s.2 + 1))
+                       else (v, (s.1.cacheQuery q v, s.2 + 1)) :
+                        Range × ((Salt × M →ₒ Range).QueryCache × ℕ)))
+                    <$> ((domainSample pk : ProbComp Domain) >>= fun sd =>
+                      (pure (psf.eval pk sd) : ProbComp Range))] := by
+                      rw [map_bind, map_eq_bind_pure_comp]
+                      simp only [map_pure, Function.comp_def]
+                _ = 𝒟[(fun v : Range =>
+                      (if s.2 = w then (y, (s.1.cacheQuery q y, s.2 + 1))
+                       else (v, (s.1.cacheQuery q v, s.2 + 1)) :
+                        Range × ((Salt × M →ₒ Range).QueryCache × ℕ)))
+                    <$> ($ᵗ Range : ProbComp Range)] := by
+                      rw [evalDist_map, evalDist_map, hfst]
+  | inr msg =>
+      rw [embedAtIndexImpl_run_inr, embedTrapImpl_run_inr]
+      refine evalDist_bind_congr fun r _ => ?_
+      -- The `(returned domain component, cached image)` joint is `(sd, eval sd)` vs
+      -- `(trapdoorSample c, c)` — the two sides of `hreg`, mapped through the cache update.
+      have h := congrArg (Functor.map
+        (fun p : Range × Domain =>
+          ((r, p.2), (s.1.cacheQuery (r, msg) p.1, s.2 + 1)) :
+            Range × Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))) hreg
+      simp only [← evalDist_map, map_bind, map_pure] at h
+      calc 𝒟[(fun sd : Domain =>
+              ((r, sd), (s.1.cacheQuery (r, msg) (psf.eval pk sd), s.2 + 1)) :
+                Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))
+            <$> (domainSample pk : ProbComp Domain)]
+          = 𝒟[(domainSample pk : ProbComp Domain) >>= fun sd =>
+              pure ((r, sd), (s.1.cacheQuery (r, msg) (psf.eval pk sd), s.2 + 1))] := by
+              rw [map_eq_bind_pure_comp]; rfl
+        _ = 𝒟[($ᵗ Range : ProbComp Range) >>= fun c =>
+              (psf.trapdoorSample pk sk c : ProbComp Domain) >>= fun x =>
+                pure ((r, x), (s.1.cacheQuery (r, msg) c, s.2 + 1))] := h
+        _ = 𝒟[($ᵗ Range : ProbComp Range) >>= fun c =>
+              (fun x : Domain =>
+                ((r, x), (s.1.cacheQuery (r, msg) c, s.2 + 1)) :
+                  Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))
+                <$> (psf.trapdoorSample pk sk c : ProbComp Domain)] := by
+              refine evalDist_bind_congr fun c _ => ?_
+              rw [map_eq_bind_pure_comp]; rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N4 — run-level equidistribution of `embedAtIndexImpl` and `embedTrapImpl`.** For *any*
+adaptive computation `oa` and any start embed state `s`, the full simulated run of the
+pre-sampled-index handler `embedAtIndexImpl` over `oa` is *equidistributed* with the run of its
+trapdoor-uniform sibling `embedTrapImpl`, under GPV regularity `hreg` and trapdoor totality `hNF`.
+
+The two handlers agree query-by-query as output distributions on the same embed state
+(`evalDist_embedAtIndex_step_eq_embedTrap`); the same-state distributional simulation engine
+`evalDist_simulateQ_run_eq_of_impl_evalDist_eq` threads that per-step equality through the entire
+adaptive fold.  After this rewrite the embed run is an all-uniform consistent random oracle (modulo
+the embedded target `y` at the winner slot), so its cache marginal coincides with the cache of the
+trapdoor-recording combined run `progGameRunImplCombinedTrap`. -/
+lemma evalDist_run_embedAtIndexImpl_eq_embedTrap {β : Type}
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (w : ℕ) (y : Range)
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    𝒟[(simulateQ (embedAtIndexImpl psf M Salt domainSample pk w y) oa).run s] =
+      𝒟[(simulateQ (embedTrapImpl psf M Salt pk sk w y) oa).run s] :=
+  evalDist_simulateQ_run_eq_of_impl_evalDist_eq
+    (embedAtIndexImpl psf M Salt domainSample pk w y)
+    (embedTrapImpl psf M Salt pk sk w y)
+    (evalDist_embedAtIndex_step_eq_embedTrap psf M Salt domainSample pk sk w y hreg hNF) oa s
+
 open Classical in
 /-- **The combined programmed-game ⊕ collision-reduction handler.** A single handler that threads
 the programmed freshness-game state `((cache × signedSet) × flag)` *together with* the collision
@@ -7707,45 +7923,69 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
   --   `∑' y, (qSign + qHash) * (Pr[= y | $ᵗ Range] * Pr[per-y exact-match win])`.
   rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk qSign qHash adv,
     ← ENNReal.tsum_mul_left]
-  -- **Residual: Step C′ + reservoir coupling (N6) + assembly (N7).**
+  -- **N4 rewrite (banked).**  Inside every per-target factor `P_y`, replace the pre-sampled-index
+  -- handler `embedAtIndexImpl` by its trapdoor-uniform sibling `embedTrapImpl` (N4); after this the
+  -- embed run has an all-uniform cache (modulo `y` at the winner slot), matching the cache marginal
+  -- of the trapdoor-recording combined run.
+  have hN4 : ∀ y : Range,
+      Pr[= true | (do
+        let x ← psf.trapdoorSample pk sk y
+        let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y
+        pure (decide (x' = x)) : ProbComp Bool)]
+      = Pr[= true | (do
+          let x ← psf.trapdoorSample pk sk y
+          let wOpt ← reservoirWinnerIndex (qSign + qHash)
+          let r ← (simulateQ (embedTrapImpl psf M Salt pk sk
+              (wOpt.getD (qSign + qHash)) y) (adv.main pk)).run
+            ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+          pure (decide (r.1.2.2 = x)) : ProbComp Bool)] := by
+    intro y
+    refine probOutput_congr rfl ?_
+    simp only [programmedPreimageReduction_eq_run, bind_assoc, pure_bind]
+    refine evalDist_bind_congr fun x _ => ?_
+    refine evalDist_bind_congr fun wOpt _ => ?_
+    -- The remaining `run >>= pure ∘ decide` factor is equidistributed under N4.
+    rw [evalDist_bind, evalDist_bind,
+      evalDist_run_embedAtIndexImpl_eq_embedTrap psf M Salt domainSample pk sk
+        (wOpt.getD (qSign + qHash)) y hreg hNF (adv.main pk)
+        ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))]
+  -- **N4 applied (banked).**  Replace every per-target embed run by its all-uniform-cache trap
+  -- sibling `embedTrapImpl`, so the goal RHS is the reservoir/target average of the *trap-sibling*
+  -- embedding run, matching the cache marginal of the trapdoor-recording combined run.
+  simp only [hN4]
+  -- **Residual (single sorry): the GPV Step-2 reservoir↔embedding joint coupling.**
   --
-  -- What remains is the genuine GPV Step-2 reservoir coupling.  Its structure:
+  -- After Steps A, B and the banked N4 rewrite the goal is exactly
   --
-  -- * **Step C′ (Lemma A rewrite, reduction-agnostic).**  Rewrite the verify-stripped LHS
-  --   exact-match mass onto the *trapdoor-recording* combined run via
-  --   `evalDist_run_progGameRunImplCombinedTrap_eq` (using `probEvent_congr'`); after C′ the win
-  --   event reads `sStar = trapdoorSample pk sk v⋆`, with `v⋆ = cache(r, msg)` the uniformly drawn
-  --   cached image at the forged point.
+  --   `Pr[exact-match | (combined run of `adv.main pk`)]`
+  --     `≤ ∑' y, (qSign + qHash) * (Pr[= y | $ᵗ Range] *`
+  --         `Pr[= true | x ← trapdoorSample pk sk y;`
+  --                      `wOpt ← reservoirWinnerIndex (qSign + qHash);`
+  --                      `r ← (simulateQ (embedTrapImpl … (wOpt.getD (qSign+qHash)) y)`
+  --                              `(adv.main pk)).run (∅, 0);`
+  --                      `pure (decide (r.1.2.2 = x))])`.
   --
-  -- * **N6 — per-slot reservoir coupling (MAKE-OR-BREAK).**  Conditioned on the pre-sampled embed
-  --   index `wOpt = some j*` (the forged entry's slot), `embedAtIndexImpl` caches the external
-  --   target `y` at the forged point and `psf.eval pk sd` elsewhere — a consistent all-uniform
-  --   random oracle under `hreg` (off-slot `eval(sd) ≡` uniform by `hreg`'s first marginal).  The
-  --   reduction wins iff the forgery lands on slot `j*` and `sStar = trapdoorSample pk sk y` with
-  --   `y ≡` the trap's `v⋆`.  The precise residual obligation is: for each fixed slot `j`,
-  --     `∑' y, Pr[= y | $ᵗ Range] * Pr[forged-slot win | embedTrapImpl … j y run]`
-  --       `= Pr[forged-slot = j ∧ trap exact-match | (trapdoor-recording) trapCount run]`,
-  --   the single per-slot `$ᵗ Range` substitution at slot `j` under value-independence (off-slot
-  --   both runs already discharged by the Lemma-A equidistribution of `embedAtIndexImpl` with its
-  --   uniform trap sibling `embedTrapImpl`).  This is a fold-level joint distributional coupling
-  --   between the trapdoor-recording combined run (state `(((cache × Finset M) × Bool) × table)`)
-  --   and the pre-sampled-index embedding run (state `cache × ℕ`); the two state types differ, so
-  --   the same-state engine `evalDist_simulateQ_run_eq_of_impl_evalDist_eq` does not bridge them
-  --   directly.  It requires a genuine PMF×PMF joint coupling (the relational engine
-  --   `relTriple_simulateQ_run_mono` with `R_state` = caches-agree ∧ counters-aligned ∧
-  --   table-records-trapdoor-preimage, whose per-step continuation obligation is output-equality
-  --   off the winner plus the single `hreg` substitution at the winner).
+  -- The remaining content is the reservoir↔embedding coupling.  The intended route is:
+  -- (C′) push the LHS onto the trapdoor-recording combined run via
+  --   `evalDist_run_progGameRunImplCombinedTrap_eq`; then for each fixed reservoir slot `j`,
+  -- (N6) couple the trapdoor-recording combined run with `embedTrapImpl … j` via
+  --   `relTriple_simulateQ_run` (`R_state` = caches-agree ∧ counters-aligned ∧
+  --   `table = trapdoorSample ∘ cache`); then (N7) pull the front reservoir/target draws and pay
+  --   the `(qSign + qHash)⁻¹ ≤ 1 / N` reservoir loss with `N ≤ qSign + qHash`.
   --
-  -- * **N7 — assembly.**  Pull the front `wOpt` draw (independent of the transcript), split via
-  --   `probOutput_bind_eq_tsum` / `tsum_option`, `ENNReal.tsum_comm`, keep the `j = j*` term, and
-  --   apply `probOutput_reservoirWinnerIndex_ge N j* (qSign + qHash)` (`(qSign + qHash)⁻¹ ≤ 1/N`)
-  --   with `N ≤ qSign + qHash` (`combined_run_table_card_le`; the embed run's counter bound is
-  --   banked as `embedAtIndexImpl_run_count_le_budget`), giving `(qSign + qHash) · (1/N) ≥ 1`.  The
-  --   `wOpt = none` atom is killed by `probOutput_reservoirWinnerIndex_none_eq_zero` (`N ≠ 0` since
-  --   `hForge` forces a programmed entry; if `N = 0` the LHS is `0`).
-  --
-  -- The N2 counter-budget infrastructure (`embedAtIndexImpl_run_count_le[_budget]`) is proven above
-  -- sorry-free.  N6 is a multi-week joint-coupling obligation and is the single residual here.
+  -- **The concrete obstruction.**  N6 cannot be a *fixed-`y`* `relTriple` step.  At the winner slot
+  -- the trapdoor-recording combined run draws a *uniform* image `v⋆ ← $ᵗ Range` inline during the
+  -- adaptive fold, whereas `embedTrapImpl … j y` embeds the *deterministic* external `y` there.  A
+  -- per-step `RelTriple` at the winner therefore demands a coupling of a uniform draw with a point
+  -- mass, which is impossible unless the two agree — they do not for fixed `y`.  The substitution
+  -- is only valid *after averaging over* `y ← $ᵗ Range` weighted by `Pr[= y | $ᵗ Range]`, i.e. the
+  -- front-loaded draw `do { y ← $ᵗ Range; (embedTrapImpl … j y) run }` must be matched to the trap
+  -- run's *inline* winner draw `v⋆`.  That front-loading of a value drawn at an
+  -- adaptively-determined fold position to the front is a genuine PMF×PMF joint (deferred-sampling)
+  -- coupling: the `y`-draw lives *outside* the `simulateQ` fold while `v⋆` lives *inside* it, so
+  -- the single-`simulateQ`-per-side shape required by `relTriple_simulateQ_run[_mono]` does not
+  -- apply, and the same-state engine `evalDist_simulateQ_run_eq_of_impl_evalDist_eq` cannot bridge
+  -- the two (distinct) state types either.  This is the make-or-break residual.
   sorry
 
 open Classical in
