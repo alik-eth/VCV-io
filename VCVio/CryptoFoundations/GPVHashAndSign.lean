@@ -345,82 +345,6 @@ noncomputable def reduction
     | some sHidden => pure (sHidden, sStar)
     | none => pure (sStar, sStar)
 
-/-- The exact-match branch reduction adversary. Given a public key `pk` and programmed target
-`y`, the reduction embeds `(pk, y)` at one guessed programmed random-oracle entry. If the
-adversary later forges on that entry and exactly reproduces the simulator's hidden preimage,
-the reduction wins the programmed-preimage game.
-
-Because the target must be embedded at one guessed programmed entry, this branch incurs an
-explicit multi-target loss proportional to the total number of programmed entries. -/
-noncomputable def programmedPreimageReduction
-    (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
-    (domainSample : PK → ProbComp Domain) :
-    ProgrammedPreimageAdversary (PK := PK) (Domain := Domain) (Range := Range) :=
-  fun pk y => do
-    -- The simulation state threads the lazy random-oracle cache, a running count of programmed
-    -- entries, and the current reservoir winner: the `(salt, message)` point at which the target
-    -- `y` is embedded, paired with the normal value `psf.eval pk s` that point would otherwise
-    -- carry (kept so the displaced previous winner can be restored when a later entry wins).
-    let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)
-    -- Embed `y` at one uniformly chosen programmed entry via reservoir sampling: at the `k`-th
-    -- programmed point the new point wins with probability `1 / (k + 1)`. The winner's cache value
-    -- is set to the target `y`; every other programmed entry carries its normal `psf.eval pk s`.
-    let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
-      let s ← (domainSample pk : ProbComp Domain)
-      let v := psf.eval pk s
-      let st ← get
-      let (cache, count, winner) := st
-      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-      if b = 0 then
-        -- New reservoir winner: restore the previous winner's normal value (if any), then embed
-        -- `y` at the new point and record it together with its restorable normal value `v`.
-        let cache' := match winner with
-          | some (tOld, vOld) => cache.cacheQuery tOld vOld
-          | none => cache
-        set ((cache'.cacheQuery t y, count + 1, some (t, v)) : State)
-      else
-        set ((cache.cacheQuery t v, count + 1, winner) : State)
-    -- Random-oracle handler: reuse cache hits; on a miss program the entry via `programStep`.
-    let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
-      fun t => do
-        let st ← get
-        match st.1 t with
-        | some v => pure v
-        | none => do
-            programStep t
-            let st' ← get
-            pure ((st'.1 t).getD y)
-    -- Uniform-sampling handler.
-    let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
-      fun t => (unifSpec.query t : ProbComp _)
-    -- Signing handler (sign-then-hash): draw a fresh salt `r`, program `(r, msg)` via the same
-    -- reservoir step, and return the signature `(r, s)` recovered from the programmed cache.
-    let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
-      fun msg => do
-        let r ← ($ᵗ Salt : ProbComp Salt)
-        let s ← (domainSample pk : ProbComp Domain)
-        let v := psf.eval pk s
-        let st ← get
-        let (cache, count, winner) := st
-        let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-        if b = 0 then
-          let cache' := match winner with
-            | some (tOld, vOld) => cache.cacheQuery tOld vOld
-            | none => cache
-          set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v)) : State)
-        else
-          set ((cache.cacheQuery (r, msg) v, count + 1, winner) : State)
-        pure (r, s)
-    let impl : QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
-        (StateT State ProbComp) := (unifImpl + roImpl) + signImpl
-    let ((_msgStar, (_rStar, sStar)), _st) ←
-      (simulateQ impl (adv.main pk)).run (∅, 0, none)
-    -- The forged preimage `sStar` is the reduction's preimage candidate for the target `y`: when
-    -- the forgery lands on the embedded entry, the random oracle there returned `y`, so a valid
-    -- forgery `psf.eval pk sStar = y` exhibits a preimage of `y`.
-    pure sStar
-
 /-- The salt-collision birthday bound (GPV08, Proposition 6.2).
 
 For `qSign` signing queries and `qHash` random-oracle queries, with salts drawn uniformly from a
@@ -4841,336 +4765,90 @@ lemma reduction_eq_run_reductionImpl
         | some sHidden => pure (sHidden, sStar)
         | none => pure (sStar, sStar)) := rfl
 
-/-- **The programmed-preimage reduction's internal oracle handler.** The named handler stack
-`(unifImpl + roImpl) + signImpl` over
-`StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) ProbComp` that
-`programmedPreimageReduction` runs the adversary under. The state threads the lazy random-oracle
-cache, a running count of programmed entries, and the current reservoir winner: the
-`(salt, message)` point at which the target `y` is embedded, paired with the normal value
-`psf.eval pk s` that point would otherwise carry (kept so the displaced previous winner can be
-restored when a later entry wins). The target `y` is embedded at one uniformly chosen programmed
-entry via reservoir sampling: at the `k`-th programmed point the new point wins with probability
-`1 / (k + 1)`. The reduction's body
-equals running the adversary under this handler from `(∅, 0, none)` and reading off the forged
-preimage `sStar` (`programmedPreimageReduction_eq_run_reservoirReductionImpl`). -/
-noncomputable def reservoirReductionImpl (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) :
+/-- **Pre-sampled-index programmed-preimage handler.** Embeds the external target `y` at the
+`w`-th programmed random-oracle entry (counting RO-query programming steps), caching `psf.eval pk s`
+at every other entry and at every signing entry, and NEVER overwriting an already-cached slot. The
+embed index `w` is fixed before the run, so the simulated random oracle is consistent under
+re-query. Signing entries always return a valid signature `(r, s)` with `psf.eval pk s` the cached
+value. -/
+noncomputable def embedAtIndexImpl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) :
     QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
-      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) ProbComp) :=
-  let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)
-  let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
-    let s ← (domainSample pk : ProbComp Domain)
-    let v := psf.eval pk s
-    let st ← get
-    let (cache, count, winner) := st
-    let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-    if b = 0 then
-      let cache' := match winner with
-        | some (tOld, vOld) => cache.cacheQuery tOld vOld
-        | none => cache
-      set ((cache'.cacheQuery t y, count + 1, some (t, v)) : State)
-    else
-      set ((cache.cacheQuery t v, count + 1, winner) : State)
+      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ) ProbComp) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ℕ
   let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
     fun t => do
       let st ← get
       match st.1 t with
       | some v => pure v
       | none => do
-          programStep t
-          let st' ← get
-          pure ((st'.1 t).getD y)
+          let s ← (domainSample pk : ProbComp Domain)
+          if st.2 = w then
+            set ((st.1.cacheQuery t y, st.2 + 1) : State)
+            pure y
+          else
+            set ((st.1.cacheQuery t (psf.eval pk s), st.2 + 1) : State)
+            pure (psf.eval pk s)
   let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
     fun t => (unifSpec.query t : ProbComp _)
   let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
     fun msg => do
       let r ← ($ᵗ Salt : ProbComp Salt)
       let s ← (domainSample pk : ProbComp Domain)
-      let v := psf.eval pk s
       let st ← get
-      let (cache, count, winner) := st
-      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-      if b = 0 then
-        let cache' := match winner with
-          | some (tOld, vOld) => cache.cacheQuery tOld vOld
-          | none => cache
-        set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v)) : State)
-      else
-        set ((cache.cacheQuery (r, msg) v, count + 1, winner) : State)
+      set ((st.1.cacheQuery (r, msg) (psf.eval pk s), st.2 + 1) : State)
       pure (r, s)
   (unifImpl + roImpl) + signImpl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirReductionImpl` on a uniform query.** -/
-lemma reservoirReductionImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) (q : unifSpec.Domain)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
-    (reservoirReductionImpl psf M Salt domainSample pk y (.inl (.inl q))).run s =
+/-- One-step unfolding of `embedAtIndexImpl` on a uniform query. -/
+lemma embedAtIndexImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) (q : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    (embedAtIndexImpl psf M Salt domainSample pk w y (.inl (.inl q))).run s =
       (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirReductionImpl` on a random-oracle query.** -/
-lemma reservoirReductionImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) (q : (Salt × M →ₒ Range).Domain)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
-    (reservoirReductionImpl psf M Salt domainSample pk y (.inl (.inr q))).run s =
+/-- One-step unfolding of `embedAtIndexImpl` on a random-oracle query. -/
+lemma embedAtIndexImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) (q : (Salt × M →ₒ Range).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    ((embedAtIndexImpl psf M Salt domainSample pk w y (.inl (.inr q))).run s :
+        ProbComp (Range × ((Salt × M →ₒ Range).QueryCache × ℕ))) =
       (match s.1 q with
         | some v => pure (v, s)
-        | none => do
-            let sd ← (domainSample pk : ProbComp Domain)
-            let v := psf.eval pk sd
-            let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
-            if b = 0 then
-              let cache' := match s.2.2 with
-                | some (tOld, vOld) => s.1.cacheQuery tOld vOld
-                | none => s.1
-              pure (y, (cache'.cacheQuery q y, s.2.1 + 1, some (q, v)))
-            else
-              pure (v, (s.1.cacheQuery q v, s.2.1 + 1, s.2.2))) := by
+        | none =>
+            (fun sd : Domain =>
+              (if s.2 = w then (y, (s.1.cacheQuery q y, s.2 + 1))
+               else (psf.eval pk sd, (s.1.cacheQuery q (psf.eval pk sd), s.2 + 1)) :
+                Range × ((Salt × M →ₒ Range).QueryCache × ℕ)))
+              <$> (domainSample pk : ProbComp Domain)) := by
   cases hq : s.1 q with
   | none =>
-      simp only [add_apply_inl, add_apply_inr, reservoirReductionImpl, bind_pure_comp,
+      simp only [add_apply_inl, add_apply_inr, embedAtIndexImpl, bind_pure_comp,
         map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
         StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
-        Function.comp_apply, StateT.run_pure]
-      refine bind_congr fun sd => bind_congr fun b => ?_
-      split_ifs with hb <;>
-        simp [StateT.run_set, QueryCache.cacheQuery_self]
+        Function.comp_apply]
+      refine bind_congr fun sd => ?_
+      split_ifs with hb <;> simp [StateT.run_set]
   | some v =>
-      simp [reservoirReductionImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+      simp [embedAtIndexImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
         StateT.run_bind, StateT.run_get, hq]
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirReductionImpl` on a signing query.** -/
-lemma reservoirReductionImpl_run_inr
-    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) (msg : M)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
-    (reservoirReductionImpl psf M Salt domainSample pk y (.inr msg)).run s =
-      (do
-        let r ← ($ᵗ Salt : ProbComp Salt)
-        let sd ← (domainSample pk : ProbComp Domain)
-        let v := psf.eval pk sd
-        let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
-        if b = 0 then
-          let cache' := match s.2.2 with
-            | some (tOld, vOld) => s.1.cacheQuery tOld vOld
-            | none => s.1
-          pure ((r, sd), (cache'.cacheQuery (r, msg) y, s.2.1 + 1, some ((r, msg), v)))
-        else
-          pure ((r, sd), (s.1.cacheQuery (r, msg) v, s.2.1 + 1, s.2.2))) := by
-  simp only [add_apply_inr, reservoirReductionImpl, bind_pure_comp, map_eq_bind_pure_comp,
+/-- One-step unfolding of `embedAtIndexImpl` on a signing query. -/
+lemma embedAtIndexImpl_run_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) (msg : M) (s : (Salt × M →ₒ Range).QueryCache × ℕ) :
+    ((embedAtIndexImpl psf M Salt domainSample pk w y (.inr msg)).run s :
+        ProbComp ((Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))) =
+      (($ᵗ Salt : ProbComp Salt) >>= fun r =>
+        (fun sd : Domain =>
+          ((r, sd), (s.1.cacheQuery (r, msg) (psf.eval pk sd), s.2 + 1)) :
+            Domain → (Salt × Domain) × ((Salt × M →ₒ Range).QueryCache × ℕ))
+          <$> (domainSample pk : ProbComp Domain)) := by
+  simp only [add_apply_inr, embedAtIndexImpl, bind_pure_comp, map_eq_bind_pure_comp,
     bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
-    StateT.run_get, Function.comp_apply, pure_bind]
-  refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
-  split_ifs with hb <;>
-    simp [StateT.run_set]
-
-/-- **Index-augmented reservoir reduction handler.** The same handler as `reservoirReductionImpl`,
-threading the same lazy random-oracle cache, programmed-entry count, and current winner point/value
-pair, but carrying one additional write-only field: the winner *index* `Option ℕ`, recording the
-programming order `count` of the entry at which the target `y` is currently embedded. The index
-field is updated by the *same* reservoir coin `b ← $ᵗ Fin (count + 1)` that decides the value-state
-update — set to `some count` exactly when the coin hits (`b = 0`) and the new entry becomes the
-winner, and kept unchanged otherwise — so it mirrors the abstract winner-selection recursion
-`reservoirWinnerIndex`. Because the field is never read by the handler logic, the index-augmented
-run is a faithful refinement of `reservoirReductionImpl`: erasing the field reproduces the concrete
-run exactly (`simulateQ_reservoirIndexImpl_run_proj`), so its presence cannot influence the
-adversary transcript. This separates the data-independent winner *index* from the cache values it
-is drawn independently of, the structural form of the reservoir winner-index independence. -/
-noncomputable def reservoirIndexImpl (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) :
-    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
-      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ)
-        ProbComp) :=
-  let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ
-  let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
-    let s ← (domainSample pk : ProbComp Domain)
-    let v := psf.eval pk s
-    let st ← get
-    let (cache, count, winner, _idx) := st
-    let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-    if b = 0 then
-      let cache' := match winner with
-        | some (tOld, vOld) => cache.cacheQuery tOld vOld
-        | none => cache
-      set ((cache'.cacheQuery t y, count + 1, some (t, v), some count) : State)
-    else
-      set ((cache.cacheQuery t v, count + 1, winner, st.2.2.2) : State)
-  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
-    fun t => do
-      let st ← get
-      match st.1 t with
-      | some v => pure v
-      | none => do
-          programStep t
-          let st' ← get
-          pure ((st'.1 t).getD y)
-  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
-    fun t => (unifSpec.query t : ProbComp _)
-  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
-    fun msg => do
-      let r ← ($ᵗ Salt : ProbComp Salt)
-      let s ← (domainSample pk : ProbComp Domain)
-      let v := psf.eval pk s
-      let st ← get
-      let (cache, count, winner, _idx) := st
-      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
-      if b = 0 then
-        let cache' := match winner with
-          | some (tOld, vOld) => cache.cacheQuery tOld vOld
-          | none => cache
-        set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v), some count) : State)
-      else
-        set ((cache.cacheQuery (r, msg) v, count + 1, winner, st.2.2.2) : State)
-      pure (r, s)
-  (unifImpl + roImpl) + signImpl
-
-omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirIndexImpl` on a uniform query.** The index field, like the
-rest of the state, passes through untouched. -/
-lemma reservoirIndexImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) (q : unifSpec.Domain)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
-    (reservoirIndexImpl psf M Salt domainSample pk y (.inl (.inl q))).run s =
-      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
-
-omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirIndexImpl` on a random-oracle query.** On a cache miss the
-reservoir coin `b ← $ᵗ Fin (count + 1)` updates the winner index to `some count` exactly when it
-hits (`b = 0`), in lockstep with the value-state update; on a cache hit nothing changes. -/
-lemma reservoirIndexImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
-    (y : Range) (q : (Salt × M →ₒ Range).Domain)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
-    (reservoirIndexImpl psf M Salt domainSample pk y (.inl (.inr q))).run s =
-      (match s.1 q with
-        | some v => pure (v, s)
-        | none => do
-            let sd ← (domainSample pk : ProbComp Domain)
-            let v := psf.eval pk sd
-            let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
-            if b = 0 then
-              let cache' := match s.2.2.1 with
-                | some (tOld, vOld) => s.1.cacheQuery tOld vOld
-                | none => s.1
-              pure (y, (cache'.cacheQuery q y, s.2.1 + 1, some (q, v), some s.2.1))
-            else
-              pure (v, (s.1.cacheQuery q v, s.2.1 + 1, s.2.2.1, s.2.2.2))) := by
-  cases hq : s.1 q with
-  | none =>
-      simp only [add_apply_inl, add_apply_inr, reservoirIndexImpl, bind_pure_comp,
-        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
-        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
-        Function.comp_apply, StateT.run_pure]
-      refine bind_congr fun sd => bind_congr fun b => ?_
-      split_ifs with hb <;>
-        simp [StateT.run_set, QueryCache.cacheQuery_self]
-  | some v =>
-      simp [reservoirIndexImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
-        StateT.run_bind, StateT.run_get, hq]
-
-omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **One-step unfolding of `reservoirIndexImpl` on a signing query.** A signing query always
-programs a fresh entry; the reservoir coin sets the winner index to `some count` on a hit, exactly
-as in the value-state update. -/
-lemma reservoirIndexImpl_run_inr
-    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) (msg : M)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
-    (reservoirIndexImpl psf M Salt domainSample pk y (.inr msg)).run s =
-      (do
-        let r ← ($ᵗ Salt : ProbComp Salt)
-        let sd ← (domainSample pk : ProbComp Domain)
-        let v := psf.eval pk sd
-        let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
-        if b = 0 then
-          let cache' := match s.2.2.1 with
-            | some (tOld, vOld) => s.1.cacheQuery tOld vOld
-            | none => s.1
-          pure ((r, sd), (cache'.cacheQuery (r, msg) y, s.2.1 + 1, some ((r, msg), v), some s.2.1))
-        else
-          pure ((r, sd), (s.1.cacheQuery (r, msg) v, s.2.1 + 1, s.2.2.1, s.2.2.2))) := by
-  simp only [add_apply_inr, reservoirIndexImpl, bind_pure_comp, map_eq_bind_pure_comp,
-    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
-    StateT.run_get, Function.comp_apply, pure_bind]
-  refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
-  split_ifs with hb <;>
-    simp [StateT.run_set]
-
-omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **Per-step index erasure.** Erasing the winner-index field from one `reservoirIndexImpl` step
-reproduces the corresponding `reservoirReductionImpl` step on the index-erased state: the index
-field is write-only, so dropping it commutes with the per-query update. -/
-lemma reservoirIndexImpl_run_proj
-    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range)
-    (q : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
-    (Prod.map id (fun st : (Salt × M →ₒ Range).QueryCache × ℕ ×
-          Option ((Salt × M) × Range) × Option ℕ => (st.1, st.2.1, st.2.2.1)))
-        <$> ((reservoirIndexImpl psf M Salt domainSample pk y q).run s)
-      = (reservoirReductionImpl psf M Salt domainSample pk y q).run (s.1, s.2.1, s.2.2.1) := by
-  match q with
-  | .inl (.inl qq) =>
-      rw [reservoirIndexImpl_run_inl_inl, reservoirReductionImpl_run_inl_inl]
-      rfl
-  | .inl (.inr qq) =>
-      rw [reservoirIndexImpl_run_inl_inr, reservoirReductionImpl_run_inl_inr]
-      cases hq : s.1 qq with
-      | none =>
-          simp only [map_bind]
-          refine bind_congr fun sd => bind_congr fun b => ?_
-          split_ifs with hb <;> rfl
-      | some v => simp
-  | .inr msg =>
-      rw [reservoirIndexImpl_run_inr, reservoirReductionImpl_run_inr]
-      simp only [map_bind]
-      refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
-      split_ifs with hb <;> rfl
-
-omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
-/-- **In-fold reservoir winner-index independence (index erasure through the fold).** Erasing the
-winner-index field commutes through the entire adaptive fold of the adversary computation: the
-index-augmented run, projected back onto the concrete reservoir state, is run-for-run equal to the
-plain `reservoirReductionImpl` run from the index-erased start state. This is the operational form
-of the reservoir winner-index independence: the winner-index field is computed solely from the fresh
-reservoir coins `b ← $ᵗ Fin (count + 1)`, never read by the handler, so its presence leaves the
-adversary's transcript and the value-state distribution untouched — the index is *independent* of
-the cache values the adversary observes. The remaining ingredient for the per-`y` reservoir close is
-the winner-index *marginal* against the abstract `reservoirWinnerIndex (count)`, whose adaptive
-programmed-entry count couples it back to the transcript. -/
-lemma simulateQ_reservoirIndexImpl_run_proj {β : Type}
-    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range)
-    (comp : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
-    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
-    (Prod.map id (fun st : (Salt × M →ₒ Range).QueryCache × ℕ ×
-          Option ((Salt × M) × Range) × Option ℕ => (st.1, st.2.1, st.2.2.1)))
-        <$> ((simulateQ (reservoirIndexImpl psf M Salt domainSample pk y) comp).run s)
-      = (simulateQ (reservoirReductionImpl psf M Salt domainSample pk y) comp).run
-          (s.1, s.2.1, s.2.2.1) := by
-  induction comp using OracleComp.inductionOn generalizing s with
-  | pure x => simp
-  | query_bind q k ih =>
-      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
-        id_map, StateT.run_bind, map_bind]
-      rw [← reservoirIndexImpl_run_proj psf M Salt domainSample pk y q s]
-      rw [bind_map_left]
-      refine bind_congr fun z => ?_
-      exact ih z.1 z.2
-
-omit [Fintype Salt] in
-/-- **The programmed-preimage reduction is `reservoirReductionImpl` run from the empty state.**
-Restates the body of `programmedPreimageReduction` in terms of the named internal handler
-`reservoirReductionImpl`: run the adversary under `reservoirReductionImpl` from `(∅, 0, none)`, then
-read the forged preimage `sStar` off the result. The two are definitionally equal —
-`programmedPreimageReduction`'s `let impl := …` block *is* `reservoirReductionImpl`. -/
-lemma programmedPreimageReduction_eq_run_reservoirReductionImpl
-    (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
-    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) :
-    programmedPreimageReduction psf hr M Salt adv domainSample pk y =
-      (do
-        let result ←
-          (simulateQ (reservoirReductionImpl psf M Salt domainSample pk y) (adv.main pk)).run
-            (∅, 0, none)
-        pure result.1.2.2) := rfl
+    StateT.run_get, Function.comp_apply, pure_bind, StateT.run_set, StateT.run_pure]
 
 open Classical in
 /-- **The combined programmed-game ⊕ collision-reduction handler.** A single handler that threads
@@ -7026,72 +6704,6 @@ theorem collisionFindingAdvantage_reduction_eq [DecidableEq Domain]
   unfold collisionFindingAdvantage collisionFindingExp
   simp only [map_eq_bind_pure_comp, bind_assoc, pure_bind, Function.comp]
 
-omit [Fintype Salt] in
-/-- **SL-C (preimage analog): the programmed-preimage advantage unfolds to an averaged
-exact-match probability.** The success probability of the exact-match reduction in the keyed
-programmed-preimage game is exactly the chance, averaged over a freshly generated key pair
-`(pk, sk) ← hr.gen` (the secret key is needed to draw the hidden trapdoor preimage) and a uniform
-target `y`, that the reduction reproduces the challenger's hidden short preimage `x`.  This exposes
-the exact-match event as a plain `Pr[= true | …]` bind over `hr.gen` so the Step-2 extraction can
-average it against the same keygen mass as the collision term. -/
-theorem programmedPreimageAdvantage_reduction_eq [DecidableEq Domain]
-    (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
-    (domainSample : PK → ProbComp Domain) :
-    programmedPreimageAdvantage (psf := psf) (hr := hr)
-        (programmedPreimageReduction psf hr M Salt adv domainSample)
-      = Pr[= true | (hr.gen >>= fun pksk => (do
-          let y ← ($ᵗ Range : ProbComp Range)
-          let x ← psf.trapdoorSample pksk.1 pksk.2 y
-          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pksk.1 y
-          pure (decide (x' = x))) : ProbComp Bool)] := by
-  unfold programmedPreimageAdvantage programmedPreimageExp
-  rfl
-
-open Classical in
-omit [Fintype Salt] in
-/-- **SL-A: the 3-term averaging reduction skeleton.** Reduces the Step-2 keygen-averaged
-programmed-game bound to a single per-key `(pk, sk)` bound by expanding all three advantage terms
-over the common keygen mass `𝒟[hr.gen]`.  Given a per-key hypothesis `h` bounding the programmed
-freshness game at `pk` by the reduction's collision event at `pk` plus the multi-target factor
-`qSign + qHash` times the exact-match event at `(pk, sk)`, averaging `h` over `(pk, sk) ← hr.gen`
-re-folds the right-hand averages into `collisionFindingAdvantage (reduction …)` (via SL-C, whose
-`Prod.fst` keygen pushforward matches the full keygen mass) and `programmedPreimageAdvantage
-(programmedPreimageReduction …)` (via its preimage analog). -/
-theorem gpv_progGameVerifyFreshAvg_le_of_perKey [DecidableEq Domain]
-    (qSign qHash : ℕ)
-    (adv : SignatureAlg.unforgeableAdv
-      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
-    (domainSample : PK → ProbComp Domain)
-    (h : ∀ pksk : PK × SK,
-      Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
-        ≤ Pr[= true | (reduction psf hr M Salt adv domainSample pksk.1 >>= fun xs =>
-              pure (decide (xs.1 ≠ xs.2) &&
-                decide (psf.eval pksk.1 xs.1 = psf.eval pksk.1 xs.2) &&
-                psf.isShort xs.1 && psf.isShort xs.2) : ProbComp Bool)]
-          + ((qSign + qHash : ℕ) : ENNReal) *
-            Pr[= true | (do
-              let y ← ($ᵗ Range : ProbComp Range)
-              let x ← psf.trapdoorSample pksk.1 pksk.2 y
-              let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pksk.1 y
-              pure (decide (x' = x)) : ProbComp Bool)]) :
-    Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
-        progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
-      ≤ collisionFindingAdvantage (psf := psf) (hr := hr)
-          (reduction psf hr M Salt adv domainSample)
-        + ((qSign + qHash : ℕ) : ENNReal) *
-          programmedPreimageAdvantage (psf := psf) (hr := hr)
-            (programmedPreimageReduction psf hr M Salt adv domainSample) := by
-  classical
-  rw [collisionFindingAdvantage_reduction_eq psf hr M Salt adv domainSample,
-    programmedPreimageAdvantage_reduction_eq psf hr M Salt adv domainSample, bind_map_left]
-  rw [probOutput_bind_eq_tsum (𝒟[hr.gen] : SPMF (PK × SK)),
-    probOutput_bind_eq_tsum hr.gen, probOutput_bind_eq_tsum hr.gen]
-  rw [← ENNReal.tsum_mul_left, ← ENNReal.tsum_add]
-  refine ENNReal.tsum_le_tsum fun x => ?_
-  rw [mul_left_comm (↑(qSign + qHash) : ENNReal), ← mul_add]
-  exact mul_le_mul' le_rfl (h x)
-
 omit [DecidableEq Range] [Fintype Salt] in
 /-- **Hidden programmed preimages are short.** Every preimage `s` in the support of the forward
 sampler `domainSample pk` is accepted by the verifier's shortness predicate (`psf.isShort s`),
@@ -7769,6 +7381,107 @@ lemma probOutput_reservoirWinnerIndex_ge (N j Q : ℕ) (hj : j < N) (hNQ : N ≤
   rw [probOutput_reservoirWinnerIndex_eq N j hj]
   exact ENNReal.inv_le_inv.mpr (by exact_mod_cast hNQ)
 
+/-- **Pre-sampled-index programmed-preimage reduction.** Draws the embed index up front via
+`reservoirWinnerIndex (qSign + qHash)` (uniform over the at-most-`qSign + qHash` programmed entries;
+`none` only when there is no budget, mapped to an out-of-range index that never embeds), then runs
+the adversary under `embedAtIndexImpl` from the empty state and returns the forged preimage. Unlike
+the online reservoir handler, the embed index is fixed before the run, so the simulated random
+oracle is consistent under re-query. -/
+noncomputable def programmedPreimageReduction
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ) :
+    ProgrammedPreimageAdversary (PK := PK) (Domain := Domain) (Range := Range) :=
+  fun pk y => do
+    let wOpt ← reservoirWinnerIndex (qSign + qHash)
+    let ((_msgStar, (_rStar, sStar)), _st) ←
+      (simulateQ (embedAtIndexImpl psf M Salt domainSample pk (wOpt.getD (qSign + qHash)) y)
+        (adv.main pk)).run ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+    pure sStar
+
+omit [Fintype Salt] in
+/-- **The pre-sampled-index reduction, unfolded to its index draw and handler run.** Restates the
+reduction body in terms of the named handler `embedAtIndexImpl`: draw the embed index, run the
+adversary under the handler from the empty state, and read off the forged preimage. -/
+lemma programmedPreimageReduction_eq_run
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ) (pk : PK) (y : Range) :
+    programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y =
+      (do
+        let wOpt ← reservoirWinnerIndex (qSign + qHash)
+        let r ← (simulateQ (embedAtIndexImpl psf M Salt domainSample pk
+            (wOpt.getD (qSign + qHash)) y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        pure r.1.2.2) := rfl
+
+omit [Fintype Salt] in
+/-- **Advantage of the pre-sampled-index reduction as an averaged exact-match probability.** The
+success probability of the reduction in the keyed programmed-preimage game equals the chance,
+averaged over a fresh key pair `(pk, sk) ← hr.gen` and a uniform target `y`, that the reduction
+reproduces the challenger's hidden short preimage `x`. Exposes the exact-match event as a plain
+`Pr[= true | …]` bind so the Step-2 extraction can average it against the same keygen mass. -/
+theorem programmedPreimageAdvantage_reduction_eq [DecidableEq Domain]
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (qSign qHash : ℕ) :
+    programmedPreimageAdvantage (psf := psf) (hr := hr)
+        (programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash)
+      = Pr[= true | (hr.gen >>= fun pksk => (do
+          let y ← ($ᵗ Range : ProbComp Range)
+          let x ← psf.trapdoorSample pksk.1 pksk.2 y
+          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash
+            pksk.1 y
+          pure (decide (x' = x))) : ProbComp Bool)] := by
+  unfold programmedPreimageAdvantage programmedPreimageExp
+  rfl
+
+open Classical in
+omit [Fintype Salt] in
+/-- **SL-A: the 3-term averaging reduction skeleton.** Reduces the Step-2 keygen-averaged
+programmed-game bound to a single per-key `(pk, sk)` bound by expanding all three advantage terms
+over the common keygen mass `𝒟[hr.gen]`.  Given a per-key hypothesis `h` bounding the programmed
+freshness game at `pk` by the reduction's collision event at `pk` plus the multi-target factor
+`qSign + qHash` times the exact-match event at `(pk, sk)`, averaging `h` over `(pk, sk) ← hr.gen`
+re-folds the right-hand averages into `collisionFindingAdvantage (reduction …)` (via SL-C, whose
+`Prod.fst` keygen pushforward matches the full keygen mass) and `programmedPreimageAdvantage
+(programmedPreimageReduction …)` (via its preimage analog). -/
+theorem gpv_progGameVerifyFreshAvg_le_of_perKey [DecidableEq Domain]
+    (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain)
+    (h : ∀ pksk : PK × SK,
+      Pr[= true | progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+        ≤ Pr[= true | (reduction psf hr M Salt adv domainSample pksk.1 >>= fun xs =>
+              pure (decide (xs.1 ≠ xs.2) &&
+                decide (psf.eval pksk.1 xs.1 = psf.eval pksk.1 xs.2) &&
+                psf.isShort xs.1 && psf.isShort xs.2) : ProbComp Bool)]
+          + ((qSign + qHash : ℕ) : ENNReal) *
+            Pr[= true | (do
+              let y ← ($ᵗ Range : ProbComp Range)
+              let x ← psf.trapdoorSample pksk.1 pksk.2 y
+              let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash
+                pksk.1 y
+              pure (decide (x' = x)) : ProbComp Bool)]) :
+    Pr[= true | (𝒟[hr.gen] : SPMF (PK × SK)) >>= fun pksk =>
+        progGameVerifyFresh psf hr M Salt adv domainSample pksk.1]
+      ≤ collisionFindingAdvantage (psf := psf) (hr := hr)
+          (reduction psf hr M Salt adv domainSample)
+        + ((qSign + qHash : ℕ) : ENNReal) *
+          programmedPreimageAdvantage (psf := psf) (hr := hr)
+            (programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash) := by
+  classical
+  rw [collisionFindingAdvantage_reduction_eq psf hr M Salt adv domainSample,
+    programmedPreimageAdvantage_reduction_eq psf hr M Salt adv domainSample qSign qHash,
+    bind_map_left]
+  rw [probOutput_bind_eq_tsum (𝒟[hr.gen] : SPMF (PK × SK)),
+    probOutput_bind_eq_tsum hr.gen, probOutput_bind_eq_tsum hr.gen]
+  rw [← ENNReal.tsum_mul_left, ← ENNReal.tsum_add]
+  refine ENNReal.tsum_le_tsum fun x => ?_
+  rw [mul_left_comm (↑(qSign + qHash) : ENNReal), ← mul_add]
+  exact mul_le_mul' le_rfl (h x)
+
 omit [Fintype Salt] in
 /-- **D0 — exact-match advantage as a target-averaged reservoir win.** The per-key exact-match term
 of the programmed-preimage reduction expands, over the uniform target draw `y ← $ᵗ Range`, into the
@@ -7777,18 +7490,18 @@ entry point for the reservoir analysis: the inner factor `Pr[= true | …]` is t
 probability of `programmedPreimageReduction … pk y` reproducing the trapdoor preimage `x` of the
 fixed embedded target `y`, which the reservoir-sampling argument then bounds. -/
 lemma programmedPreimage_perKey_eq_tsum [DecidableEq Domain]
-    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK)
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
     Pr[= true | (do
         let y ← ($ᵗ Range : ProbComp Range)
         let x ← psf.trapdoorSample pk sk y
-        let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+        let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y
         pure (decide (x' = x)) : ProbComp Bool)]
       = ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
           Pr[= true | (do
             let x ← psf.trapdoorSample pk sk y
-            let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+            let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y
             pure (decide (x' = x)) : ProbComp Bool)] := by
   rw [probOutput_bind_eq_tsum]
 
@@ -7883,115 +7596,13 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
         Pr[= true | (do
           let y ← ($ᵗ Range : ProbComp Range)
           let x ← psf.trapdoorSample pk sk y
-          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample pk y
+          let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y
           pure (decide (x' = x)) : ProbComp Bool)] := by
-  -- `hreg` (per-key regularity), `hNF` (trapdoor totality), and `hQ` (the `N ≤ qSign + qHash`
-  -- entry-count bound, via `combined_run_table_card_le`) are threaded down for the residual
-  -- reservoir coupling; kept in scope here for that proof.
-  let _hreg := hreg
-  let _hNF := hNF
-  let _hQ := hQ
-  -- **Step A — verify-strip.** Eliminate the verification continuation: the forged point is a
-  -- cache hit (`hForge`), so the verify read is table-passive and the exact-match winning event
-  -- reduces to the corresponding event on the combined run of `adv.main pk` alone
-  -- (`gpv_perKey_exactMatch_verifyStrip_le`).
-  refine le_trans (gpv_perKey_exactMatch_verifyStrip_le psf hr M Salt domainSample pk adv hForge) ?_
-  -- **Step B — target factorization.** Expand the multi-target advantage as the target-averaged
-  -- reservoir win (D0), then push the `(qSign + qHash)` factor inside the uniform target sum.
-  rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk adv,
-    ← ENNReal.tsum_mul_left]
-  -- **Step C — the residual reservoir value-coupling (Step-2 make-or-break).**
-  --
-  -- The remaining obligation bounds the exact-match mass on `adv.main pk`'s combined run — a fresh,
-  -- verifying forgery `(msg, (r, s⋆))` whose forged preimage `s⋆` *exactly equals* the simulator's
-  -- hidden recorded preimage `sd` at the forged point (with `sd ← domainSample pk` the value drawn
-  -- when that entry was programmed) — by `(qSign + qHash)` times the target-averaged reservoir win.
-  --
-  -- The reservoir reduction at target `y` (`reservoirReductionImpl`) embeds `y` at one uniformly
-  -- chosen programmed entry (the *winner*); its winner index is data-independent and uniform over
-  -- the `N ≤ qSign + qHash` programmed entries (`probOutput_reservoirWinnerIndex_eq`,
-  -- `combined_run_table_card_le`), so `(qSign + qHash) · (1 / N) ≥ 1` absorbs the per-entry
-  -- reservoir mass.  Conditioned on the winner being the forged entry, the embedded value `y`
-  -- replaces the combined game's cached image `psf.eval pk sd`, and the reduction wins exactly when
-  -- `s⋆ = trapdoorSample pk sk y` — an *independent* challenger preimage of `y`, re-coupled to the
-  -- drawn `sd` only through the joint regularity `hreg`:
-  --     𝒟[(eval pk sd, sd) | sd ← domainSample pk] = 𝒟[(c, trapdoorSample pk sk c) | c ← $Range].
-  --
-  -- **Step C′ — write-only-table deferral (Lemma A).** The LHS exact-match mass on the combined run
-  -- is *equidistributed* with the same event on the trapdoor-recording run
-  -- (`evalDist_run_progGameRunImplCombinedTrap_eq`): the recorded preimage `sd⋆` is re-expressed,
-  -- run-for-run, as the trapdoor preimage `x⋆ = trapdoorSample pk sk v⋆` of the cached image `v⋆`,
-  -- with `v⋆ ~ uniform`.  This is the exact equidistribution of the route — no slack, threaded
-  -- through the adaptive fold by the per-step distributional engine, with the table never read
-  -- mid-run.  After this rewrite the win reads `s⋆ = trapdoorSample pk sk v⋆`, matching the
-  -- reservoir reduction's win `s⋆ = trapdoorSample pk sk y` at the embedded uniform target.
-  rw [probEvent_congr' (q := fun w : (M × (Salt × Domain)) ×
-        ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
-          (decide (w.1.1 ∉ w.2.1.1.2) &&
-              (decide (psf.eval pk w.1.2.2 =
-                  (w.2.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
-                psf.isShort w.1.2.2)) = true ∧
-            w.2.2 (w.1.2.1, w.1.1) = some w.1.2.2)
-    (fun _ _ => Iff.rfl)
-    (evalDist_run_progGameRunImplCombinedTrap_eq psf M Salt domainSample pk sk hreg (adv.main pk)
-      ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none))]
-  -- **Step C″ — the residual reservoir winner-indexing bound.**  After Step C′ the LHS is the
-  -- exact-match mass on the *trapdoor-recording* run: the forged point is one of the `N ≤ qSign +
-  -- qHash` programmed entries (`combined_run_table_card_le`, transported over the equidistribution)
-  -- its cached image `v⋆` is uniform, and the recorded preimage there is `trapdoorSample pk sk v⋆`,
-  -- so the win reads `s⋆ = trapdoorSample pk sk v⋆`.  The RHS is `(qSign + qHash)` times the
-  -- target-averaged reservoir win, where the reduction embeds a uniform `y` at one uniformly chosen
-  -- programmed entry (winner-index uniformity `probOutput_reservoirWinnerIndex_ge`, `1/N ≥ 1/Q`)
-  -- and wins when `s⋆ = trapdoorSample pk sk y` at the winner.  Conditioned on the winner being the
-  -- forged entry the two runs are equidistributed (`y ≡ v⋆ ~ uniform`; `trapdoorSample pk sk ·` is
-  -- the same conditional draw given the cached image — no adaptive dependence remains), so the
-  -- per-entry reservoir mass `1/Q` absorbs the trapdoor-run's per-entry exact-match mass.  This is
-  -- the data-independent reservoir-indexing close: the joint coupling has collapsed to winner
-  -- selection plus the already-banked per-slot uniformity; no PMF×PMF joint law over image vs.
-  -- preimage remains.
-  -- Unfold the abstract reduction `programmedPreimageReduction` on the RHS into its concrete
-  -- internal run under `reservoirReductionImpl` (`programmedPreimageReduction_eq_run_…`), so the
-  -- residual is stated purely in terms of the two concrete handlers — the trapdoor-recording trap
-  -- run on the LHS and the reservoir-embedding run on the RHS — with no abstract reduction left.
-  simp only [programmedPreimageReduction_eq_run_reservoirReductionImpl psf hr M Salt adv
-    domainSample pk, bind_assoc, pure_bind]
-  -- **Remaining residual — the winner-conditioned reservoir coupling.**  The LHS is the trap-run
-  -- exact-match mass: a fresh, verifying, short forgery `(msg, (r, s⋆))` whose recorded table entry
-  -- at the forged point `(r, msg)` is `s⋆`, i.e. `s⋆ = trapdoorSample pk sk v⋆` for the uniform
-  -- cached image `v⋆ = cache (r, msg)` (the trap run draws `v ← $ᵗ Range` and records
-  -- `trapdoorSample pk sk v` at every programming step).  The RHS is `(qSign + qHash)` times the
-  -- target-averaged reservoir win: at target `i` the reduction embeds `i` at one uniformly chosen
-  -- programmed entry (the winner) and wins when the forged preimage `s⋆ = trapdoorSample pk sk i`.
-  --
-  -- Conditioned on the winner being the forged entry — an event of probability
-  -- `1 / N ≥ 1 / (qSign + qHash)` (`probOutput_reservoirWinnerIndex_ge`,
-  -- `combined_run_table_card_le`), absorbed by the
-  -- `(qSign + qHash)` factor — the reservoir run caches `i` at the forged point, so the embedded
-  -- uniform `i` plays the role of the trap run's uniform `v⋆`; the two adversary transcripts are
-  -- then equidistributed (uniform cache against uniform cache) and the wins coincide
-  -- (`s⋆ = trapdoorSample pk sk i ≡ s⋆ = trapdoorSample pk sk v⋆`).  Establishing this requires the
-  -- winner-conditioned equidistribution between the trap run (table-valued state) and the reservoir
-  -- run (winner-slot-valued state) threaded through the adaptive fold — a joint law over the two
-  -- distinct state shapes for which no shared-state simulation engine applies; it is the sole
-  -- residual of the GPV Step-2 reservoir close.
-  --
-  -- Two reduction routes are ruled out, so the `tsum` averaging is genuinely irreducible:
-  --   * **Per-target split (false intermediate).** Refactoring the left-hand mass as
-  --     `∑' i, Pr[= i | $ᵗ Range] * L` and comparing the sum term-by-term would demand
-  --     `L ≤ (qSign + qHash) * Pr[reservoir wins at i]` for *each fixed* target `i`.  That per-`i`
-  --     statement is false: a fixed `i` need not be the forged point, so the average over the
-  --     uniform target — coupling the external `i` to the internal cached image at the adaptive
-  --     winner slot — cannot be pushed inside the sum.
-  --   * **Write-only coin deferral on the index-augmented run.** The winner *index* is write-only
-  --     and its marginal is `reservoirWinnerIndex (count)` (`probOutput_reservoirWinnerIndex_eq`),
-  --     but the index-augmented handler `reservoirIndexImpl` still embeds the target `y` at the
-  --     winner's cache slot (it is a faithful refinement of `reservoirReductionImpl`, embedding `y`
-  --     on the coin hit `b = 0`).  Hence the reservoir *coins* are not write-only for that run:
-  --     they decide which slot the adversary observes as `y`, so the index is *not* independent of
-  --     the transcript there, and `simulateQ_reservoirIndexImpl_run_proj` alone does not give the
-  --     winner-conditioned equidistribution.  Decoupling the coins requires bridging to an
-  --     *honest* (non-embedding) augmented run and then swapping the honest winner value for `y`
-  --     under `hreg` — which is exactly the joint fold-level coupling above.
+  -- **Step-2 reservoir coupling (pre-sampled-index route).** With the embed index drawn up front
+  -- via `reservoirWinnerIndex (qSign + qHash)` and the adversary run under `embedAtIndexImpl`, the
+  -- residual is the winner-conditioned equidistribution between the trapdoor-recording combined run
+  -- and the pre-sampled-index embedding run, threaded through the adaptive fold.  This coupling is
+  -- the next task; its statement (this lemma) is the approved pre-sampled-index reduction shape.
   sorry
 
 open Classical in
@@ -8039,7 +7650,7 @@ theorem gpv_progGameVerifyFreshAvg_le_collisionAdv_add_preimageAdv [DecidableEq 
           (reduction psf hr M Salt adv domainSample) +
         ((qSign + qHash : ℕ) : ENNReal) *
           programmedPreimageAdvantage (psf := psf) (hr := hr)
-            (programmedPreimageReduction psf hr M Salt adv domainSample) := by
+            (programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash) := by
   classical
   -- Reduce the keygen-average to a per-key `(pk, sk)` bound via the averaging skeleton SL-A,
   -- then discharge that per-key bound (the distinct-collision transfer + the reservoir exact-match
@@ -8109,7 +7720,7 @@ theorem forgery_yields_collision_or_exact_match [DecidableEq Domain]
           (reduction psf hr M Salt adv domainSample) +
         ((qSign + qHash : ℕ) : ENNReal) *
           programmedPreimageAdvantage (psf := psf) (hr := hr)
-            (programmedPreimageReduction psf hr M Salt adv domainSample) +
+            (programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash) +
         collisionBound Salt qSign qHash := by
   refine le_trans (gpv_advantage_le_progGameVerifyFreshAvg_add_collisionBound psf hr M Salt
     qSign qHash adv domainSample hreg hNF hQ) ?_
@@ -8146,7 +7757,7 @@ theorem forgery_yields_collision [DecidableEq Domain]
       (oa := adv.main pk) (qSign := qSign) (qHash := qHash))
     (εpp : ℝ≥0∞)
     (hMinEntropy : programmedPreimageAdvantage (psf := psf) (hr := hr)
-      (programmedPreimageReduction psf hr M Salt adv domainSample) ≤ εpp) :
+      (programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash) ≤ εpp) :
     adv.advantage (runtime M Salt) ≤
       collisionFindingAdvantage (psf := psf) (hr := hr)
           (reduction psf hr M Salt adv domainSample) +
@@ -8191,7 +7802,7 @@ theorem euf_cma_collision_bound [DecidableEq Domain]
     (εpp : ℝ≥0∞)
     (hMinEntropy : ∀ ds : PK → ProbComp Domain,
       programmedPreimageAdvantage (psf := psf) (hr := hr)
-        (programmedPreimageReduction psf hr M Salt adv ds) ≤ εpp) :
+        (programmedPreimageReduction psf hr M Salt adv ds qSign qHash) ≤ εpp) :
     ∃ (red : CollisionAdversary (PK := PK) (Domain := Domain)),
       adv.advantage (runtime M Salt) ≤
         collisionFindingAdvantage (psf := psf) (hr := hr) red +
@@ -8233,7 +7844,7 @@ theorem euf_cma_split_bound [DecidableEq Domain]
           collisionBound Salt qSign qHash := by
   obtain ⟨domainSample, h⟩ := hreg
   exact ⟨reduction psf hr M Salt adv domainSample,
-    programmedPreimageReduction psf hr M Salt adv domainSample,
+    programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash,
     forgery_yields_collision_or_exact_match psf hr M Salt hcorrect qSign qHash adv
       domainSample h hNF (hForge domainSample) hQ⟩
 
