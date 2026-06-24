@@ -4965,6 +4965,196 @@ lemma reservoirReductionImpl_run_inr
   split_ifs with hb <;>
     simp [StateT.run_set]
 
+/-- **Index-augmented reservoir reduction handler.** The same handler as `reservoirReductionImpl`,
+threading the same lazy random-oracle cache, programmed-entry count, and current winner point/value
+pair, but carrying one additional write-only field: the winner *index* `Option ℕ`, recording the
+programming order `count` of the entry at which the target `y` is currently embedded. The index
+field is updated by the *same* reservoir coin `b ← $ᵗ Fin (count + 1)` that decides the value-state
+update — set to `some count` exactly when the coin hits (`b = 0`) and the new entry becomes the
+winner, and kept unchanged otherwise — so it mirrors the abstract winner-selection recursion
+`reservoirWinnerIndex`. Because the field is never read by the handler logic, the index-augmented
+run is a faithful refinement of `reservoirReductionImpl`: erasing the field reproduces the concrete
+run exactly (`simulateQ_reservoirIndexImpl_run_proj`), so its presence cannot influence the
+adversary transcript. This separates the data-independent winner *index* from the cache values it
+is drawn independently of, the structural form of the reservoir winner-index independence. -/
+noncomputable def reservoirIndexImpl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ)
+        ProbComp) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ
+  let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
+    let s ← (domainSample pk : ProbComp Domain)
+    let v := psf.eval pk s
+    let st ← get
+    let (cache, count, winner, _idx) := st
+    let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+    if b = 0 then
+      let cache' := match winner with
+        | some (tOld, vOld) => cache.cacheQuery tOld vOld
+        | none => cache
+      set ((cache'.cacheQuery t y, count + 1, some (t, v), some count) : State)
+    else
+      set ((cache.cacheQuery t v, count + 1, winner, st.2.2.2) : State)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1 t with
+      | some v => pure v
+      | none => do
+          programStep t
+          let st' ← get
+          pure ((st'.1 t).getD y)
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      let (cache, count, winner, _idx) := st
+      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+      if b = 0 then
+        let cache' := match winner with
+          | some (tOld, vOld) => cache.cacheQuery tOld vOld
+          | none => cache
+        set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v), some count) : State)
+      else
+        set ((cache.cacheQuery (r, msg) v, count + 1, winner, st.2.2.2) : State)
+      pure (r, s)
+  (unifImpl + roImpl) + signImpl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirIndexImpl` on a uniform query.** The index field, like the
+rest of the state, passes through untouched. -/
+lemma reservoirIndexImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) (q : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
+    (reservoirIndexImpl psf M Salt domainSample pk y (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirIndexImpl` on a random-oracle query.** On a cache miss the
+reservoir coin `b ← $ᵗ Fin (count + 1)` updates the winner index to `some count` exactly when it
+hits (`b = 0`), in lockstep with the value-state update; on a cache hit nothing changes. -/
+lemma reservoirIndexImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) (q : (Salt × M →ₒ Range).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
+    (reservoirIndexImpl psf M Salt domainSample pk y (.inl (.inr q))).run s =
+      (match s.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            let v := psf.eval pk sd
+            let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
+            if b = 0 then
+              let cache' := match s.2.2.1 with
+                | some (tOld, vOld) => s.1.cacheQuery tOld vOld
+                | none => s.1
+              pure (y, (cache'.cacheQuery q y, s.2.1 + 1, some (q, v), some s.2.1))
+            else
+              pure (v, (s.1.cacheQuery q v, s.2.1 + 1, s.2.2.1, s.2.2.2))) := by
+  cases hq : s.1 q with
+  | none =>
+      simp only [add_apply_inl, add_apply_inr, reservoirIndexImpl, bind_pure_comp,
+        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
+        Function.comp_apply, StateT.run_pure]
+      refine bind_congr fun sd => bind_congr fun b => ?_
+      split_ifs with hb <;>
+        simp [StateT.run_set, QueryCache.cacheQuery_self]
+  | some v =>
+      simp [reservoirIndexImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, hq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirIndexImpl` on a signing query.** A signing query always
+programs a fresh entry; the reservoir coin sets the winner index to `some count` on a hit, exactly
+as in the value-state update. -/
+lemma reservoirIndexImpl_run_inr
+    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
+    (reservoirIndexImpl psf M Salt domainSample pk y (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sd ← (domainSample pk : ProbComp Domain)
+        let v := psf.eval pk sd
+        let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
+        if b = 0 then
+          let cache' := match s.2.2.1 with
+            | some (tOld, vOld) => s.1.cacheQuery tOld vOld
+            | none => s.1
+          pure ((r, sd), (cache'.cacheQuery (r, msg) y, s.2.1 + 1, some ((r, msg), v), some s.2.1))
+        else
+          pure ((r, sd), (s.1.cacheQuery (r, msg) v, s.2.1 + 1, s.2.2.1, s.2.2.2))) := by
+  simp only [add_apply_inr, reservoirIndexImpl, bind_pure_comp, map_eq_bind_pure_comp,
+    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
+    StateT.run_get, Function.comp_apply, pure_bind]
+  refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
+  split_ifs with hb <;>
+    simp [StateT.run_set]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **Per-step index erasure.** Erasing the winner-index field from one `reservoirIndexImpl` step
+reproduces the corresponding `reservoirReductionImpl` step on the index-erased state: the index
+field is write-only, so dropping it commutes with the per-query update. -/
+lemma reservoirIndexImpl_run_proj
+    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range)
+    (q : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
+    (Prod.map id (fun st : (Salt × M →ₒ Range).QueryCache × ℕ ×
+          Option ((Salt × M) × Range) × Option ℕ => (st.1, st.2.1, st.2.2.1)))
+        <$> ((reservoirIndexImpl psf M Salt domainSample pk y q).run s)
+      = (reservoirReductionImpl psf M Salt domainSample pk y q).run (s.1, s.2.1, s.2.2.1) := by
+  match q with
+  | .inl (.inl qq) =>
+      rw [reservoirIndexImpl_run_inl_inl, reservoirReductionImpl_run_inl_inl]
+      rfl
+  | .inl (.inr qq) =>
+      rw [reservoirIndexImpl_run_inl_inr, reservoirReductionImpl_run_inl_inr]
+      cases hq : s.1 qq with
+      | none =>
+          simp only [map_bind]
+          refine bind_congr fun sd => bind_congr fun b => ?_
+          split_ifs with hb <;> rfl
+      | some v => simp
+  | .inr msg =>
+      rw [reservoirIndexImpl_run_inr, reservoirReductionImpl_run_inr]
+      simp only [map_bind]
+      refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
+      split_ifs with hb <;> rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **In-fold reservoir winner-index independence (index erasure through the fold).** Erasing the
+winner-index field commutes through the entire adaptive fold of the adversary computation: the
+index-augmented run, projected back onto the concrete reservoir state, is run-for-run equal to the
+plain `reservoirReductionImpl` run from the index-erased start state. This is the operational form
+of the reservoir winner-index independence: the winner-index field is computed solely from the fresh
+reservoir coins `b ← $ᵗ Fin (count + 1)`, never read by the handler, so its presence leaves the
+adversary's transcript and the value-state distribution untouched — the index is *independent* of
+the cache values the adversary observes. The remaining ingredient for the per-`y` reservoir close is
+the winner-index *marginal* against the abstract `reservoirWinnerIndex (count)`, whose adaptive
+programmed-entry count couples it back to the transcript. -/
+lemma simulateQ_reservoirIndexImpl_run_proj {β : Type}
+    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range)
+    (comp : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range) × Option ℕ) :
+    (Prod.map id (fun st : (Salt × M →ₒ Range).QueryCache × ℕ ×
+          Option ((Salt × M) × Range) × Option ℕ => (st.1, st.2.1, st.2.2.1)))
+        <$> ((simulateQ (reservoirIndexImpl psf M Salt domainSample pk y) comp).run s)
+      = (simulateQ (reservoirReductionImpl psf M Salt domainSample pk y) comp).run
+          (s.1, s.2.1, s.2.2.1) := by
+  induction comp using OracleComp.inductionOn generalizing s with
+  | pure x => simp
+  | query_bind q k ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query, OracleQuery.cont_query,
+        id_map, StateT.run_bind, map_bind]
+      rw [← reservoirIndexImpl_run_proj psf M Salt domainSample pk y q s]
+      rw [bind_map_left]
+      refine bind_congr fun z => ?_
+      exact ih z.1 z.2
+
 omit [Fintype Salt] in
 /-- **The programmed-preimage reduction is `reservoirReductionImpl` run from the empty state.**
 Restates the body of `programmedPreimageReduction` in terms of the named internal handler
