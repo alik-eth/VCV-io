@@ -7558,6 +7558,104 @@ lemma gpv_perKey_exactMatch_verifyStrip_le
   rw [run_combined_verifyKont_of_cache_hit psf M Salt domainSample pk msg r s
       ((st.1.1.1 (r, msg)).getD (psf.eval pk s)) st hhit, probEvent_pure, probEvent_pure]
 
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **N2 — embed-index handler counter bound.** Over any adversary computation `oa` making at most
+`qS` signing queries and `qH` random-oracle queries, every final state of the pre-sampled-index
+embedding run `embedAtIndexImpl … w y` advances the running programming counter `.2` by at most
+`qS + qH`: uniform steps and random-oracle cache hits leave it untouched, while each signing step
+and each random-oracle miss increments it by one (charged against the residual signing or hash
+budget).  Starting from counter `0` this bounds the final counter by `qSign + qHash`, the reservoir
+size over which `reservoirWinnerIndex` samples its embedding slot. -/
+lemma embedAtIndexImpl_run_count_le (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : (Salt × M →ₒ Range).QueryCache × ℕ) (qS qH : ℕ),
+      oa.IsQueryBoundP (· matches .inr _) qS →
+      oa.IsQueryBoundP (· matches .inl (.inr _)) qH →
+      ∀ z ∈ support ((simulateQ (embedAtIndexImpl psf M Salt domainSample pk w y) oa).run s),
+        z.2.2 ≤ s.2 + qS + qH := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s qS qH _ _ z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz
+      exact le_add_right (Nat.le_add_right _ _)
+  | query_bind t mx ih =>
+      intro s qS qH hQS hQH z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rw [OracleComp.isQueryBoundP_query_bind_iff] at hQS hQH
+      obtain ⟨hQS1, hQS2⟩ := hQS
+      obtain ⟨hQH1, hQH2⟩ := hQH
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · -- uniform query: counter untouched, both budgets pass through
+        rw [embedAtIndexImpl_run_inl_inl, map_eq_bind_pure_comp] at hps
+        obtain ⟨x, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hps
+        simp only [Function.comp_apply] at hh
+        have hps' : pst = s := (Prod.ext_iff.mp hh).2
+        have hpst2 : pst.2 = s.2 := by rw [hps']
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        exact le_trans (ih pv pst qS qH hbS hbH z hz) (by omega)
+      · -- random-oracle query: hit leaves the counter fixed, miss increments by one
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqH : 0 < qH := by simpa using hQH1
+        rw [embedAtIndexImpl_run_inl_inr] at hps
+        cases hq : s.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            have hpst2 : pst.2 = s.2 := by rw [← hpst]
+            exact le_trans (ih pv pst qS (qH - 1) hbS hbH z hz) (by omega)
+        | none =>
+            rw [hq, map_eq_bind_pure_comp] at hps
+            obtain ⟨sd, -, hpst⟩ := (mem_support_bind_iff _ _ _).1 hps
+            simp only [Function.comp_apply] at hpst
+            have hpst2 : pst.2 = s.2 + 1 := by
+              have h2 := congrArg (Prod.snd ∘ Prod.snd) hpst
+              split_ifs at h2 <;> simpa using h2
+            exact le_trans (ih pv pst qS (qH - 1) hbS hbH z hz) (by omega)
+      · -- signing query: increments the counter, charged against the signing budget
+        have hbS := hQS2 pv
+        have hbH := hQH2 pv
+        simp only [reduceCtorEq, ↓reduceIte] at hbS hbH
+        have hqS : 0 < qS := by simpa using hQS1
+        rw [embedAtIndexImpl_run_inr] at hps
+        obtain ⟨r, -, hps⟩ := (mem_support_bind_iff _ _ _).1 hps
+        rw [map_eq_bind_pure_comp] at hps
+        obtain ⟨sd, -, hpst⟩ := (mem_support_bind_iff _ _ _).1 hps
+        simp only [Function.comp_apply] at hpst
+        have hpst2 : pst.2 = s.2 + 1 := by
+          have h2 := congrArg (Prod.snd ∘ Prod.snd) hpst
+          simpa using h2
+        exact le_trans (ih pv pst (qS - 1) qH hbS hbH z hz) (by omega)
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **N2 (corollary) — embed-index counter bounded by the reservoir budget.** From the empty start
+state `(∅, 0)`, every final state of the pre-sampled-index embedding run of an adversary `oa`
+obeying `signHashQueryBound` has running programming counter at most `qSign + qHash`.  This is the
+budget the reservoir winner index `reservoirWinnerIndex (qSign + qHash)` samples over. -/
+lemma embedAtIndexImpl_run_count_le_budget (domainSample : PK → ProbComp Domain) (pk : PK)
+    (w : ℕ) (y : Range) (qSign qHash : ℕ)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := β)
+      (oa := oa) (qSign := qSign) (qHash := qHash))
+    {z : β × ((Salt × M →ₒ Range).QueryCache × ℕ)}
+    (hmem : z ∈ support ((simulateQ (embedAtIndexImpl psf M Salt domainSample pk w y) oa).run
+      ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)))) :
+    z.2.2 ≤ qSign + qHash := by
+  have := embedAtIndexImpl_run_count_le psf M Salt domainSample pk w y oa
+    ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)) qSign qHash hQ.1 hQ.2 z hmem
+  simpa using this
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Exact-match reservoir bound (Step-2 residual).** The exact-match winning mass on the combined
@@ -7598,11 +7696,56 @@ lemma gpv_perKey_exactMatch_le_reservoir [DecidableEq Domain] [Inhabited Range]
           let x ← psf.trapdoorSample pk sk y
           let x' ← programmedPreimageReduction psf hr M Salt adv domainSample qSign qHash pk y
           pure (decide (x' = x)) : ProbComp Bool)] := by
-  -- **Step-2 reservoir coupling (pre-sampled-index route).** With the embed index drawn up front
-  -- via `reservoirWinnerIndex (qSign + qHash)` and the adversary run under `embedAtIndexImpl`, the
-  -- residual is the winner-conditioned equidistribution between the trapdoor-recording combined run
-  -- and the pre-sampled-index embedding run, threaded through the adaptive fold.  This coupling is
-  -- the next task; its statement (this lemma) is the approved pre-sampled-index reduction shape.
+  -- **Step A (verify-strip, reduction-agnostic).**  Strip the verify continuation: on the forced
+  -- cache hit at the forged point the verification read is table-passive, so the verify-extended
+  -- exact-match mass is bounded by the exact-match event on `adv.main pk`'s combined run alone.
+  refine le_trans
+    (gpv_perKey_exactMatch_verifyStrip_le psf hr M Salt domainSample pk adv hForge) ?_
+  -- **Step B (target factorization).**  Expand the reduction's averaged exact-match advantage over
+  -- the uniform target draw `y ← $ᵗ Range` and push the `(qSign + qHash)` factor inside the sum, so
+  -- the goal becomes the verify-stripped LHS bounded by
+  --   `∑' y, (qSign + qHash) * (Pr[= y | $ᵗ Range] * Pr[per-y exact-match win])`.
+  rw [programmedPreimage_perKey_eq_tsum psf hr M Salt domainSample pk sk qSign qHash adv,
+    ← ENNReal.tsum_mul_left]
+  -- **Residual: Step C′ + reservoir coupling (N6) + assembly (N7).**
+  --
+  -- What remains is the genuine GPV Step-2 reservoir coupling.  Its structure:
+  --
+  -- * **Step C′ (Lemma A rewrite, reduction-agnostic).**  Rewrite the verify-stripped LHS
+  --   exact-match mass onto the *trapdoor-recording* combined run via
+  --   `evalDist_run_progGameRunImplCombinedTrap_eq` (using `probEvent_congr'`); after C′ the win
+  --   event reads `sStar = trapdoorSample pk sk v⋆`, with `v⋆ = cache(r, msg)` the uniformly drawn
+  --   cached image at the forged point.
+  --
+  -- * **N6 — per-slot reservoir coupling (MAKE-OR-BREAK).**  Conditioned on the pre-sampled embed
+  --   index `wOpt = some j*` (the forged entry's slot), `embedAtIndexImpl` caches the external
+  --   target `y` at the forged point and `psf.eval pk sd` elsewhere — a consistent all-uniform
+  --   random oracle under `hreg` (off-slot `eval(sd) ≡` uniform by `hreg`'s first marginal).  The
+  --   reduction wins iff the forgery lands on slot `j*` and `sStar = trapdoorSample pk sk y` with
+  --   `y ≡` the trap's `v⋆`.  The precise residual obligation is: for each fixed slot `j`,
+  --     `∑' y, Pr[= y | $ᵗ Range] * Pr[forged-slot win | embedTrapImpl … j y run]`
+  --       `= Pr[forged-slot = j ∧ trap exact-match | (trapdoor-recording) trapCount run]`,
+  --   the single per-slot `$ᵗ Range` substitution at slot `j` under value-independence (off-slot
+  --   both runs already discharged by the Lemma-A equidistribution of `embedAtIndexImpl` with its
+  --   uniform trap sibling `embedTrapImpl`).  This is a fold-level joint distributional coupling
+  --   between the trapdoor-recording combined run (state `(((cache × Finset M) × Bool) × table)`)
+  --   and the pre-sampled-index embedding run (state `cache × ℕ`); the two state types differ, so
+  --   the same-state engine `evalDist_simulateQ_run_eq_of_impl_evalDist_eq` does not bridge them
+  --   directly.  It requires a genuine PMF×PMF joint coupling (the relational engine
+  --   `relTriple_simulateQ_run_mono` with `R_state` = caches-agree ∧ counters-aligned ∧
+  --   table-records-trapdoor-preimage, whose per-step continuation obligation is output-equality
+  --   off the winner plus the single `hreg` substitution at the winner).
+  --
+  -- * **N7 — assembly.**  Pull the front `wOpt` draw (independent of the transcript), split via
+  --   `probOutput_bind_eq_tsum` / `tsum_option`, `ENNReal.tsum_comm`, keep the `j = j*` term, and
+  --   apply `probOutput_reservoirWinnerIndex_ge N j* (qSign + qHash)` (`(qSign + qHash)⁻¹ ≤ 1/N`)
+  --   with `N ≤ qSign + qHash` (`combined_run_table_card_le`; the embed run's counter bound is
+  --   banked as `embedAtIndexImpl_run_count_le_budget`), giving `(qSign + qHash) · (1/N) ≥ 1`.  The
+  --   `wOpt = none` atom is killed by `probOutput_reservoirWinnerIndex_none_eq_zero` (`N ≠ 0` since
+  --   `hForge` forces a programmed entry; if `N = 0` the LHS is `0`).
+  --
+  -- The N2 counter-budget infrastructure (`embedAtIndexImpl_run_count_le[_budget]`) is proven above
+  -- sorry-free.  N6 is a multi-week joint-coupling obligation and is the single residual here.
   sorry
 
 open Classical in
