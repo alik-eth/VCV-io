@@ -4841,6 +4841,147 @@ lemma reduction_eq_run_reductionImpl
         | some sHidden => pure (sHidden, sStar)
         | none => pure (sStar, sStar)) := rfl
 
+/-- **The programmed-preimage reduction's internal oracle handler.** The named handler stack
+`(unifImpl + roImpl) + signImpl` over
+`StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) ProbComp` that
+`programmedPreimageReduction` runs the adversary under. The state threads the lazy random-oracle
+cache, a running count of programmed entries, and the current reservoir winner: the
+`(salt, message)` point at which the target `y` is embedded, paired with the normal value
+`psf.eval pk s` that point would otherwise carry (kept so the displaced previous winner can be
+restored when a later entry wins). The target `y` is embedded at one uniformly chosen programmed
+entry via reservoir sampling: at the `k`-th programmed point the new point wins with probability
+`1 / (k + 1)`. The reduction's body
+equals running the adversary under this handler from `(∅, 0, none)` and reading off the forged
+preimage `sStar` (`programmedPreimageReduction_eq_run_reservoirReductionImpl`). -/
+noncomputable def reservoirReductionImpl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT ((Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) ProbComp) :=
+  let State := (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)
+  let programStep : (Salt × M) → StateT State ProbComp Unit := fun t => do
+    let s ← (domainSample pk : ProbComp Domain)
+    let v := psf.eval pk s
+    let st ← get
+    let (cache, count, winner) := st
+    let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+    if b = 0 then
+      let cache' := match winner with
+        | some (tOld, vOld) => cache.cacheQuery tOld vOld
+        | none => cache
+      set ((cache'.cacheQuery t y, count + 1, some (t, v)) : State)
+    else
+      set ((cache.cacheQuery t v, count + 1, winner) : State)
+  let roImpl : QueryImpl (Salt × M →ₒ Range) (StateT State ProbComp) :=
+    fun t => do
+      let st ← get
+      match st.1 t with
+      | some v => pure v
+      | none => do
+          programStep t
+          let st' ← get
+          pure ((st'.1 t).getD y)
+  let unifImpl : QueryImpl unifSpec (StateT State ProbComp) :=
+    fun t => (unifSpec.query t : ProbComp _)
+  let signImpl : QueryImpl (M →ₒ (Salt × Domain)) (StateT State ProbComp) :=
+    fun msg => do
+      let r ← ($ᵗ Salt : ProbComp Salt)
+      let s ← (domainSample pk : ProbComp Domain)
+      let v := psf.eval pk s
+      let st ← get
+      let (cache, count, winner) := st
+      let b ← ($ᵗ Fin (count + 1) : ProbComp (Fin (count + 1)))
+      if b = 0 then
+        let cache' := match winner with
+          | some (tOld, vOld) => cache.cacheQuery tOld vOld
+          | none => cache
+        set ((cache'.cacheQuery (r, msg) y, count + 1, some ((r, msg), v)) : State)
+      else
+        set ((cache.cacheQuery (r, msg) v, count + 1, winner) : State)
+      pure (r, s)
+  (unifImpl + roImpl) + signImpl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirReductionImpl` on a uniform query.** -/
+lemma reservoirReductionImpl_run_inl_inl (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) (q : unifSpec.Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
+    (reservoirReductionImpl psf M Salt domainSample pk y (.inl (.inl q))).run s =
+      (fun v => (v, s)) <$> (unifSpec.query q : ProbComp _) := rfl
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirReductionImpl` on a random-oracle query.** -/
+lemma reservoirReductionImpl_run_inl_inr (domainSample : PK → ProbComp Domain) (pk : PK)
+    (y : Range) (q : (Salt × M →ₒ Range).Domain)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
+    (reservoirReductionImpl psf M Salt domainSample pk y (.inl (.inr q))).run s =
+      (match s.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let sd ← (domainSample pk : ProbComp Domain)
+            let v := psf.eval pk sd
+            let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
+            if b = 0 then
+              let cache' := match s.2.2 with
+                | some (tOld, vOld) => s.1.cacheQuery tOld vOld
+                | none => s.1
+              pure (y, (cache'.cacheQuery q y, s.2.1 + 1, some (q, v)))
+            else
+              pure (v, (s.1.cacheQuery q v, s.2.1 + 1, s.2.2))) := by
+  cases hq : s.1 q with
+  | none =>
+      simp only [add_apply_inl, add_apply_inr, reservoirReductionImpl, bind_pure_comp,
+        map_eq_bind_pure_comp, bind_assoc, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, pure_bind, hq, StateT.run_monadLift, monadLift_self,
+        Function.comp_apply, StateT.run_pure]
+      refine bind_congr fun sd => bind_congr fun b => ?_
+      split_ifs with hb <;>
+        simp [StateT.run_set, QueryCache.cacheQuery_self]
+  | some v =>
+      simp [reservoirReductionImpl, QueryImpl.add_apply_inl, QueryImpl.add_apply_inr,
+        StateT.run_bind, StateT.run_get, hq]
+
+omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
+/-- **One-step unfolding of `reservoirReductionImpl` on a signing query.** -/
+lemma reservoirReductionImpl_run_inr
+    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) (msg : M)
+    (s : (Salt × M →ₒ Range).QueryCache × ℕ × Option ((Salt × M) × Range)) :
+    (reservoirReductionImpl psf M Salt domainSample pk y (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let sd ← (domainSample pk : ProbComp Domain)
+        let v := psf.eval pk sd
+        let b ← ($ᵗ Fin (s.2.1 + 1) : ProbComp (Fin (s.2.1 + 1)))
+        if b = 0 then
+          let cache' := match s.2.2 with
+            | some (tOld, vOld) => s.1.cacheQuery tOld vOld
+            | none => s.1
+          pure ((r, sd), (cache'.cacheQuery (r, msg) y, s.2.1 + 1, some ((r, msg), v)))
+        else
+          pure ((r, sd), (s.1.cacheQuery (r, msg) v, s.2.1 + 1, s.2.2))) := by
+  simp only [add_apply_inr, reservoirReductionImpl, bind_pure_comp, map_eq_bind_pure_comp,
+    bind_assoc, QueryImpl.add_apply_inr, StateT.run_bind, StateT.run_monadLift, monadLift_self,
+    StateT.run_get, Function.comp_apply, pure_bind]
+  refine bind_congr fun r => bind_congr fun sd => bind_congr fun b => ?_
+  split_ifs with hb <;>
+    simp [StateT.run_set]
+
+omit [Fintype Salt] in
+/-- **The programmed-preimage reduction is `reservoirReductionImpl` run from the empty state.**
+Restates the body of `programmedPreimageReduction` in terms of the named internal handler
+`reservoirReductionImpl`: run the adversary under `reservoirReductionImpl` from `(∅, 0, none)`, then
+read the forged preimage `sStar` off the result. The two are definitionally equal —
+`programmedPreimageReduction`'s `let impl := …` block *is* `reservoirReductionImpl`. -/
+lemma programmedPreimageReduction_eq_run_reservoirReductionImpl
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (domainSample : PK → ProbComp Domain) (pk : PK) (y : Range) :
+    programmedPreimageReduction psf hr M Salt adv domainSample pk y =
+      (do
+        let result ←
+          (simulateQ (reservoirReductionImpl psf M Salt domainSample pk y) (adv.main pk)).run
+            (∅, 0, none)
+        pure result.1.2.2) := rfl
+
 open Classical in
 /-- **The combined programmed-game ⊕ collision-reduction handler.** A single handler that threads
 the programmed freshness-game state `((cache × signedSet) × flag)` *together with* the collision
