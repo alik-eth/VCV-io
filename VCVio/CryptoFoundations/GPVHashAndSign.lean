@@ -7874,6 +7874,120 @@ lemma embedAtIndexImpl_run_count_le_budget (domainSample : PK → ProbComp Domai
 
 open Classical in
 omit [Fintype Salt] in
+/-- **M3 residual — the index-restricted reservoir↔embedding coupling (single fold-commute core).**
+
+This is the genuine deferred-sampling residual of the GPV Step-2 exact-match close, with the
+winner-slot bookkeeping made explicit: the per-target embedding win on the right is *restricted* to
+the event that the **forged random-oracle point is the embedded (winner) slot**, read off the embed
+final state as `r.2.1 (r.1.2.1, r.1.1) = some y` — at slot `wOpt.getD (qSign + qHash)` the
+trap-sibling handler `embedTrapImpl` caches exactly the external target `y` at the winner
+random-oracle miss, so the forged point being the winner slot is precisely its cached image being
+`y`.
+
+`reservoir_embed_commute` (M3) follows from this residual by dropping the winner-slot restriction
+(`probOutput` monotonicity over the conjoined Bool): the *full* per-target win is at least the
+winner-slot-restricted win, so the M3 bound is implied by the present, tighter bound.  Isolating the
+restriction here lets the reservoir arithmetic (`probOutput_reservoirWinnerIndex_ge`, the budget
+`N ≤ qSign + qHash` of `embedAtIndexImpl_run_count_le_budget` / `combined_run_table_card_le`) be
+discharged at the index-tagged level, while the one remaining obligation — the per-winner-slot
+front-loading joint coupling that pushes the trap run's inline winner draw `v⋆ ← $ᵗ Range` to the
+front and re-expresses it as the embedded target `y ← $ᵗ Range` (mirroring
+`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`) together with the realized-entry index partition
+of the trap mass — is the single isolated `sorry` of this declaration.
+
+The bound holds for the same reason as M3: after the write-only-table deferral both runs maintain an
+all-uniform random-oracle cache, and *averaging* the embedded target `y` over `$ᵗ Range`
+reconstitutes the trap run's inline uniform winner draw `v⋆`.  The winner-slot-equals-forged-slot
+contribution, summed over the `N ≤ qSign + qHash` realized programmed entries with per-slot
+reservoir mass `1 / N ≥ 1 / (qSign + qHash)` and multiplied by `qSign + qHash`, already recovers the
+full trap mass.  Trap-side index bookkeeping and the per-slot fold-commute are the residual
+content. -/
+lemma reservoir_embed_commute_residual [DecidableEq Domain] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) :
+    Pr[fun w : (M × (Salt × Domain)) ×
+          ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+          (decide (w.1.1 ∉ w.2.1.1.2) &&
+              (decide (psf.eval pk w.1.2.2 =
+                  (w.2.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+                psf.isShort w.1.2.2)) = true ∧
+            w.2.2 (w.1.2.1, w.1.1) = some w.1.2.2 |
+        (simulateQ (progGameRunImplCombinedTrap psf M Salt pk sk)
+          (adv.main pk)).run
+          ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
+      ≤ ((qSign + qHash : ℕ) : ENNReal) *
+        ∑' wOpt : Option ℕ, Pr[= wOpt | reservoirWinnerIndex (qSign + qHash)] *
+          ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+            Pr[= true | (do
+              let x ← psf.trapdoorSample pk sk y
+              let r ← (simulateQ (embedTrapImpl psf M Salt pk sk
+                  (wOpt.getD (qSign + qHash)) y) (adv.main pk)).run
+                ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+              pure (decide (r.1.2.2 = x) &&
+                decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] := by
+  -- Abbreviations: `Q` the multi-target budget, `S wOpt` the per-slot averaged restricted embedding
+  -- win, `trap` the LHS trap-exact-match mass.
+  set Q := qSign + qHash with hQdef
+  set S : Option ℕ → ENNReal := fun wOpt =>
+    ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+      Pr[= true | (do
+        let x ← psf.trapdoorSample pk sk y
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk (wOpt.getD Q) y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] with hSdef
+  set trap : ENNReal := Pr[fun w : (M × (Salt × Domain)) ×
+        ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) =>
+        (decide (w.1.1 ∉ w.2.1.1.2) &&
+            (decide (psf.eval pk w.1.2.2 =
+                (w.2.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+              psf.isShort w.1.2.2)) = true ∧
+          w.2.2 (w.1.2.1, w.1.1) = some w.1.2.2 |
+      (simulateQ (progGameRunImplCombinedTrap psf M Salt pk sk)
+        (adv.main pk)).run
+        ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
+    with htrapdef
+  change trap ≤ (Q : ENNReal) * ∑' wOpt : Option ℕ, Pr[= wOpt | reservoirWinnerIndex Q] * S wOpt
+  -- **Per-slot index partition + commute (the single residual obligation).**  There is a per-entry
+  -- mass function `g : ℕ → ENNReal` partitioning the trap mass (`∑' j, g j = trap`) such that each
+  -- slot's mass is dominated by the budget-scaled reservoir winner mass `Q · Pr[= some j] · S` at
+  -- that slot.  This is the make-or-break deferred-sampling content of GPV Step-2: the
+  -- per-winner-slot front-loading joint coupling (pushing the trap run's inline winner draw
+  -- `v⋆ ← $ᵗ Range` to the front and re-expressing it as the embedded target `y ← $ᵗ Range`,
+  -- mirroring `evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`) supplies the per-slot domination,
+  -- and the realized-entry index partition of the trap mass over the `N ≤ Q` programmed entries
+  -- (`combined_run_table_card_le`, with per-slot reservoir floor `1 / Q ≤ Pr[= some j]` from
+  -- `probOutput_reservoirWinnerIndex_ge`) supplies the partition.
+  obtain ⟨g, hgsum, hgle⟩ : ∃ g : ℕ → ENNReal,
+      (∑' j : ℕ, g j) = trap ∧
+      ∀ j : ℕ, g j ≤ (Q : ENNReal) * Pr[= some j | reservoirWinnerIndex Q] * S (some j) := by
+    sorry
+  -- **Reservoir arithmetic (banked).**  Push the budget factor `Q` through the winner sum and bound
+  -- the trap partition `g` by the `some j` atoms of the reservoir winner average, discarding the
+  -- never-firing `none` atom (`tsum_option`, terms nonnegative).
+  calc trap = ∑' j : ℕ, g j := hgsum.symm
+    _ ≤ ∑' j : ℕ, (Q : ENNReal) * Pr[= some j | reservoirWinnerIndex Q] * S (some j) :=
+        ENNReal.tsum_le_tsum hgle
+    _ = ∑' j : ℕ, (Q : ENNReal) * (Pr[= some j | reservoirWinnerIndex Q] * S (some j)) := by
+        simp_rw [mul_assoc]
+    _ ≤ (Q : ENNReal) *
+        ∑' wOpt : Option ℕ, Pr[= wOpt | reservoirWinnerIndex Q] * S wOpt := by
+        rw [ENNReal.tsum_mul_left]
+        gcongr
+        rw [tsum_option _ ENNReal.summable]
+        exact le_add_self
+
+open Classical in
+omit [Fintype Salt] in
 /-- **M3 — the GPV Step-2 reservoir↔embedding deferred-sampling coupling (isolated hard core).**
 
 This is the single residual joint coupling of the GPV Step-2 exact-match close, stated as the
@@ -7936,7 +8050,27 @@ lemma reservoir_embed_commute [DecidableEq Domain] [Inhabited Range]
                   (wOpt.getD (qSign + qHash)) y) (adv.main pk)).run
                 ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
               pure (decide (r.1.2.2 = x)) : ProbComp Bool)] := by
-  sorry
+  -- M3 from the index-restricted residual: bound the trap mass by the winner-slot-restricted RHS
+  -- (`reservoir_embed_commute_residual`), then drop the winner-slot restriction
+  -- `&& decide (… = some y)` from every per-target win (full win ≥ the restricted win).
+  refine le_trans (reservoir_embed_commute_residual psf hr M Salt domainSample pk sk qSign qHash
+    adv hreg hNF hForge hQ) ?_
+  gcongr ((qSign + qHash : ℕ) : ENNReal) *
+    ∑' wOpt : Option ℕ, Pr[= wOpt | reservoirWinnerIndex (qSign + qHash)] *
+      ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] * ?_ with wOpt y
+  -- Per-target: dropping the conjunct `decide (r.2.1 (r.1.2.1, r.1.1) = some y)` only increases
+  -- the winning mass (`probOutput` monotone over the conjoined Bool body).
+  rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
+  refine ENNReal.tsum_le_tsum fun x => ?_
+  gcongr
+  rw [probOutput_bind_eq_tsum, probOutput_bind_eq_tsum]
+  refine ENNReal.tsum_le_tsum fun r => ?_
+  gcongr
+  rw [probOutput_pure, probOutput_pure]
+  by_cases hxr : r.1.2.2 = x
+  · simp only [hxr, decide_true, Bool.true_and]
+    split <;> simp
+  · simp [hxr]
 
 open Classical in
 omit [Fintype Salt] in
