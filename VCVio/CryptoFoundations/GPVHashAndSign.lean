@@ -8736,11 +8736,96 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- (`evalDist_simulateQ_run_eq_of_impl_evalDist_eq` after projecting to the common
   -- `embedTrapFreshImpl` cache/counter state) and the trapdoor draw `x`.
   --
+  -- **Phase 1 (sorry-free): commute the trapdoor draw `x` past the embed run.**  The trapdoor
+  -- preimage `x ← trapdoorSample pk sk y` is drawn from an *independent* `ProbComp` (it does not
+  -- feed the embed run `simulateQ (embedTrapImpl … j y)`, which consumes only `y`), so the two
+  -- binds exchange at the distribution level (`OracleComp.DeferredSampling.evalDist_bind_comm`).
+  -- Running the embed first and drawing `x` afterwards leaves the win event — and hence the output
+  -- probability `Pr[= true | …]` — unchanged.  This re-expresses the right-hand game in the
+  -- *run-first* form, in which the embed run output `r` is already available when the trapdoor draw
+  -- `x` and the win predicate `decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y)` are
+  -- evaluated.
+  rw [show Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let x ← psf.trapdoorSample pk sk y
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)]
+      = Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        let x ← psf.trapdoorSample pk sk y
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] from by
+    refine probOutput_congr rfl ?_
+    refine evalDist_bind_congr' _ (fun y => ?_)
+    exact OracleComp.DeferredSampling.evalDist_bind_comm (psf.trapdoorSample pk sk y)
+      ((simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run (∅, 0))
+      (fun x r => pure (decide (r.1.2.2 = x) &&
+        decide (r.2.1 (r.1.2.1, r.1.1) = some y)))]
+  -- **Phase 2 (sorry-free): pin the trapdoor draw to the cached image at the forged point.**  The
+  -- win predicate is `decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y)`; whenever its
+  -- second conjunct holds the cached image at the forged point is exactly the front target,
+  -- `r.2.1 (forged) = some y`, so `(r.2.1 (forged)).getD y = y` and the trapdoor preimage
+  -- `x ← trapdoorSample pk sk y` equals `x ← trapdoorSample pk sk ((r.2.1 (forged)).getD y)`.
+  -- When the second conjunct fails the whole `&&` is `false` regardless of `x`, so the trapdoor
+  -- draw is irrelevant and either target yields the same (constant-`false`) win distribution.
+  -- This pins the trapdoor draw to a *run-read* cache value — eliminating the free `y` from the
+  -- trapdoor draw, leaving it only in the cache-comparison literal `some y`.
+  rw [show Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        let x ← psf.trapdoorSample pk sk y
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)]
+      = Pr[= true | (do
+        let y ← ($ᵗ Range : ProbComp Range)
+        let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+        let x ← psf.trapdoorSample pk sk ((r.2.1 (r.1.2.1, r.1.1)).getD y)
+        pure (decide (r.1.2.2 = x) &&
+          decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] from by
+    refine probOutput_congr rfl (evalDist_bind_congr' _ (fun y => ?_))
+    refine evalDist_bind_congr' _ (fun r => ?_)
+    rcases hc : r.2.1 (r.1.2.1, r.1.1) with _ | yv
+    · simp only [Option.getD_none]
+    · simp only [Option.getD_some]
+      by_cases hy : yv = y
+      · rw [hy]
+      · simp only [Option.some.injEq, hy, decide_false, Bool.and_false]
+        rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+            ((hNF y).probFailure_eq_zero),
+          OracleComp.DeferredSampling.evalDist_bind_const_neverFails _
+            ((hNF yv).probFailure_eq_zero)]]
+  -- **The single remaining residual (strictly smaller than the original): the cache-pinned
+  -- win-event same-randomness coupling.**  After Phases 1–2 the right game runs the embed *first*,
+  -- then draws the trapdoor preimage of the *cached image at the forged point*
+  -- `x ← trapdoorSample pk sk ((r.2.1 (forged)).getD y)`, so the only remaining occurrence of the
+  -- free front target `y` is the cache-comparison literal `decide (r.2.1 (forged) = some y)`.  This
+  -- literal couples the front draw `y` to the embed run's cached image at the forged point.
+  --
+  -- The genuine deferred-sampling coupling that remains: the LIFT
+  -- `evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh` merges `y ← $ᵗ Range; (embedTrapImpl … j
+  -- y) run` into the inline-fresh run `embedTrapFreshImpl`, but the cache-comparison literal still
+  -- reads `y` as an external value, so the merge cannot fire without first joint-coupling `y` to
+  -- the count-`j` cached image.  On the trap side the count-`j` slot caches a fresh `v` and records
+  -- `table(forged) = trapdoorSample pk sk v` with `idx(forged) = some j`; averaging `y` over
+  -- `$ᵗ Range` reconstitutes that fresh `v`, with `r.1.2.2 = x = trapdoorSample (cache(forged))`
+  -- matching the trap event `table(forged) = w.1.2.2` exactly when the forged point is the
+  -- count-`j` slot.  Formalizing this is the augmented front-draw lift (a trapdoor-table/index-
+  -- augmented sibling of `evalDist_frontDraw_embedTrapImpl_eq_embedTrapFresh`, projected onto the
+  -- trap-count run via `map_run_progGameRunImplCombinedTrapCount_proj` and the write-only-table
+  -- invariant).
+  --
   -- Unsolved goal (verbatim):
   --   ⊢ Pr[<trap-event w ∧ recorded-index(forged) = some j>
   --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
-  --     ≤ Pr[= true | y ← $ᵗ Range; x ← trapdoorSample pk sk y;
+  --     ≤ Pr[= true | y ← $ᵗ Range;
   --                   r ← (simulateQ (embedTrapImpl … j y) (adv.main pk)).run (∅, 0);
+  --                   x ← trapdoorSample pk sk ((r.2.1 (forged)).getD y);
   --                   pure (decide (r.1.2.2 = x) && decide (r.2.1 (forged) = some y))]
   sorry
 
