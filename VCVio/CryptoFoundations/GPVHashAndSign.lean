@@ -7872,6 +7872,323 @@ lemma embedAtIndexImpl_run_count_le_budget (domainSample : PK → ProbComp Domai
     ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)) qSign qHash hQ.1 hQ.2 z hmem
   simpa using this
 
+/-! #### N5. Counter-augmented trap run: tagging the forged point's programming index
+
+The trapdoor-recording combined run `progGameRunImplCombinedTrap` carries an *unordered* hidden
+preimage table `(Salt × M) → Option Domain`, so it does not expose the *order* in which programmed
+entries were written.  To partition the trap mass by the programming index of the forged point we
+augment the run with a passive `(idxTable, counter)` instrument: a running `ℕ` counter that
+increments by one on every programming event (each random-oracle cache miss and each signing step —
+exactly the events that write a fresh preimage-table key), and an insertion-index table
+`(Salt × M) → Option ℕ` that records, at each such event, the counter value at the time the key was
+first written.  The instrument is never *read* during the run, so it is distributionally passive:
+projecting it away recovers `progGameRunImplCombinedTrap` exactly
+(`map_run_progGameRunImplCombinedTrapCount_proj`).  The insertion-index table is written in lockstep
+with the preimage table (`progGameRunImplCombinedTrapCount_idx_iff_table`), so on every trap-winning
+trajectory the forged point — being in the preimage table — has a well-defined recorded insertion
+index, which drives the trap-mass index partition `∑' j, g j = trap`. -/
+
+open Classical in
+/-- **N5 — the counter-augmented trapdoor-recording combined handler.** Identical to
+`progGameRunImplCombinedTrap` on its first state component, but additionally threads a passive
+`(idxTable, counter)` instrument: a running `ℕ` programming counter and an insertion-index table
+`(Salt × M) → Option ℕ`.  At each programming event (random-oracle miss or signing step) it records
+the current counter value into the index table at the freshly written key and increments the
+counter; on uniform queries and random-oracle cache hits the instrument is left untouched. -/
+noncomputable def progGameRunImplCombinedTrapCount (pk : PK) (sk : SK) :
+    QueryImpl ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain)))
+      (StateT (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ)) ProbComp) :=
+  fun t => StateT.mk fun s =>
+    match t with
+    | .inl (.inl q) => do
+        let v ← (unifSpec.query q : ProbComp _)
+        pure (v, s)
+    | .inl (.inr q) =>
+        match s.1.1.1.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let v ← ($ᵗ Range : ProbComp Range)
+            let x ← (psf.trapdoorSample pk sk v : ProbComp Domain)
+            pure (v,
+              ((((s.1.1.1.1.cacheQuery q v, s.1.1.1.2), s.1.1.2),
+                fun t' => if t' = q then some x else s.1.2 t'),
+                ((fun t' => if t' = q then some s.2.2 else s.2.1 t'), s.2.2 + 1)))
+    | .inr msg => do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let v ← ($ᵗ Range : ProbComp Range)
+        let x ← (psf.trapdoorSample pk sk v : ProbComp Domain)
+        pure ((r, x),
+          ((((s.1.1.1.1.cacheQuery (r, msg) v, insert msg s.1.1.1.2),
+            s.1.1.2 || saltKeyed M Salt s.1.1.1.1 r),
+            fun t' => if t' = (r, msg) then some x else s.1.2 t'),
+            ((fun t' => if t' = (r, msg) then some s.2.2 else s.2.1 t'), s.2.2 + 1)))
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombinedTrapCount` on a uniform query.** -/
+lemma progGameRunImplCombinedTrapCount_run_inl_inl (pk : PK) (sk : SK) (q : unifSpec.Domain)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    (progGameRunImplCombinedTrapCount psf M Salt pk sk (.inl (.inl q))).run s =
+      (do let v ← (unifSpec.query q : ProbComp _); pure (v, s)) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombinedTrapCount` on a random-oracle query.** -/
+lemma progGameRunImplCombinedTrapCount_run_inl_inr (pk : PK) (sk : SK)
+    (q : (Salt × M →ₒ Range).Domain)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    (progGameRunImplCombinedTrapCount psf M Salt pk sk (.inl (.inr q))).run s =
+      (match s.1.1.1.1 q with
+        | some v => pure (v, s)
+        | none => do
+            let v ← ($ᵗ Range : ProbComp Range)
+            let x ← (psf.trapdoorSample pk sk v : ProbComp Domain)
+            pure (v,
+              ((((s.1.1.1.1.cacheQuery q v, s.1.1.1.2), s.1.1.2),
+                fun t' => if t' = q then some x else s.1.2 t'),
+                ((fun t' => if t' = q then some s.2.2 else s.2.1 t'), s.2.2 + 1)))) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **One-step unfolding of `progGameRunImplCombinedTrapCount` on a signing query.** -/
+lemma progGameRunImplCombinedTrapCount_run_inr (pk : PK) (sk : SK) (msg : M)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    (progGameRunImplCombinedTrapCount psf M Salt pk sk (.inr msg)).run s =
+      (do
+        let r ← ($ᵗ Salt : ProbComp Salt)
+        let v ← ($ᵗ Range : ProbComp Range)
+        let x ← (psf.trapdoorSample pk sk v : ProbComp Domain)
+        pure ((r, x),
+          ((((s.1.1.1.1.cacheQuery (r, msg) v, insert msg s.1.1.1.2),
+            s.1.1.2 || saltKeyed M Salt s.1.1.1.1 r),
+            fun t' => if t' = (r, msg) then some x else s.1.2 t'),
+            ((fun t' => if t' = (r, msg) then some s.2.2 else s.2.1 t'), s.2.2 + 1)))) := rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 per-query projection.** Dropping the `(idxTable, counter)` instrument from one
+`progGameRunImplCombinedTrapCount` query step recovers the corresponding
+`progGameRunImplCombinedTrap` step.  This is the per-query hypothesis of the state-projection
+transport `map_run_simulateQ_eq_of_query_map_eq`, witnessing that the instrument is passive. -/
+lemma progGameRunImplCombinedTrapCount_proj (pk : PK) (sk : SK)
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    Prod.map id
+        (Prod.fst : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+            ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) →
+          (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) <$>
+        (progGameRunImplCombinedTrapCount psf M Salt pk sk t).run s =
+      (progGameRunImplCombinedTrap psf M Salt pk sk t).run s.1 := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombinedTrapCount_run_inl_inl, progGameRunImplCombinedTrap_run_inl_inl]
+          simp [map_eq_bind_pure_comp, Prod.map]
+      | inr q =>
+          rw [progGameRunImplCombinedTrapCount_run_inl_inr, progGameRunImplCombinedTrap_run_inl_inr]
+          cases s.1.1.1.1 q with
+          | none => simp [map_eq_bind_pure_comp, Prod.map]
+          | some v => simp [Prod.map]
+  | inr msg =>
+      rw [progGameRunImplCombinedTrapCount_run_inr, progGameRunImplCombinedTrap_run_inr]
+      simp only [map_bind, map_pure, Prod.map, id_eq]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 run-level projection (passive augmentation).** Dropping the `(idxTable, counter)`
+instrument from the full simulated run of `progGameRunImplCombinedTrapCount` over `oa` recovers the
+run of `progGameRunImplCombinedTrap` from the projected start state.  Transports the per-query
+`progGameRunImplCombinedTrapCount_proj` through the whole computation via
+`map_run_simulateQ_eq_of_query_map_eq`: the instrument is distributionally passive, so the
+counter and the insertion-index table do not change the trap event mass. -/
+lemma map_run_progGameRunImplCombinedTrapCount_proj (pk : PK) (sk : SK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    Prod.map id
+        (Prod.fst : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+            ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) →
+          (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) <$>
+        (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s =
+      (simulateQ (progGameRunImplCombinedTrap psf M Salt pk sk) oa).run s.1 :=
+  OracleComp.map_run_simulateQ_eq_of_query_map_eq _ _
+    (Prod.fst : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) →
+      (((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+    (progGameRunImplCombinedTrapCount_proj psf M Salt pk sk) oa s
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **N5 lockstep-domain invariant.** Starting from a state whose insertion-index table and hidden
+preimage table agree on which keys are recorded, every state reachable in the counter-augmented run
+preserves that agreement: a key has a recorded preimage iff it has a recorded insertion index.  The
+two tables are written by the *same* conditional update at each programming event (random-oracle
+miss or signing step) and are both untouched on uniform queries and cache hits, so the per-key
+`isSome` status of the two tables stays in lockstep through the whole adaptive fold.  This is the
+support-level fact that lets the trap-mass index partition over recorded insertion indices recover
+the full trap mass: every trap-winning trajectory, having its forged point in the preimage table,
+has a well-defined recorded forged-point insertion index. -/
+lemma progGameRunImplCombinedTrapCount_idx_iff_table (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ)),
+      (∀ k, s.1.2 k ≠ none ↔ s.2.1 k ≠ none) →
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        ∀ k, z.2.1.2 k ≠ none ↔ z.2.2.1 k ≠ none := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s hs z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz
+      exact hs
+  | query_bind t mx ih =>
+      intro s hs z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · -- uniform query: instrument untouched
+        rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        rw [hpst] at hz
+        exact ih pv s hs z hz
+      · -- random-oracle query: hit keeps both tables, miss writes both keys together
+        rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            rw [hpst] at hz
+            exact ih pv s hs z hz
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, -, x, -, -, hpst⟩ := hps
+            refine ih pv pst ?_ z hz
+            intro k
+            rw [hpst]
+            by_cases hk : k = mc
+            · subst hk; simp
+            · simp only [if_neg hk]; exact hs k
+      · -- signing query: writes both keys together
+        rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, -, -, hpst⟩ := hps
+        refine ih pv pst ?_ z hz
+        intro k
+        rw [hpst]
+        by_cases hk : k = (r, msg)
+        · subst hk; simp
+        · simp only [if_neg hk]; exact hs k
+
+/-- **Deterministic `Option ℕ`-index partition of an event.** For a computation `mx`, an event `P`,
+and an `Option ℕ`-valued index `idx` that is recorded (`≠ none`) on every positive-probability `P`
+outcome, the event mass partitions over the index value: `Pr[P] = ∑' j, Pr[P ∧ idx = some j]`.  The
+`some j` atoms tile the event, with the index of each `P`-outcome read off the outcome itself.  This
+is the abstract index partition behind the GPV Step-2 trap-mass decomposition `∑' j, g j = trap`. -/
+theorem probEvent_eq_tsum_probEvent_index_aux {ι : Type} {m : Type → Type} [Monad m]
+    [MonadLiftT m SPMF] (mx : m ι) (P : ι → Prop) (idx : ι → Option ℕ)
+    (hidx : ∀ x, Pr[= x | mx] ≠ 0 → P x → idx x ≠ none) :
+    Pr[P | mx] = ∑' j : ℕ, Pr[fun x => P x ∧ idx x = some j | mx] := by
+  classical
+  rw [probEvent_eq_tsum_indicator]
+  have hcongr : ∀ j : ℕ,
+      Pr[fun x => P x ∧ idx x = some j | mx]
+        = ∑' x : ι, {x | P x ∧ idx x = some j}.indicator (Pr[= · | mx]) x := by
+    intro j; rw [probEvent_eq_tsum_indicator]
+  simp_rw [hcongr]
+  rw [ENNReal.tsum_comm]
+  refine tsum_congr fun x => ?_
+  by_cases hPx : P x
+  · rcases eq_or_ne (Pr[= x | mx]) 0 with hp0 | hp0
+    · rw [Set.indicator_apply, if_pos (Set.mem_setOf_eq ▸ hPx), hp0]
+      symm
+      simp only [Set.indicator_apply, Set.mem_setOf_eq]
+      refine ENNReal.tsum_eq_zero.mpr fun j => ?_
+      by_cases hc : P x ∧ idx x = some j
+      · rw [if_pos hc, hp0]
+      · rw [if_neg hc]
+    · obtain ⟨j₀, hj₀⟩ := Option.ne_none_iff_exists'.mp (hidx x hp0 hPx)
+      rw [Set.indicator_of_mem (Set.mem_setOf_eq ▸ hPx)]
+      rw [tsum_eq_single j₀]
+      · rw [Set.indicator_of_mem (Set.mem_setOf_eq ▸ ⟨hPx, hj₀⟩)]
+      · intro j hj
+        rw [Set.indicator_of_notMem]
+        rintro ⟨-, hjeq⟩
+        exact hj (by rw [hj₀] at hjeq; exact (Option.some.inj hjeq).symm)
+  · rw [Set.indicator_of_notMem (show x ∉ {x | P x} from hPx)]
+    symm
+    simp only [Set.indicator_apply, Set.mem_setOf_eq]
+    refine ENNReal.tsum_eq_zero.mpr fun j => ?_
+    rw [if_neg (fun h => hPx h.1)]
+
+open Classical in
+omit [Fintype Salt] in
+/-- **The per-slot front-loading deferred-sampling coupling (single isolated `sorry`).**
+
+For a fixed programmed-entry index `j`, the *index-tagged* trap-exact-match mass — the trap event on
+the counter-augmented run `progGameRunImplCombinedTrapCount` further restricted to the event that
+the forged random-oracle point was *programmed at counter value `j`* (its recorded insertion index
+is `some j`) — is bounded by the budget-scaled reservoir winner mass
+`(qSign + qHash) · Pr[= some j | reservoirWinnerIndex (qSign + qHash)] · S (some j)` at slot `j`,
+where `S (some j)` is the
+winner-slot-restricted per-target embedding win of `embedTrapImpl … j y` averaged over `y ← $ᵗ
+Range`.
+
+This is the make-or-break deferred-sampling content of GPV Step-2: at the fixed slot `j` the trap
+run's inline uniform winner draw `v⋆ ← $ᵗ Range` (drawn *inside* the `simulateQ` fold at the
+adaptively-determined `j`-th programming step) must be pushed to the front and re-expressed as the
+embedded target `y ← $ᵗ Range` (drawn *outside* the fold), mirroring
+`evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`; the embedded slot is then `j` and the win event
+couples to the trap run's write-only `table(forged) = trapdoorSample (cache(forged))`.  The
+reservoir mass `Pr[= some j | reservoirWinnerIndex (qSign + qHash)] ≥ 1 / (qSign + qHash)` (slot-`j`
+uniformity, `probOutput_reservoirWinnerIndex_ge`, with the realized count `N ≤ qSign + qHash` from
+`combined_run_table_card_le`) absorbs the per-slot reservoir factor, and the multi-target factor
+`qSign + qHash` pays the guessing loss.  This per-slot fold-commute is the single remaining
+obligation of the GPV Step-2 close. -/
+lemma reservoir_embed_commute_winner [DecidableEq Domain] [Inhabited Range]
+    (domainSample : PK → ProbComp Domain) (pk : PK) (sk : SK) (qSign qHash : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hreg : 𝒟[(do let s ← domainSample pk; pure (psf.eval pk s, s) : ProbComp (Range × Domain))] =
+      𝒟[(do let c ← ($ᵗ Range); let s ← psf.trapdoorSample pk sk c; pure (c, s)
+            : ProbComp (Range × Domain))])
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (hForge : ForgesQueriedPoint psf hr M Salt adv domainSample)
+    (hQ : signHashQueryBound
+      (S' := Salt × Domain) (α := M × (Salt × Domain))
+      (oa := adv.main pk) (qSign := qSign) (qHash := qHash)) (j : ℕ) :
+    Pr[fun w : (M × (Salt × Domain)) ×
+          (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+            (((Salt × M) → Option ℕ) × ℕ)) =>
+          ((decide (w.1.1 ∉ w.2.1.1.1.2) &&
+              (decide (psf.eval pk w.1.2.2 =
+                  (w.2.1.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+                psf.isShort w.1.2.2)) = true ∧
+            w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2) ∧
+            w.2.2.1 (w.1.2.1, w.1.1) = some j |
+        (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+          (adv.main pk)).run
+          (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+            (fun _ => none), 0)]
+      ≤ ((qSign + qHash : ℕ) : ENNReal) *
+        Pr[= some j | reservoirWinnerIndex (qSign + qHash)] *
+          ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+            Pr[= true | (do
+              let x ← psf.trapdoorSample pk sk y
+              let r ← (simulateQ (embedTrapImpl psf M Salt pk sk j y) (adv.main pk)).run
+                ((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ))
+              pure (decide (r.1.2.2 = x) &&
+                decide (r.2.1 (r.1.2.1, r.1.1) = some y)) : ProbComp Bool)] := by
+  sorry
+
 open Classical in
 omit [Fintype Salt] in
 /-- **M3 residual — the index-restricted reservoir↔embedding coupling (single fold-commute core).**
@@ -7957,20 +8274,63 @@ lemma reservoir_embed_commute_residual [DecidableEq Domain] [Inhabited Range]
         ((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none)]
     with htrapdef
   change trap ≤ (Q : ENNReal) * ∑' wOpt : Option ℕ, Pr[= wOpt | reservoirWinnerIndex Q] * S wOpt
-  -- **Per-slot index partition + commute (the single residual obligation).**  There is a per-entry
-  -- mass function `g : ℕ → ENNReal` partitioning the trap mass (`∑' j, g j = trap`) such that each
-  -- slot's mass is dominated by the budget-scaled reservoir winner mass `Q · Pr[= some j] · S` at
-  -- that slot.  This is the make-or-break deferred-sampling content of GPV Step-2: the
-  -- per-winner-slot front-loading joint coupling (pushing the trap run's inline winner draw
-  -- `v⋆ ← $ᵗ Range` to the front and re-expressing it as the embedded target `y ← $ᵗ Range`,
-  -- mirroring `evalDist_gpvRealImpl_eq_drawList_gpvRealImplTape`) supplies the per-slot domination,
-  -- and the realized-entry index partition of the trap mass over the `N ≤ Q` programmed entries
-  -- (`combined_run_table_card_le`, with per-slot reservoir floor `1 / Q ≤ Pr[= some j]` from
-  -- `probOutput_reservoirWinnerIndex_ge`) supplies the partition.
+  -- **Per-slot index partition + commute.**  The per-entry mass function `g : ℕ → ENNReal` is the
+  -- index-tagged trap-exact-match mass on the counter-augmented run
+  -- `progGameRunImplCombinedTrapCount`, restricted to the event that the forged point was
+  -- programmed at counter value `j`.  Summing `g j` over `j` recovers the full trap mass: the
+  -- instrument is passive (`map_run_progGameRunImplCombinedTrapCount_proj`), so the augmented
+  -- trap-event mass equals `trap`; and on every positive-probability trap outcome the forged
+  -- point — being in the preimage table — has a recorded insertion index
+  -- (`progGameRunImplCombinedTrapCount_idx_iff_table`), so the deterministic-index partition
+  -- (`probEvent_eq_tsum_probEvent_index_aux`) tiles the trap mass over the recorded indices.  The
+  -- per-slot domination `g j ≤ Q · Pr[= some j] · S` is the isolated front-loading commute
+  -- (`reservoir_embed_commute_winner`).
   obtain ⟨g, hgsum, hgle⟩ : ∃ g : ℕ → ENNReal,
       (∑' j : ℕ, g j) = trap ∧
       ∀ j : ℕ, g j ≤ (Q : ENNReal) * Pr[= some j | reservoirWinnerIndex Q] * S (some j) := by
-    sorry
+    -- The counter-augmented run started from the projected empty state.
+    set augRun := (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+        (adv.main pk)).run
+        (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+          (fun _ => none), 0) with hAugRun
+    -- The trap event lifted to the augmented state (referencing only the trap-state component).
+    set Paug : (M × (Salt × Domain)) ×
+        (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+          (((Salt × M) → Option ℕ) × ℕ)) → Prop := fun w =>
+        (decide (w.1.1 ∉ w.2.1.1.1.2) &&
+            (decide (psf.eval pk w.1.2.2 =
+                (w.2.1.1.1.1 (w.1.2.1, w.1.1)).getD (psf.eval pk w.1.2.2)) &&
+              psf.isShort w.1.2.2)) = true ∧
+          w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2 with hPaug
+    -- The forged-point recorded insertion index, read off the augmented final state.
+    set idx : (M × (Salt × Domain)) ×
+        (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+          (((Salt × M) → Option ℕ) × ℕ)) → Option ℕ := fun w =>
+        w.2.2.1 (w.1.2.1, w.1.1) with hIdx
+    refine ⟨fun j => Pr[fun w => Paug w ∧ idx w = some j | augRun], ?_, ?_⟩
+    · -- Partition: `∑' j, g j = trap`.
+      -- The augmentation is passive, so the augmented trap-event mass equals `trap`.
+      have htrap_eq : trap = Pr[Paug | augRun] := by
+        rw [htrapdef, ← map_run_progGameRunImplCombinedTrapCount_proj psf M Salt pk sk
+          (adv.main pk) (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+            fun _ => none), (fun _ => none), 0), probEvent_map]
+        rfl
+      rw [htrap_eq]
+      -- Every positive-probability trap outcome has a recorded forged-point index.
+      refine (probEvent_eq_tsum_probEvent_index_aux augRun Paug idx ?_).symm
+      intro w hw hPw
+      have hmem : w ∈ support augRun := by
+        by_contra hns
+        exact hw (probOutput_eq_zero_of_not_mem_support hns)
+      have hinv := progGameRunImplCombinedTrapCount_idx_iff_table psf M Salt pk sk
+        (adv.main pk) (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false),
+          fun _ => none), (fun _ => none), 0) (by intro k; simp) w hmem (w.1.2.1, w.1.1)
+      rw [hIdx]
+      exact (hinv.mp (by rw [hPaug] at hPw; rw [hPw.2]; exact Option.some_ne_none _))
+    · -- Per-slot domination: the isolated front-loading commute.
+      intro j
+      exact reservoir_embed_commute_winner psf hr M Salt domainSample pk sk qSign qHash
+        adv hreg hNF hForge hQ j
   -- **Reservoir arithmetic (banked).**  Push the budget factor `Q` through the winner sum and bound
   -- the trap partition `g` by the `some j` atoms of the reservoir winner average, discarding the
   -- never-firing `none` atom (`tsum_option`, terms nonnegative).
