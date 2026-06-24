@@ -9120,6 +9120,171 @@ lemma reservoir_embed_winnerIdx_le [DecidableEq Domain] [Inhabited Range] (pk : 
   simp only [probOutput_pure]
   split_ifs with h1 h2 <;> first | rfl | simp_all
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Embed-side index/cache lockstep invariant.** On the index-augmented embed run
+`embedTrapIdxImpl … j y`, the cache table and the insertion-index table agree on which keys are
+recorded: a key has a cached random-oracle value iff it has a recorded insertion index.  Both tables
+are written by the *same* conditional update at each programming event (random-oracle miss or
+signing step) and are both untouched on uniform queries and cache hits, so their per-key
+`isSome` status stays in lockstep through the whole adaptive fold.  In particular
+`idx(forged) = some j` forces
+`cache(forged) ≠ none`, which pins the trapdoor draw `trapdoorSample pk sk ((cache forged).getD y)`
+to the cached image, eliminating the dependence on the front target `y`. -/
+lemma embedTrapIdxImpl_idx_iff_cache (pk : PK) (sk : SK) (j : ℕ) (y : Range) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)),
+      (∀ k, s.1.1 k ≠ none ↔ s.2 k ≠ none) →
+      ∀ z ∈ support ((simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) oa).run s),
+        ∀ k, z.2.1.1 k ≠ none ↔ z.2.2 k ≠ none := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s hs z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact hs
+  | query_bind t mx ih =>
+      intro s hs z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz2⟩
+      rcases t with (n | mc) | msg
+      · rw [embedTrapIdxImpl_run_inl_inl, map_eq_bind_pure_comp] at hps
+        obtain ⟨x, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hps
+        simp only [Function.comp_apply] at hh
+        have hps' : pst = s := (Prod.ext_iff.mp hh).2
+        refine ih pv pst ?_ z hz2
+        rw [hps']; exact hs
+      · rw [embedTrapIdxImpl_run_inl_inr] at hps
+        cases hq : s.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            refine ih pv pst ?_ z hz2
+            rw [hpst]; exact hs
+        | none =>
+            rw [hq, map_eq_bind_pure_comp] at hps
+            obtain ⟨v, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hps
+            simp only [Function.comp_apply] at hh
+            have hps' : pst = ((if s.1.2 = j then s.1.1.cacheQuery mc y
+                  else s.1.1.cacheQuery mc v, s.1.2 + 1),
+                fun t' => if t' = mc then some s.1.2 else s.2 t') := by
+              have h2 := (Prod.ext_iff.mp hh).2
+              by_cases hb : s.1.2 = j <;> simp only [hb, if_true, if_false] at h2 ⊢ <;>
+                exact h2
+            refine ih pv pst ?_ z hz2
+            intro k
+            rw [hps']
+            by_cases hk : k = mc
+            · subst hk
+              by_cases hb : s.1.2 = j <;> simp [hb, QueryCache.cacheQuery_self]
+            · by_cases hb : s.1.2 = j <;>
+                simp only [hb, if_true, if_false, if_neg hk,
+                  QueryCache.cacheQuery_of_ne _ _ hk] <;> exact hs k
+      · rw [embedTrapIdxImpl_run_inr] at hps
+        obtain ⟨r, -, hps⟩ := (mem_support_bind_iff _ _ _).1 hps
+        obtain ⟨c, -, hps⟩ := (mem_support_bind_iff _ _ _).1 hps
+        rw [map_eq_bind_pure_comp] at hps
+        obtain ⟨x, -, hh⟩ := (mem_support_bind_iff _ _ _).1 hps
+        simp only [Function.comp_apply] at hh
+        have hps' : pst = ((s.1.1.cacheQuery (r, msg) c, s.1.2 + 1),
+            fun t' => if t' = (r, msg) then some s.1.2 else s.2 t') := (Prod.ext_iff.mp hh).2
+        refine ih pv pst ?_ z hz2
+        intro k
+        rw [hps']
+        by_cases hk : k = (r, msg)
+        · subst hk; simp [QueryCache.cacheQuery_self]
+        · simp only [if_neg hk, QueryCache.cacheQuery_of_ne _ _ hk]; exact hs k
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Write-only trapdoor-table support invariant.** On the counter-augmented trapdoor-recording run
+`progGameRunImplCombinedTrapCount`, every recorded preimage is a trapdoor sample of the matching
+cached random-oracle image: if `table(k) = some x` then there is a cached value `v` with
+`cache(k) = some v` and `x ∈ support (trapdoorSample pk sk v)`.  Each programming event
+(random-oracle miss or signing step) caches a fresh image `v` and records `trapdoorSample pk sk v`
+into the table at the *same* key in lockstep; the table is never read during the run, so this
+`(cache, table)`
+agreement is preserved through the whole adaptive fold.  This is the support-level fact behind the
+write-only-table deferral matching the trap event `table(forged) = output` to the embed event
+`output = trapdoorSample (cache forged)`. -/
+lemma progGameRunImplCombinedTrapCount_table_support (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ)),
+      (∀ k x, s.1.2 k = some x →
+        ∃ v, s.1.1.1.1 k = some v ∧ x ∈ support (psf.trapdoorSample pk sk v)) →
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        ∀ k x, z.2.1.2 k = some x →
+          ∃ v, z.2.1.1.1.1 k = some v ∧ x ∈ support (psf.trapdoorSample pk sk v) := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s hs z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz
+      exact hs
+  | query_bind t mx ih =>
+      intro s hs z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        rw [hpst] at hz
+        exact ih pv s hs z hz
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            rw [hpst] at hz
+            exact ih pv s hs z hz
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, hv, x, hx, -, hpst⟩ := hps
+            refine ih pv pst ?_ z hz
+            intro k x' hkx'
+            have hcache : pst.1.1.1.1 = s.1.1.1.1.cacheQuery mc v := by rw [hpst]
+            have htbl : pst.1.2 = fun t' => if t' = mc then some x else s.1.2 t' := by rw [hpst]
+            rw [htbl] at hkx'
+            rw [hcache]
+            by_cases hk : k = mc
+            · subst hk
+              simp only [if_true] at hkx'
+              rw [Option.some.injEq] at hkx'
+              subst hkx'
+              exact ⟨v, QueryCache.cacheQuery_self _ _ _, hx⟩
+            · simp only [if_neg hk] at hkx'
+              obtain ⟨w, hw1, hw2⟩ := hs k x' hkx'
+              exact ⟨w, by rw [QueryCache.cacheQuery_of_ne _ _ hk]; exact hw1, hw2⟩
+      · rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, hx, -, hpst⟩ := hps
+        refine ih pv pst ?_ z hz
+        intro k x' hkx'
+        have hcache : pst.1.1.1.1 = s.1.1.1.1.cacheQuery (r, msg) v := by rw [hpst]
+        have htbl : pst.1.2 = fun t' => if t' = (r, msg) then some x else s.1.2 t' := by rw [hpst]
+        rw [htbl] at hkx'
+        rw [hcache]
+        by_cases hk : k = (r, msg)
+        · subst hk
+          simp only [if_true] at hkx'
+          rw [Option.some.injEq] at hkx'
+          subst hkx'
+          exact ⟨v, QueryCache.cacheQuery_self _ _ _, hx⟩
+        · simp only [if_neg hk] at hkx'
+          obtain ⟨w, hw1, hw2⟩ := hs k x' hkx'
+          exact ⟨w, by rw [QueryCache.cacheQuery_of_ne _ _ hk]; exact hw1, hw2⟩
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
@@ -9303,33 +9468,42 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- the front target `y` enters only through run-only predicates (`idx(forged) = some j`) — exactly
   -- the form the trap-count run's `idx(forged) = some j` event couples to.
   refine le_trans ?_ (reservoir_embed_winnerIdx_le psf hr M Salt pk sk j adv)
-  -- **The single remaining residual (strictly smaller than the original): the index-restricted
-  -- run coupling.**  Both sides now carry the run-only winner-slot witness `idx(forged) = some j`:
-  -- the trap-count run records it via its insertion-index instrument, the embed run via the banked
-  -- `embedTrapIdxImpl` augmentation.  The genuine deferred-sampling content that remains is the
-  -- N4-style same-randomness coupling of the two all-fresh-uniform lazy random oracles: averaging
-  -- the embed-idx run over the front draw `y ← $ᵗ Range` equals the inline-fresh run
-  -- `embedTrapFreshIdxImpl` (the banked augmented lift
-  -- `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx`), and the trap-count run
-  -- `progGameRunImplCombinedTrapCount` is its trapdoor-table augmentation drawing the *same* fresh
-  -- image `v` at each miss and recording `table(forged) = trapdoorSample pk sk v` with
+  -- **Step 4 (sorry-free): drop the freshness / verification / shortness conjuncts from the trap
+  -- event.**  The full trap event carries, beyond the index-tagged exact-match core
+  -- `table(forged) = output ∧ idx(forged) = some j`, the freshness `forged.msg ∉ signedSet`, the
+  -- verification `eval(output) = cache(forged).getD …`, and the shortness `isShort output`
+  -- conjuncts.  These only *restrict* the event, so the trap mass is bounded above by the mass of
+  -- its index-tagged exact-match core (`probEvent_mono`).  The core is exactly the run-only
+  -- `(table, idx)` coupling the embed-side index-tagged exact-match mass couples to, so this
+  -- isolates the genuine deferred-sampling residual at its smallest form.
+  refine le_trans (probEvent_mono (q := fun w => w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2 ∧
+      w.2.2.1 (w.1.2.1, w.1.1) = some j) (fun w _ hw => ⟨hw.1.2, hw.2⟩)) ?_
+  -- **The single remaining residual (strictly smaller than the original): the index-tagged
+  -- exact-match run coupling.**  Both sides now carry only the run-only winner-slot witness
+  -- `idx(forged) = some j` together with the bare exact-match coincidence: on the left the
+  -- write-only-table record `table(forged) = output`, on the right the embedded preimage equality
+  -- `output = trapdoorSample (cache(forged))`.  The banked
+  -- `progGameRunImplCombinedTrapCount_table_support` rewrites `table(forged) = output` to
+  -- `output ∈ support (trapdoorSample (cache(forged)))`, and the banked
+  -- `embedTrapIdxImpl_idx_iff_cache` pins `idx(forged) = some j ⟹ cache(forged) ≠ none` so the
+  -- embed trapdoor draw reads the cached
+  -- image.  The genuine deferred-sampling content that remains is the N4-style same-randomness
+  -- coupling of the two all-fresh-uniform lazy random oracles: averaging the embed-idx run over the
+  -- front draw `y ← $ᵗ Range` equals the inline-fresh run `embedTrapFreshIdxImpl` (the banked
+  -- augmented lift `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx`), and the trap-count
+  -- run `progGameRunImplCombinedTrapCount` is its trapdoor-table augmentation drawing the *same*
+  -- fresh image `v` at each miss and recording `table(forged) = trapdoorSample pk sk v` with
   -- `idx(forged) = some j`.  Projecting the trap-count run onto the shared `embedTrapFreshIdxImpl`
   -- cache/counter/index state (`evalDist_simulateQ_run_eq_of_impl_evalDist_eq`) and using the
-  -- write-only-table invariant `table(forged) = trapdoorSample pk sk (cache(forged))` matches the
-  -- trap event `table(forged) = w.1.2.2 = output` to the embed event
-  -- `r.1.2.2 = trapdoorSample (cache(forged))`, closing the bound.
+  -- write-only-table support invariant matches the trap event `table(forged) = output` to the embed
+  -- event `output = trapdoorSample (cache(forged))`, closing the bound.
   --
-  -- The free target `y` remains only in the win literal `decide (r.2.1.1 (forged) = some y)`.  On
-  -- the trap-count side the count-`j` programming event programs the forged random-oracle point
-  -- (the forgery is a queried point, `hForge`), which is a random-oracle *miss*, so the embed
-  -- handler's winner branch fires and caches exactly `y` — hence `idx(forged) = some j` does force
-  -- `cache(forged) = some y` *on the coupled support*.  (This implication is **not** unconditional:
-  -- a signing step landing at counter `j` would tag its salt-keyed key with `idx = some j` while
-  -- caching a fresh image, not `y`; the GPV forgery structure `hForge` is what restricts the
-  -- coupled count-`j` event to random-oracle misses.)  Discharging this is the joint coupling.
+  -- The free target `y` remains only in the win literal `decide (r.2.1.1 (forged) = some y)`, which
+  -- correlates `y` with the run output (`cache(forged) = some y`); this diagonal is precisely what
+  -- blocks the marginal lift from firing directly and is the genuine joint coupling.
   --
   -- Unsolved goal (verbatim):
-  --   ⊢ Pr[<trap-event w ∧ recorded-index(forged) = some j>
+  --   ⊢ Pr[fun w => w.2.1.2 (forged) = some w.1.2.2 ∧ w.2.2.1 (forged) = some j
   --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
   --     ≤ ∑'y Pr[= y | $ᵗ Range] ·
   --         Pr[= true | r ← (simulateQ (embedTrapIdxImpl … j y) (adv.main pk)).run ((∅, 0), ∅idx);
