@@ -10081,6 +10081,232 @@ lemma freshSig_winnerSlot_deferred_le_embed [DecidableEq Domain] [Inhabited Rang
     · rw [if_neg hWf]; exact zero_le'
   · rw [probOutput_eq_zero_of_not_mem_support hsupp, zero_mul]; exact zero_le'
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **The signed set only grows along the trap-count run.**  Every reachable final state's signed
+set contains the start signed set: signing inserts the queried message and no step removes from the
+signed set. -/
+lemma progGameRunImplCombinedTrapCount_signedSet_grows (pk : PK) (sk : SK) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ)),
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        s.1.1.1.2 ⊆ z.2.1.1.1.2 := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s z hz
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact subset_rfl
+  | query_bind t mx ih =>
+      intro s z hz
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        have := ih pv pst z hz; rw [hpst] at this; exact this
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            have := ih pv pst z hz; rw [hpst] at this; exact this
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, -, x, -, -, hpst⟩ := hps
+            have := ih pv pst z hz; rw [hpst] at this; exact this
+      · rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, -, -, hpst⟩ := hps
+        have hih := ih pv pst z hz
+        rw [hpst] at hih
+        exact (Finset.subset_insert _ _).trans hih
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Write-once freezing of a programmed, unsigned key on the trap-count run.**  Once a key `k₀` is
+cached (`cache_s(k₀) ≠ none`) and its message stays unsigned through the run (`k₀.2 ∉ z.signedSet`
+at the reachable final state `z`), both its cached image and its recorded trapdoor preimage are
+frozen: `cache_z(k₀) = cache_s(k₀)` and `table_z(k₀) = table_s(k₀)`.  Random-oracle misses fire only
+on cache misses, so they cannot overwrite an already-cached `k₀`; the signing branch writes at
+`(r, msg)` and inserts `msg` into the signed set, so if it touched `k₀` it would sign `k₀.2`,
+contradicting the final-state freshness (the signed set only grows). -/
+lemma progGameRunImplCombinedTrapCount_frozen (pk : PK) (sk : SK) (k₀ : Salt × M) :
+    ∀ {β : Type}
+      (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+      (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ)),
+      s.1.1.1.1 k₀ ≠ none →
+      ∀ z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s),
+        k₀.2 ∉ z.2.1.1.1.2 →
+        z.2.1.1.1.1 k₀ = s.1.1.1.1 k₀ ∧ z.2.1.2 k₀ = s.1.2 k₀ := by
+  intro β oa
+  induction oa using OracleComp.inductionOn with
+  | pure x =>
+      intro s hs z hz hfresh
+      simp only [simulateQ_pure, StateT.run_pure, support_pure, Set.mem_singleton_iff] at hz
+      subst hz; exact ⟨rfl, rfl⟩
+  | query_bind t mx ih =>
+      intro s hs z hz hfresh
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind] at hz
+      rcases (mem_support_bind_iff _ _ _).1 hz with ⟨⟨pv, pst⟩, hps, hz⟩
+      rcases t with (n | mc) | msg
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inl] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨v, -, -, hpst⟩ := hps
+        rw [hpst] at hz
+        exact ih pv s hs z hz hfresh
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inr] at hps
+        cases hq : s.1.1.1.1 mc with
+        | some v =>
+            rw [hq] at hps
+            simp only [support_pure, Set.mem_singleton_iff, Prod.mk.injEq] at hps
+            obtain ⟨-, hpst⟩ := hps
+            rw [hpst] at hz
+            exact ih pv s hs z hz hfresh
+        | none =>
+            rw [hq] at hps
+            simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+              Prod.mk.injEq] at hps
+            obtain ⟨v, -, x, -, -, hpst⟩ := hps
+            -- The miss is at `mc ≠ k₀` (since `cache_s(k₀) ≠ none = cache_s(mc)`), so `k₀` is
+            -- untouched; apply the IH from the post-step state, which still has `cache(k₀) ≠ none`.
+            have hne : k₀ ≠ mc := fun h => hs (by rw [h]; exact hq)
+            obtain ⟨hcache, htbl⟩ := ih pv pst (by
+              rw [hpst]; simp only [QueryCache.cacheQuery_of_ne _ _ hne]; exact hs) z hz hfresh
+            rw [hcache, htbl, hpst]
+            simp only [QueryCache.cacheQuery_of_ne _ _ hne, if_neg hne]
+            exact ⟨trivial, trivial⟩
+      · rw [progGameRunImplCombinedTrapCount_run_inr] at hps
+        simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
+          Prod.mk.injEq] at hps
+        obtain ⟨r, -, v, -, x, -, -, hpst⟩ := hps
+        -- The signing inserts `msg` into the signed set; since the post-state's signed set is
+        -- contained in the final `z`'s signed set, and `k₀.2 ∉ z.signedSet`, we get `msg ≠ k₀.2`,
+        -- hence `(r, msg) ≠ k₀`, so the signing step left `k₀` untouched.
+        have hmsg : msg ≠ k₀.2 := by
+          intro hmeq
+          have hpst_sgn : k₀.2 ∈ pst.1.1.1.2 := by
+            rw [hpst]; simp only [hmeq, Finset.mem_insert, true_or]
+          have hgrow := progGameRunImplCombinedTrapCount_signedSet_grows psf M Salt pk sk
+            (mx pv) pst z hz
+          exact hfresh (hgrow hpst_sgn)
+        have hk : k₀ ≠ (r, msg) := fun h => hmsg (by rw [h])
+        obtain ⟨hcache, htbl⟩ := ih pv pst (by
+          rw [hpst]; simp only [QueryCache.cacheQuery_of_ne _ _ hk]; exact hs) z hz hfresh
+        rw [hcache, htbl, hpst]
+        simp only [QueryCache.cacheQuery_of_ne _ _ hk, if_neg hk]
+        exact ⟨trivial, trivial⟩
+
+open Classical in
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Frozen-table expectation on the trap-count run.**  When the forged key `k₀` is already cached
+at the start (`cache_s(k₀) ≠ none`) and the output functional `G` vanishes off the freshness event
+`k₀.2 ∉ signedSet`, the recorded table at `k₀` is frozen on the relevant support, so the
+`G · 1_{table(k₀) = some sStar}` expectation factors as the constant frozen indicator
+`1_{table_s(k₀) = some sStar}` times the `G` expectation. -/
+lemma progGameRunImplCombinedTrapCount_table_frozen_eq (pk : PK) (sk : SK)
+    (k₀ : Salt × M) (sStar : Domain)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (G : β →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M → ℝ≥0∞)
+    (hGfresh : ∀ b w, k₀.2 ∈ w.2 → G b w = 0)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+        (((Salt × M) → Option ℕ) × ℕ))
+    (hs : s.1.1.1.1 k₀ ≠ none) :
+    (∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s] *
+        (G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) *
+          (if z.2.1.2 k₀ = some sStar then 1 else 0))) =
+      (if s.1.2 k₀ = some sStar then 1 else 0) *
+        ∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s] *
+          G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2) ) := by
+  rw [← ENNReal.tsum_mul_left]
+  refine tsum_congr fun z => ?_
+  by_cases hz : z ∈ support
+      ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s)
+  · by_cases hzfresh : k₀.2 ∈ z.2.1.1.1.2
+    · rw [hGfresh z.1 _ (by exact hzfresh)]; ring
+    · obtain ⟨-, htbl⟩ := progGameRunImplCombinedTrapCount_frozen psf M Salt pk sk k₀ oa s hs z hz
+        hzfresh
+      rw [htbl]; ring
+  · rw [probOutput_eq_zero_of_not_mem_support hz]; ring
+
+open Classical in
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Per-step deferral of one write-only trapdoor draw on the trap-count run (state-general
+form).**  For a fixed key `k₀` and recorded value `sStar`, and any nonnegative output functional
+`G` of the run output and the projected `(cache, counter, idx, signedSet)` state, the trap-count run
+expectation of `G · 1_{table(k₀) = some sStar}` equals the run expectation of `G · D s`, where the
+*deferred* value `D s z` is:
+
+* the frozen indicator `1_{table_s(k₀) = some sStar}` if `k₀` was already programmed at the start
+  state `s` (`cache_s(k₀) ≠ none`); or
+* the deferred trapdoor-draw probability `Pr[= sStar | trapdoorSample (cache_z(k₀))]` if `k₀` is
+  freshly programmed during the run (`cache_s(k₀) = none` and `cache_z(k₀) ≠ none`), and `0` if `k₀`
+  is never programmed (`cache_z(k₀) = none`).
+
+The recorded preimage `x ← trapdoorSample (cache k₀)` is sampled write-only at the `k₀` programming
+event and never read, so its position in the adaptive fold is irrelevant: at the programming step
+the inline `x`-draw is integrated against the frozen continuation (`cache(k₀)` and `table(k₀)` are
+both frozen afterwards), turning `1_{table(k₀) = some sStar}` into the trapdoor-draw probability;
+off the programming step the table at `k₀` is untouched, so the IH carries through.  This is the
+defer-to-end twin of the front-loading lift, *keeping* the forged draw rather than dropping it. -/
+lemma progGameRunImplCombinedTrapCount_table_defer (pk : PK) (sk : SK)
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c))
+    (k₀ : Salt × M) (sStar : Domain)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (G : β →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M → ℝ≥0∞)
+    (hGfresh : ∀ b w, k₀.2 ∈ w.2 → G b w = 0) :
+    ∀ (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+        (((Salt × M) → Option ℕ) × ℕ)),
+      (s.1.2 k₀ ≠ none → s.1.1.1.1 k₀ ≠ none) →
+      (∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s] *
+          (G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) *
+            (if z.2.1.2 k₀ = some sStar then 1 else 0))) =
+        ∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s] *
+          (G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) *
+            (match s.1.1.1.1 k₀ with
+              | some _ => (if s.1.2 k₀ = some sStar then 1 else 0)
+              | none =>
+                  match z.2.1.1.1.1 k₀ with
+                  | some v => Pr[= sStar | psf.trapdoorSample pk sk v]
+                  | none => 0)) := by
+  induction oa using OracleComp.inductionOn with
+  | pure a =>
+      intro s htc
+      simp only [simulateQ_pure, StateT.run_pure,
+        OracleComp.DeferredSampling.tsum_probOutput_pure_mul]
+      -- At `pure`, the final state is the start state, so the table at `k₀` is `s.1.2 k₀`.
+      rcases hc : s.1.1.1.1 k₀ with _ | v
+      · -- `k₀` unprogrammed at start (and at end): the deferred branch gives `0`; the table/cache
+        -- lockstep `htc` forces `table_s(k₀) = none`, so the indicator branch is also `0`.
+        have htbl : s.1.2 k₀ = none := by
+          by_contra hne; exact (htc hne) hc
+        rw [if_neg (by rw [htbl]; simp)]
+      · rfl
+  | query_bind t mx ih =>
+      intro s htc
+      -- **Branch A: `k₀` already programmed at the start.**  The deferred value is the constant
+      -- frozen indicator; both sides factor through the frozen-table expectation lemma.
+      rcases hcs : s.1.1.1.1 k₀ with _ | v₀
+      · -- **Branch B: `k₀` not yet programmed at the start.**  Split the leading step from the
+        -- continuation and integrate the (single) `k₀`-programming draw to the front.
+        sorry
+      · simp only [hcs]
+        rw [progGameRunImplCombinedTrapCount_table_frozen_eq psf M Salt pk sk k₀ sStar _ G hGfresh s
+          (by rw [hcs]; exact Option.some_ne_none v₀), ← ENNReal.tsum_mul_left]
+        refine tsum_congr fun z => ?_; ring
+
 open Classical in
 omit [Fintype Salt] in
 /-- **Step-2 trap-side table-defer to the common freshness-confined deferred functional.**  The
