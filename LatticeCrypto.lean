@@ -32,6 +32,7 @@ import LatticeCrypto.MLDSA.Concrete.FFI
 import LatticeCrypto.MLDSA.Concrete.Instance
 import LatticeCrypto.MLDSA.Concrete.Laws
 import LatticeCrypto.MLDSA.Concrete.NTT
+import LatticeCrypto.MLDSA.Concrete.NonVacuity
 import LatticeCrypto.MLDSA.Concrete.Rounding
 import LatticeCrypto.MLDSA.Concrete.Sampling
 import LatticeCrypto.MLDSA.Encoding
