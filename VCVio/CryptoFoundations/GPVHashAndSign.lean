@@ -10207,6 +10207,88 @@ lemma progGameRunImplCombinedTrapCount_frozen (pk : PK) (sk : SK) (k₀ : Salt �
         simp only [QueryCache.cacheQuery_of_ne _ _ hk, if_neg hk]
         exact ⟨trivial, trivial⟩
 
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Table-independence of any output/cache/idx/signedSet expectation on the trap-count run.**  The
+trap handler never reads the write-only preimage table, so any output functional `F` of the output
+and the projected `(cache, counter, idx, signedSet)` state has the same expectation from two start
+states `s₁`, `s₂` that agree on everything except the table (`s₁.1.1 = s₂.1.1` and `s₁.2 = s₂.2`,
+i.e. the cache/signed-set/bad components and the idx/counter components coincide).  Instance of the
+generic state-relation transfer `tsum_probOutput_simulateQ_run_mul_of_rel`. -/
+lemma progGameRunImplCombinedTrapCount_table_indep (pk : PK) (sk : SK)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (F : β →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M → ℝ≥0∞)
+    (s₁ s₂ : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+        ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ))
+    (h11 : s₁.1.1 = s₂.1.1) (h2 : s₁.2 = s₂.2) :
+    (∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s₁] *
+        F z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2))) =
+      ∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s₂] *
+        F z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) := by
+  classical
+  exact OracleComp.DeferredSampling.tsum_probOutput_simulateQ_run_mul_of_rel
+    (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa
+    (fun u₁ u₂ => u₁.1.1 = u₂.1.1 ∧ u₁.2 = u₂.2)
+    (fun t a b hab K hKinv => by
+      obtain ⟨hb11, hb2⟩ := hab
+      rcases t with (n | mc) | msg
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inl,
+          progGameRunImplCombinedTrapCount_run_inl_inl]
+        rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+        refine tsum_congr fun v => ?_
+        rw [OracleComp.DeferredSampling.tsum_probOutput_pure_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_pure_mul]
+        exact congrArg _ (hKinv v a b ⟨hb11, hb2⟩)
+      · rw [progGameRunImplCombinedTrapCount_run_inl_inr,
+          progGameRunImplCombinedTrapCount_run_inl_inr]
+        have hcache : a.1.1.1.1 mc = b.1.1.1.1 mc := by rw [hb11]
+        rw [hcache]
+        cases hq : b.1.1.1.1 mc with
+        | some v =>
+            rw [OracleComp.DeferredSampling.tsum_probOutput_pure_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_pure_mul]
+            exact hKinv v a b ⟨hb11, hb2⟩
+        | none =>
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun v => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun x => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_pure_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_pure_mul]
+            refine hKinv v _ _ ⟨?_, ?_⟩
+            · simp only [hb11]
+            · simp only [hb2]
+      · rw [progGameRunImplCombinedTrapCount_run_inr, progGameRunImplCombinedTrapCount_run_inr]
+        rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+        refine tsum_congr fun r => congrArg _ ?_
+        rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+        refine tsum_congr fun v => congrArg _ ?_
+        rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+        refine tsum_congr fun x => congrArg _ ?_
+        rw [OracleComp.DeferredSampling.tsum_probOutput_pure_mul,
+          OracleComp.DeferredSampling.tsum_probOutput_pure_mul]
+        refine hKinv _ _ _ ⟨?_, ?_⟩
+        · simp only [hb11]
+        · simp only [hb2])
+    (fun g st => F g ((((st.1.1.1.1, st.2.2), st.2.1), st.1.1.1.2)))
+    (fun g u₁ u₂ huv => by
+      obtain ⟨hu11, hu2⟩ := huv
+      have hst : ((((u₁.1.1.1.1, u₁.2.2), u₁.2.1), u₁.1.1.1.2) :
+            (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M)
+          = ((((u₂.1.1.1.1, u₂.2.2), u₂.2.1), u₂.1.1.1.2)) := by
+        rw [show u₁.1.1.1.1 = u₂.1.1.1.1 from by rw [hu11],
+          show u₁.1.1.1.2 = u₂.1.1.1.2 from by rw [hu11],
+          show u₁.2.1 = u₂.2.1 from by rw [hu2], show u₁.2.2 = u₂.2.2 from by rw [hu2]]
+      simp only []
+      rw [hst])
+    s₁ s₂ ⟨h11, h2⟩
+
 open Classical in
 omit [DecidableEq Range] [Fintype Salt] in
 /-- **Frozen-table expectation on the trap-count run.**  When the forged key `k₀` is already cached
