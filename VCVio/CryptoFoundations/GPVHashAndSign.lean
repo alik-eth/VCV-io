@@ -10383,7 +10383,103 @@ lemma progGameRunImplCombinedTrapCount_table_defer (pk : PK) (sk : SK)
       rcases hcs : s.1.1.1.1 k₀ with _ | v₀
       · -- **Branch B: `k₀` not yet programmed at the start.**  Split the leading step from the
         -- continuation and integrate the (single) `k₀`-programming draw to the front.
-        sorry
+        simp only [hcs]
+        simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+          OracleQuery.cont_query, id_map, StateT.run_bind]
+        rcases t with (n | mc) | msg
+        · -- Uniform query: the state is untouched, `cache(k₀)` stays `none`; apply the IH at `s`.
+          rw [progGameRunImplCombinedTrapCount_run_inl_inl, bind_assoc]
+          simp only [pure_bind]
+          rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+            OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+          refine tsum_congr fun v => congrArg _ ?_
+          have hih := ih v s htc
+          simp only [hcs] at hih
+          exact hih
+        · -- Random-oracle query at `mc`.
+          rw [progGameRunImplCombinedTrapCount_run_inl_inr]
+          cases hmcq : s.1.1.1.1 mc with
+          | some v =>
+              -- Cache hit: state untouched; apply the IH at `s`.
+              simp only [hmcq, pure_bind]
+              have hih := ih v s htc
+              simp only [hcs] at hih
+              exact hih
+          | none =>
+              have htbls : s.1.2 k₀ = none := by
+                by_contra hne; exact (htc hne) hcs
+              simp only [hmcq, bind_assoc, pure_bind]
+              by_cases hmck : mc = k₀
+              · -- **The forged random-oracle miss: integrate the single trapdoor draw.**
+                sorry
+              · -- Miss at `mc ≠ k₀`: `cache(k₀)` stays `none`; apply the IH at the post-state.
+                rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+                  OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+                refine tsum_congr fun v => congrArg _ ?_
+                rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+                  OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+                refine tsum_congr fun x => congrArg _ ?_
+                -- Apply the IH at the post-state; `cache(k₀)` is unchanged (miss at `mc ≠ k₀`),
+                -- so its outer deferred branch stays `none`, matching the goal.
+                have hih := ih v
+                  ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                      fun t' => if t' = mc then some x else s.1.2 t'),
+                      (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1) (by
+                    simp only [QueryCache.cacheQuery_of_ne _ _ (Ne.symm hmck), hcs, if_neg
+                      (Ne.symm hmck), htbls]
+                    exact fun h => absurd rfl h)
+                simp only [QueryCache.cacheQuery_of_ne _ _ (Ne.symm hmck), hcs] at hih
+                exact hih
+        · -- Signing query on `msg`.
+          rw [progGameRunImplCombinedTrapCount_run_inr]
+          simp only [bind_assoc, pure_bind]
+          have htbls : s.1.2 k₀ = none := by
+            by_contra hne; exact (htc hne) hcs
+          by_cases hmsg : msg = k₀.2
+          · -- Signing the forged message inserts `k₀.2` into the (monotone) signed set, so every
+            -- continuation has `k₀.2 ∈ signedSet` and `G = 0`; both sides vanish termwise.
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun r => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun v => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun x => congrArg _ ?_
+            refine tsum_congr fun z => ?_
+            by_cases hz : z ∈ support
+                ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) (mx (r, x))).run
+                  ((((s.1.1.1.1.cacheQuery (r, msg) v, insert msg s.1.1.1.2),
+                    s.1.1.2 || saltKeyed M Salt s.1.1.1.1 r),
+                    fun t' => if t' = (r, msg) then some x else s.1.2 t'),
+                    (fun t' => if t' = (r, msg) then some s.2.2 else s.2.1 t'), s.2.2 + 1))
+            · have hgrow := progGameRunImplCombinedTrapCount_signedSet_grows psf M Salt pk sk
+                (mx (r, x)) _ z hz
+              have hmem : k₀.2 ∈ z.2.1.1.1.2 :=
+                hgrow (by simp only [hmsg, Finset.mem_insert, true_or])
+              rw [hGfresh z.1 _ hmem]; ring
+            · rw [probOutput_eq_zero_of_not_mem_support hz]; ring
+          · -- `msg ≠ k₀.2` forces `(r, msg) ≠ k₀`, so `cache(k₀)` stays `none`; apply the IH.
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun r => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun v => congrArg _ ?_
+            rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+              OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+            refine tsum_congr fun x => congrArg _ ?_
+            have hk : k₀ ≠ (r, msg) := fun h => hmsg (by rw [h])
+            have hih := ih (r, x)
+              ((((s.1.1.1.1.cacheQuery (r, msg) v, insert msg s.1.1.1.2),
+                  s.1.1.2 || saltKeyed M Salt s.1.1.1.1 r),
+                  fun t' => if t' = (r, msg) then some x else s.1.2 t'),
+                  (fun t' => if t' = (r, msg) then some s.2.2 else s.2.1 t'), s.2.2 + 1) (by
+                simp only [QueryCache.cacheQuery_of_ne _ _ hk, hcs, if_neg hk, htbls]
+                exact fun h => absurd rfl h)
+            simp only [QueryCache.cacheQuery_of_ne _ _ hk, hcs] at hih
+            exact hih
       · simp only [hcs]
         rw [progGameRunImplCombinedTrapCount_table_frozen_eq psf M Salt pk sk k₀ sStar _ G hGfresh s
           (by rw [hcs]; exact Option.some_ne_none v₀), ← ENNReal.tsum_mul_left]
