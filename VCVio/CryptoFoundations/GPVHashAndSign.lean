@@ -10172,10 +10172,28 @@ lemma trap_freshSig_le_winnerSlot_deferred [Inhabited Range]
   rw [hRHS]
   -- **Step 2: the per-run table-defer (the genuine answer-irrelevant content).**  Both sides are
   -- now expectations over the *same* trap-count run; the LHS reads the recorded table at the forged
-  -- point, the RHS the deferred trapdoor draw against the cached image.  On the freshness-confined
-  -- winner slot the recorded entry is the inline write-only draw `trapdoorSample (cache forged)`,
-  -- which is never read, so its expected indicator equals the deferred draw probability.  The goal
-  -- below STILL CARRIES the FRESH conjunct `w.1.1 ∉ w.2.1.1.1.2`.
+  -- point (`1_{table(forged) = some forged.dom}`), the RHS the deferred trapdoor draw against the
+  -- cached image (`Pr[= forged.dom | trapdoorSample (cache forged)]`).  On the freshness-confined
+  -- winner slot the recorded entry is the inline write-only draw `x ← trapdoorSample (cache
+  -- forged)` sampled at the forged random-oracle miss and never read; its *expected* indicator over
+  -- the run equals the deferred draw probability.
+  --
+  -- ⚠ This is NOT a per-final-state inequality (it FAILS pointwise: at a state whose table is
+  -- already frozen to `some d₀`, the LHS indicator is `1_{d₀ = forged.dom}` while the RHS is
+  -- `Pr[= forged.dom | trapdoorSample (cache forged)] < 1`).  It holds only in *expectation*: the
+  -- recorded `x` is itself random (drawn at the forged miss), independent of `(output, cache)`
+  -- given the run, so `E[1_{table(forged) = forged.dom}] = Pr[= forged.dom | trapdoorSample (cache
+  -- forged)]`.  Mechanizing it requires *deferring* the single answer-irrelevant write-only draw
+  -- `x` from its inline position at the forged miss to the end of the adaptive `simulateQ` fold (it
+  -- commutes past every subsequent step because the continuation never reads `table(forged)` or the
+  -- frozen `cache(forged)`), matching it to a post-run draw of `trapdoorSample (cache forged)`.  No
+  -- banked transport keeps a deferred draw
+  -- (`map_run_progGameRunImplCombinedTrapCount_freshSig_proj` *drops* every table draw via
+  -- `evalDist_bind_const_neverFails`); the bespoke defer-to-end induction over the trap run — the
+  -- structural twin of `evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl` but
+  -- *keeping* and re-threading the forged draw rather than dropping it — is the single remaining
+  -- residual.  The goal below STILL CARRIES the FRESH conjunct `w.1.1 ∉ w.2.1.1.1.2`; it must
+  -- remain.
   rw [probEvent_eq_tsum_ite]
   sorry
 
