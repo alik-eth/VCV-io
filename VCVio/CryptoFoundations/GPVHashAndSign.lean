@@ -10177,10 +10177,37 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- at counter `j` (since `idx(forged) = some j`), where the embed caches exactly `y` — so on that
   -- slot the diagonal `cache(forged) = some y` is recovered from the run state, eliminating the
   -- free `y` from the embed win literal.  The banked marginal lift
-  -- `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx` then fires; the trap-count run is
-  -- matched to `embedTrapFreshIdxImpl` by the write-only-table support invariant
+  -- `evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl` then fires; the trap-count
+  -- run is matched to `embedTrapFreshIdxSigImpl` by the freshness recovery
+  -- `embedTrapIdxSigImpl_fresh_idx_cache_eq` and the write-only-table support invariant
   -- `progGameRunImplCombinedTrapCount_table_support`.  The omitted embed-side signing-slot mass on
   -- the right is nonnegative, so the bound is an inequality (trap ≤ embed), not an equality.
+  --
+  -- **Banked this pass (sorry-free, axiom-clean):** the cache/counter/idx/signedSet marginals of
+  -- the trap-count run and the inline-fresh signed-set embed run coincide *as distributions*, via
+  -- the generic `evalDist`-level state-projection transport
+  -- `evalDist_map_run_simulateQ_eq_of_query_evalDist_map_eq` (which tolerates the never-failing
+  -- answer-irrelevant trapdoor draw at each RO miss) instantiated as
+  -- `map_run_progGameRunImplCombinedTrapCount_freshSig_proj`.  This discharges the *run-marginal*
+  -- half of the coupling: it identifies the trap-count cache/idx/signedSet law with the
+  -- `embedTrapFreshIdxSigImpl` law that the front-draw lift produces from
+  -- `∑'y Pr[=y] · embedTrapIdxSigImpl … j y`.
+  --
+  -- **The single remaining residual** is the *table↔trapdoor-draw joint factorization* (4b): on the
+  -- trap run the forged point's write-only table entry `table(forged) = some preimg` was sampled
+  -- `x ← trapdoorSample pk sk (cache(forged))` *inline* at the adaptively-determined forged
+  -- programming event, and must be front-loaded to the embed side's *post-run* trapdoor draw
+  -- `x ← trapdoorSample pk sk (cache(forged))`, matching the recorded `x` to the adversary output
+  -- `preimg`.  FRESHNESS is exactly what makes this draw answer-irrelevant (an unsigned forged key
+  -- is an RO miss, whose `x` enters only the write-only table — never the adversary view; a
+  -- *signed* key returns `(r, x)` to the adversary, so its table draw is *not* deferrable, which is
+  -- why dropping FRESH falsifies the bound).  Formalizing this defer-to-end of one
+  -- answer-irrelevant write-only draw across the adaptive `simulateQ` fold is the genuine joint
+  -- PMF×PMF coupling: a per-final-state induction (à la
+  -- `tsum_probOutput_simulateQ_run_mul_of_rel`) showing the table at
+  -- an unsigned key is an independent fresh `trapdoorSample (cache key)` conditioned on the final
+  -- cache/idx/signedSet state.  The goal below STILL CARRIES the FRESH conjunct
+  -- `w.1.1 ∉ w.2.1.1.1.2`; it must remain.
   sorry
 
 open Classical in
