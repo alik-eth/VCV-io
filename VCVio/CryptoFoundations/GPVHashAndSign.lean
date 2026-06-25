@@ -10411,7 +10411,102 @@ lemma progGameRunImplCombinedTrapCount_table_defer (pk : PK) (sk : SK)
               simp only [hmcq, bind_assoc, pure_bind]
               by_cases hmck : mc = k₀
               · -- **The forged random-oracle miss: integrate the single trapdoor draw.**
-                sorry
+                subst hmck
+                rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+                  OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+                refine tsum_congr fun v => congrArg _ ?_
+                -- Abbreviate the per-`(v, x)` `G`-expectation `Q x` from the post-state.
+                set Q : Domain → ℝ≥0∞ := fun x =>
+                  ∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+                      (mx v)).run
+                      ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                        fun t' => if t' = mc then some x else s.1.2 t'),
+                        (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1)] *
+                    G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) with hQ
+                -- **LHS inner**, per `x`: apply the deferral IH at the post-state (where `cache mc`
+                -- is `some v ≠ none`), turning `1_{table_z(mc) = sStar}` into the *frozen* value
+                -- `1_{table_post(mc) = sStar} = 1_{x = sStar}`; then the constant factors out.
+                have hLHS : ∀ x : Domain,
+                    (∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+                        (mx v)).run
+                        ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                          fun t' => if t' = mc then some x else s.1.2 t'),
+                          (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1)] *
+                      (G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) *
+                        (if z.2.1.2 mc = some sStar then 1 else 0)))
+                      = (if x = sStar then 1 else 0) * Q x := by
+                  intro x
+                  have hihx := ih v
+                    ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                        fun t' => if t' = mc then some x else s.1.2 t'),
+                        (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1) (by
+                      simp only [QueryCache.cacheQuery_self]; exact fun _ => Option.some_ne_none v)
+                  simp only [QueryCache.cacheQuery_self] at hihx
+                  rw [hihx]
+                  -- the post-state's `table mc = some x`, so the frozen indicator is `1_{x=sStar}`
+                  simp only [if_true, Option.some.injEq]
+                  rw [hQ]
+                  simp only []
+                  rw [← ENNReal.tsum_mul_left]
+                  refine tsum_congr fun z => ?_; ring
+                -- **RHS inner**, per `x`: the cache at `mc` is frozen to `some v`, so the deferred
+                -- value is the constant `Pr[= sStar | trapdoorSample v]`; factor it out.
+                have hRHS : ∀ x : Domain,
+                    (∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+                        (mx v)).run
+                        ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                          fun t' => if t' = mc then some x else s.1.2 t'),
+                          (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1)] *
+                      (G z.1 ((((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2)) *
+                        (match z.2.1.1.1.1 mc with
+                          | some w => Pr[= sStar | psf.trapdoorSample pk sk w]
+                          | none => 0)))
+                      = Pr[= sStar | psf.trapdoorSample pk sk v] * Q x := by
+                  intro x
+                  rw [hQ]
+                  simp only []
+                  rw [← ENNReal.tsum_mul_left]
+                  refine tsum_congr fun z => ?_
+                  by_cases hz : z ∈ support
+                      ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) (mx v)).run
+                        ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                          fun t' => if t' = mc then some x else s.1.2 t'),
+                          (fun t' => if t' = mc then some s.2.2 else s.2.1 t'), s.2.2 + 1))
+                  · by_cases hzfresh : mc.2 ∈ z.2.1.1.1.2
+                    · -- `mc.2` signed at `z` ⟹ `G = 0`, so the term vanishes on both sides.
+                      rw [hGfresh z.1 _ (by exact hzfresh)]; ring
+                    · have hpostc : ((((s.1.1.1.1.cacheQuery mc v, s.1.1.1.2), s.1.1.2),
+                          fun t' => if t' = mc then some x else s.1.2 t'),
+                          (fun t' => if t' = mc then some s.2.2 else s.2.1 t'),
+                          s.2.2 + 1).1.1.1.1 mc ≠ none := by
+                        simp only [QueryCache.cacheQuery_self]; exact Option.some_ne_none v
+                      obtain ⟨hzcache, -⟩ := progGameRunImplCombinedTrapCount_frozen psf M Salt pk
+                        sk mc (mx v) _ hpostc z hz hzfresh
+                      rw [hzcache]
+                      simp only [QueryCache.cacheQuery_self]; ring
+                  · rw [probOutput_eq_zero_of_not_mem_support hz]; ring
+                -- **Combine.**  Per `x`, the inner sum is `Pr[= sStar | trapdoorSample v] · Q x` on
+                -- the right and `1_{x = sStar} · Q x` on the left, and `Q` is table-independent
+                -- (`progGameRunImplCombinedTrapCount_table_indep`), so `Q x = Q sStar`; integrating
+                -- `x ← trapdoorSample v` turns the left indicator into `Pr[= sStar | trapdoor v]`.
+                rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
+                  OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+                simp only [hLHS, hRHS]
+                -- `Q` is independent of the table value `x`, so `Q x = Q sStar` for all `x`.
+                have hQindep : ∀ x : Domain, Q x = Q sStar := fun x => by
+                  rw [hQ]
+                  exact progGameRunImplCombinedTrapCount_table_indep psf M Salt pk sk (mx v) _ _ _
+                    rfl rfl
+                simp_rw [hQindep]
+                -- LHS: `∑' x, Pr[= x] · (1_{x = sStar} · Q sStar) = Pr[= sStar | trapdoor v] · Q`.
+                rw [show (∑' x : Domain, Pr[= x | psf.trapdoorSample pk sk v] *
+                        ((if x = sStar then 1 else 0) * Q sStar))
+                      = Pr[= sStar | psf.trapdoorSample pk sk v] * Q sStar from by
+                    rw [tsum_eq_single sStar (fun x hx => by rw [if_neg hx, zero_mul, mul_zero])]
+                    rw [if_pos rfl, one_mul]]
+                -- RHS: `∑' x, Pr[= x] · (Pr[= sStar | trapdoor v] · Q sStar) = 1 · (… · Q)`.
+                rw [ENNReal.tsum_mul_right,
+                  tsum_probOutput_eq_one' (hNF v).probFailure_eq_zero, one_mul]
               · -- Miss at `mc ≠ k₀`: `cache(k₀)` stays `none`; apply the IH at the post-state.
                 rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul,
                   OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
