@@ -9648,6 +9648,31 @@ lemma evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl [Inhabited
         exact ih p.1 p.2
 
 omit [DecidableEq Range] [Fintype Salt] in
+/-- **Expected-functional form of the signed-set front-loading lift.**  For any nonnegative output
+functional `F`, the inline-fresh run's expectation equals the front-target-averaged trap-sibling
+run's expectation: `∑' w, Pr[= w | freshSig run] · F w = ∑' y, Pr[= y] · ∑' w, Pr[= w |
+embedTrapIdxSig … j y run] · F w`.  Immediate from
+`evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl` (the two `evalDist`s agree, so
+their expectations of `F` agree) and the Tonelli rearrangement `tsum_probOutput_bind_mul`. -/
+lemma tsum_probOutput_embedTrapFreshIdxSig_mul_eq_frontDraw [Inhabited Range]
+    (pk : PK) (sk : SK) (j : ℕ)
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M)
+    (F : β × ((((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M) →
+      ℝ≥0∞) :
+    (∑' w, Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk) oa).run s] * F w) =
+      ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+        ∑' w, Pr[= w | (simulateQ (embedTrapIdxSigImpl psf M Salt pk sk j y) oa).run s] * F w := by
+  have hlift := evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl psf M Salt pk sk j
+    oa s
+  have hF : ∀ w, Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk) oa).run s] =
+      Pr[= w | (($ᵗ Range : ProbComp Range) >>= fun y =>
+        (simulateQ (embedTrapIdxSigImpl psf M Salt pk sk j y) oa).run s)] :=
+    fun w => by rw [probOutput, probOutput, hlift]
+  simp_rw [hF]
+  rw [OracleComp.DeferredSampling.tsum_probOutput_bind_mul]
+
+omit [DecidableEq Range] [Fintype Salt] in
 /-- **Freshness-confined winner-slot cache invariant (state-general form).** On the
 signed-set-augmented embed run `embedTrapIdxSigImpl … j y`, the following invariant is preserved
 through the whole adaptive fold: for every key `k`, if its recorded insertion index is the winner
@@ -9967,6 +9992,94 @@ lemma map_run_progGameRunImplCombinedTrapCount_freshSig_proj (pk : PK) (sk : SK)
     (embedTrapFreshIdxSigImpl psf M Salt pk sk)
     (fun s => ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2)))
     (progGameRunImplCombinedTrapCount_freshSig_proj psf M Salt pk sk hNF) oa s
+
+omit [Fintype Salt] in
+/-- **Step-2 embed-side reduction to the common freshness-confined deferred functional.**  The
+inline-fresh-run expectation of the *freshness-confined winner-slot deferred-trapdoor* functional
+
+  `Wf w := if forged.msg ∉ signedSet_w ∧ idx_w(forged) = some j then
+              Pr[= forged.dom | trapdoorSample (cache_w forged)] else 0`
+
+is a lower bound for the winner-slot-restricted per-target embedding win
+(`reservoir_embed_winnerIdx_le`'s left side, i.e. the right side of the floor-free coupling).  The
+front target average `∑' y, Pr[= y] · embedTrapIdxImpl … j y` is lifted to the signed-set-augmented
+index run (`map_run_embedTrapIdxSigImpl_proj`, signed set passive) and then to the inline-fresh run
+(`evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl`).  On the inline-fresh run the
+freshness recovery (`embedTrapIdxSigImpl_fresh_idx_cache_eq`) makes the diagonal
+`cache(forged) = some y` automatic on the freshness-confined winner slot, so the front `y` is
+recovered as the cached image and the embed win event's literal `cache(forged) = some y` is matched;
+the residual freshness restriction `forged.msg ∉ signedSet` only *decreases* the inline-fresh-run
+expectation relative to the (freshness-free) embed win mass, so the bound is an inequality. -/
+lemma freshSig_winnerSlot_deferred_le_embed [DecidableEq Domain] [Inhabited Range]
+    (pk : PK) (sk : SK) (j : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt)) :
+    (∑' w : (M × (Salt × Domain)) ×
+          ((((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M),
+        Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk) (adv.main pk)).run
+            ((((∅, 0), fun _ => none), ∅))] *
+          (if w.1.1 ∉ w.2.2 ∧ w.2.1.2 (w.1.2.1, w.1.1) = some j then
+              Pr[= w.1.2.2 | psf.trapdoorSample pk sk
+                ((w.2.1.1.1 (w.1.2.1, w.1.1)).getD default)]
+            else 0)) ≤
+      ∑' y : Range, Pr[= y | ($ᵗ Range : ProbComp Range)] *
+          Pr[= true | (do
+            let r ← (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (adv.main pk)).run
+              (((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)), (fun _ => none))
+            let x ← psf.trapdoorSample pk sk ((r.2.1.1 (r.1.2.1, r.1.1)).getD y)
+            pure (decide (r.1.2.2 = x) && decide (r.2.1.1 (r.1.2.1, r.1.1) = some y) &&
+              decide (r.2.2 (r.1.2.1, r.1.1) = some j)) : ProbComp Bool)] := by
+  classical
+  -- Rewrite each per-target embed win on the Sig-augmented run (signed set passive), then express
+  -- the win mass as a `tsum` over the run output `r`.
+  rw [tsum_probOutput_embedTrapFreshIdxSig_mul_eq_frontDraw psf M Salt pk sk j (adv.main pk)
+    ((((∅, 0), fun _ => none), ∅))]
+  refine ENNReal.tsum_le_tsum fun y => ?_
+  refine mul_le_mul' le_rfl ?_
+  -- Lift the un-augmented embed run on the RHS to the signed-set-augmented run.
+  rw [show (simulateQ (embedTrapIdxImpl psf M Salt pk sk j y) (adv.main pk)).run
+        (((∅ : (Salt × M →ₒ Range).QueryCache), (0 : ℕ)), (fun _ => none))
+      = Prod.map id (Prod.fst :
+          (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M →
+            ((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) <$>
+        (simulateQ (embedTrapIdxSigImpl psf M Salt pk sk j y) (adv.main pk)).run
+          ((((∅, 0), fun _ => none), ∅)) from
+    (map_run_embedTrapIdxSigImpl_proj psf M Salt pk sk j y (adv.main pk)
+      ((((∅, 0), fun _ => none), ∅))).symm]
+  rw [bind_map_left]
+  -- Express the win mass as a `tsum` over the Sig run output and compare termwise.
+  rw [probOutput_bind_eq_tsum]
+  refine ENNReal.tsum_le_tsum fun w => ?_
+  simp only [Prod.map, id_eq]
+  -- Compare `Pr[= w | run] · Wf w ≤ Pr[= w | run] · winContinuation w`; off-support both vanish,
+  -- on-support the freshness recovery aligns the literals.
+  by_cases hsupp : w ∈ support ((simulateQ (embedTrapIdxSigImpl psf M Salt pk sk j y)
+      (adv.main pk)).run ((((∅, 0), fun _ => none), ∅)))
+  · refine mul_le_mul' le_rfl ?_
+    -- The win predicate is `decide (r.dom = x) && decide (cache forged = some y) &&
+    -- decide (idx forged = some j)`, with the trapdoor draw `x ← trapdoor ((cache forged).getD y)`.
+    by_cases hWf : w.1.1 ∉ w.2.2 ∧ w.2.1.2 (w.1.2.1, w.1.1) = some j
+    · obtain ⟨hfresh, hidx⟩ := hWf
+      -- Freshness recovery on the Sig run: `idx forged = some j` and forged unsigned force
+      -- `cache forged = some y`.
+      have hcache : w.2.1.1.1 (w.1.2.1, w.1.1) = some y :=
+        embedTrapIdxSigImpl_fresh_idx_cache_eq psf M Salt pk sk j y (adv.main pk) w hsupp
+          (w.1.2.1, w.1.1) hidx hfresh
+      rw [if_pos ⟨hfresh, hidx⟩, probOutput_bind_eq_tsum]
+      -- The continuation `pure (decide (dom = x) && decide (cache = some y) && decide (idx = j))`
+      -- has both run-only literals `true`; it reduces to matching `dom = x`, so the `tsum` over `x`
+      -- collapses to the single diagonal term at `x = dom`.
+      refine le_of_eq ?_
+      simp only [hcache, hidx, Option.getD_some, decide_true, Bool.and_true]
+      rw [tsum_eq_single w.1.2.2 (fun x hx => by
+        rw [probOutput_pure_eq_indicator]
+        simp only [Set.indicator_apply, Set.mem_singleton_iff, eq_comm (a := true),
+          decide_eq_true_eq, Ne.symm hx, if_false, mul_zero])]
+      rw [probOutput_pure_eq_indicator]
+      simp only [Set.indicator_apply, Set.mem_singleton_iff, eq_comm (a := true),
+        decide_eq_true_eq, if_true, Function.const_apply, mul_one]
+    · rw [if_neg hWf]; exact zero_le'
+  · rw [probOutput_eq_zero_of_not_mem_support hsupp, zero_mul]; exact zero_le'
 
 open Classical in
 omit [Fintype Salt] in
