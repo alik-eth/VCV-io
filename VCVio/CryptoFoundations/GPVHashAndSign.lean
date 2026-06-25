@@ -10100,7 +10100,7 @@ write-only table, never the adversary view), so it commutes to the end of the ad
 becomes a post-run independent trapdoor draw against the cached image.  Freshness is exactly what
 makes this draw deferrable; a *signed* key returns `(r, x)` to the adversary, so its table draw is
 not deferrable, which is why dropping freshness falsifies the bound. -/
-lemma trap_freshSig_le_winnerSlot_deferred [DecidableEq Domain] [Inhabited Range]
+lemma trap_freshSig_le_winnerSlot_deferred [Inhabited Range]
     (pk : PK) (sk : SK) (j : ℕ)
     (adv : SignatureAlg.unforgeableAdv
       (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
@@ -10122,6 +10122,61 @@ lemma trap_freshSig_le_winnerSlot_deferred [DecidableEq Domain] [Inhabited Range
               Pr[= w.1.2.2 | psf.trapdoorSample pk sk
                 ((w.2.1.1.1 (w.1.2.1, w.1.1)).getD default)]
             else 0) := by
+  classical
+  -- Abbreviate the trap-state → fresh-sig-state projection (drop the freshness Bool flag and the
+  -- write-only trapdoor table; reshape to the fresh-sig `(((cache × counter) × idx) × signedSet)`).
+  set projS : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+        × (((Salt × M) → Option ℕ) × ℕ) →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M :=
+    fun s => ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2)) with hprojS
+  -- **Step 1: transport the RHS fresh-sig-run expectation onto the trap-count run.**  By the
+  -- banked distribution-level projection, the fresh-sig run is the trap-count run mapped by
+  -- `projS`, so the
+  -- RHS expectation of `Wf` over the fresh-sig run equals its expectation over the trap-count run
+  -- precomposed with `Prod.map id projS`.
+  have hRHS : (∑' w, Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk)
+          (adv.main pk)).run ((((∅, 0), fun _ => none), ∅))] *
+        (if w.1.1 ∉ w.2.2 ∧ w.2.1.2 (w.1.2.1, w.1.1) = some j then
+            Pr[= w.1.2.2 | psf.trapdoorSample pk sk
+              ((w.2.1.1.1 (w.1.2.1, w.1.1)).getD default)]
+          else 0)) =
+      ∑' z, Pr[= z | (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+          (adv.main pk)).run
+          (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+            (fun _ => none), 0)] *
+        (if z.1.1 ∉ (projS z.2).2 ∧ (projS z.2).1.2 (z.1.2.1, z.1.1) = some j then
+            Pr[= z.1.2.2 | psf.trapdoorSample pk sk
+              (((projS z.2).1.1.1 (z.1.2.1, z.1.1)).getD default)]
+          else 0) := by
+    have hmap := map_run_progGameRunImplCombinedTrapCount_freshSig_proj psf M Salt pk sk hNF
+      (adv.main pk)
+      (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+        (fun _ => none), 0)
+    simp only [hprojS] at hmap ⊢
+    -- Pointwise: the fresh-sig output probability is the trap-count run mapped by `projS`.
+    have hpt : ∀ w, Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk)
+          (adv.main pk)).run ((((∅, 0), fun _ => none), ∅))]
+        = Pr[= w | Prod.map id
+            (fun s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+                ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) =>
+              ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2) :
+                (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M)) <$>
+            (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) (adv.main pk)).run
+              (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+                (fun _ => none), 0)] :=
+      fun w => by rw [probOutput, probOutput, hmap]
+    simp_rw [hpt]
+    rw [OracleComp.DeferredSampling.tsum_probOutput_map_mul]
+    refine tsum_congr fun z => ?_
+    simp only [Prod.map, id_eq]
+  rw [hRHS]
+  -- **Step 2: the per-run table-defer (the genuine answer-irrelevant content).**  Both sides are
+  -- now expectations over the *same* trap-count run; the LHS reads the recorded table at the forged
+  -- point, the RHS the deferred trapdoor draw against the cached image.  On the freshness-confined
+  -- winner slot the recorded entry is the inline write-only draw `trapdoorSample (cache forged)`,
+  -- which is never read, so its expected indicator equals the deferred draw probability.  The goal
+  -- below STILL CARRIES the FRESH conjunct `w.1.1 ∉ w.2.1.1.1.2`.
+  rw [probEvent_eq_tsum_ite]
   sorry
 
 open Classical in
