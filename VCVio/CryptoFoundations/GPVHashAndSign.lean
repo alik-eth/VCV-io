@@ -10688,13 +10688,129 @@ lemma trap_freshSig_le_winnerSlot_deferred [Inhabited Range]
   -- frozen `cache(forged)`), matching it to a post-run draw of `trapdoorSample (cache forged)`.  No
   -- banked transport keeps a deferred draw
   -- (`map_run_progGameRunImplCombinedTrapCount_freshSig_proj` *drops* every table draw via
-  -- `evalDist_bind_const_neverFails`); the bespoke defer-to-end induction over the trap run — the
-  -- structural twin of `evalDist_frontDraw_embedTrapIdxSigImpl_eq_embedTrapFreshSigImpl` but
-  -- *keeping* and re-threading the forged draw rather than dropping it — is the single remaining
-  -- residual.  The goal below STILL CARRIES the FRESH conjunct `w.1.1 ∉ w.2.1.1.1.2`; it must
-  -- remain.
+  -- `evalDist_bind_const_neverFails`); the bespoke defer-to-end induction over the trap run is
+  -- `progGameRunImplCombinedTrapCount_table_defer`.  Below the FRESH conjunct
+  -- `w.1.1 ∉ w.2.1.1.1.2` is carried throughout.
   rw [probEvent_eq_tsum_ite]
-  sorry
+  refine le_of_eq ?_
+  classical
+  -- Decompose the output-dependent forged-key indicator over a fixed key/value pair `p`, swap the
+  -- order of summation, and apply the (fixed-key) table-defer per `p`.  Recombining over `p` gives
+  -- the deferred functional with the cache-read trapdoor probability.
+  set proj2 : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain))
+        × (((Salt × M) → Option ℕ) × ℕ) →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M :=
+    fun st => ((((st.1.1.1.1, st.2.2), st.2.1), st.1.1.1.2)) with hproj2
+  -- The per-pair selector functional.
+  set Gp : (Salt × M) × Domain → (M × (Salt × Domain)) →
+      (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M → ℝ≥0∞ :=
+    fun p b w => if (b.2.1, b.1) = p.1 ∧ b.2.2 = p.2 ∧ b.1 ∉ w.2 ∧ w.1.2 p.1 = some j
+      then 1 else 0 with hGp
+  set run := (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) (adv.main pk)).run
+    ((((∅, ∅), false), fun _ => none), (fun _ => none), 0) with hrun
+  -- **LHS = double sum.**  The forged-key indicator collapses to the single pair
+  -- `p = (forged, forged.dom)`.
+  have hLHSdecomp : (∑' z, if (z.1.1 ∉ z.2.1.1.1.2 ∧ z.2.1.2 (z.1.2.1, z.1.1) = some z.1.2.2) ∧
+          z.2.2.1 (z.1.2.1, z.1.1) = some j then Pr[= z | run] else 0)
+      = ∑' p : (Salt × M) × Domain, ∑' z,
+          Pr[= z | run] * (Gp p z.1 (proj2 z.2) * (if z.2.1.2 p.1 = some p.2 then 1 else 0)) := by
+    rw [ENNReal.tsum_comm]
+    refine tsum_congr fun z => ?_
+    simp only [hGp, hproj2]
+    rw [tsum_eq_single ((z.1.2.1, z.1.1), z.1.2.2) (fun p hp => by
+      rw [show (if (z.1.2.1, z.1.1) = p.1 ∧ z.1.2.2 = p.2 ∧ z.1.1 ∉ z.2.1.1.1.2 ∧
+            z.2.2.1 p.1 = some j then (1 : ℝ≥0∞) else 0) = 0 from by
+        refine if_neg ?_
+        rintro ⟨h1, h2, -, -⟩; exact hp (by rw [Prod.ext_iff]; exact ⟨h1.symm, h2.symm⟩),
+        zero_mul, mul_zero])]
+    simp only [true_and]
+    by_cases hev : (z.1.1 ∉ z.2.1.1.1.2 ∧ z.2.1.2 (z.1.2.1, z.1.1) = some z.1.2.2) ∧
+        z.2.2.1 (z.1.2.1, z.1.1) = some j
+    · obtain ⟨⟨hfresh, htbl⟩, hidx⟩ := hev
+      rw [if_pos ⟨⟨hfresh, htbl⟩, hidx⟩, if_pos ⟨hfresh, hidx⟩, if_pos htbl]; ring
+    · rw [if_neg hev]
+      by_cases htbl : z.2.1.2 (z.1.2.1, z.1.1) = some z.1.2.2
+      · have hcond : ¬(z.1.1 ∉ z.2.1.1.1.2 ∧ z.2.2.1 (z.1.2.1, z.1.1) = some j) := by
+          rintro ⟨hfresh, hidx⟩; exact hev ⟨⟨hfresh, htbl⟩, hidx⟩
+        rw [if_pos htbl, mul_one, if_neg hcond, mul_zero]
+      · rw [if_neg htbl, mul_zero, mul_zero]
+  -- **Per-pair table-defer.**  Apply the fixed-key table-defer lemma at `(k₀, sStar) = p` with the
+  -- selector `Gp p` (which vanishes off the freshness event, as required).
+  have hbridge : ∀ p : (Salt × M) × Domain,
+      (∑' z, Pr[= z | run] * (Gp p z.1 (proj2 z.2) * (if z.2.1.2 p.1 = some p.2 then 1 else 0)))
+        = ∑' z, Pr[= z | run] * (Gp p z.1 (proj2 z.2) *
+            (match (proj2 z.2).1.1.1 p.1 with
+              | some w => Pr[= p.2 | psf.trapdoorSample pk sk w]
+              | none => 0)) := by
+    intro p
+    have hGfreshp : ∀ b w, p.1.2 ∈ w.2 → Gp p b w = 0 := by
+      intro b w hmem
+      rw [hGp]; refine if_neg ?_
+      rintro ⟨hbp, -, hbw, -⟩
+      exact hbw (by rw [show b.1 = p.1.2 from by rw [← hbp]]; exact hmem)
+    have hdefer := progGameRunImplCombinedTrapCount_table_defer psf M Salt pk sk hNF p.1 p.2
+      (adv.main pk) (Gp p) hGfreshp
+      (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+        (fun _ => none), 0) (by simp)
+    -- the empty start has `cache p.1 = none`, so the deferred outer match reduces to the inner
+    -- `match cache_z p.1`.
+    simp only [hrun, hproj2] at hdefer ⊢
+    refine hdefer.trans (tsum_congr fun z => congrArg _ (congrArg _ ?_))
+    rcases (((z.2.1.1.1.1, z.2.2.2), z.2.2.1), z.2.1.1.1.2).1.1.1 p.1 with _ | w <;> rfl
+  -- **RHS = double sum.**  The deferred functional likewise collapses to the single forged pair.
+  have hRHSdecomp : (∑' z, Pr[= z | run] *
+          (if z.1.1 ∉ (proj2 z.2).2 ∧ (proj2 z.2).1.2 (z.1.2.1, z.1.1) = some j then
+            Pr[= z.1.2.2 | psf.trapdoorSample pk sk
+              (((proj2 z.2).1.1.1 (z.1.2.1, z.1.1)).getD default)]
+          else 0))
+      = ∑' p : (Salt × M) × Domain, ∑' z,
+          Pr[= z | run] * (Gp p z.1 (proj2 z.2) *
+            (match (proj2 z.2).1.1.1 p.1 with
+              | some w => Pr[= p.2 | psf.trapdoorSample pk sk w]
+              | none => 0)) := by
+    rw [ENNReal.tsum_comm]
+    refine tsum_congr fun z => ?_
+    simp only [hGp, hproj2]
+    rw [tsum_eq_single ((z.1.2.1, z.1.1), z.1.2.2) (fun p hp => by
+      rw [show (if (z.1.2.1, z.1.1) = p.1 ∧ z.1.2.2 = p.2 ∧ z.1.1 ∉ z.2.1.1.1.2 ∧
+            z.2.2.1 p.1 = some j then (1 : ℝ≥0∞) else 0) = 0 from by
+        refine if_neg ?_
+        rintro ⟨h1, h2, -, -⟩; exact hp (by rw [Prod.ext_iff]; exact ⟨h1.symm, h2.symm⟩),
+        zero_mul, mul_zero])]
+    simp only [true_and]
+    -- diagonal `p = (forged, dom)`: `Gp = 1_{fresh ∧ idx=j}` and the deferred value reads
+    -- `cache_z(forged)`; on the run support `idx = some j` forces `cache ≠ none` (idx/table/cache
+    -- lockstep), so it matches the `getD default` form.
+    by_cases hz : z ∈ support run
+    · by_cases hfi : z.1.1 ∉ z.2.1.1.1.2 ∧ z.2.2.1 (z.1.2.1, z.1.1) = some j
+      · obtain ⟨hfresh, hidx⟩ := hfi
+        rw [if_pos ⟨hfresh, hidx⟩, if_pos ⟨hfresh, hidx⟩]
+        -- recover `cache ≠ none` from `idx = some j` via the lockstep invariants
+        have hzrun : z ∈ support ((simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+            (adv.main pk)).run ((((∅, ∅), false), fun _ => none), (fun _ => none), 0)) := by
+          rw [← hrun]; exact hz
+        have hidxne : z.2.2.1 (z.1.2.1, z.1.1) ≠ none := by rw [hidx]; exact Option.some_ne_none j
+        have htblne : z.2.1.2 (z.1.2.1, z.1.1) ≠ none :=
+          (progGameRunImplCombinedTrapCount_idx_iff_table psf M Salt pk sk (adv.main pk)
+            ((((∅, ∅), false), fun _ => none), (fun _ => none), 0)
+            (fun k => by simp) z hzrun (z.1.2.1, z.1.1)).2 hidxne
+        obtain ⟨xv, htbleq⟩ := Option.ne_none_iff_exists'.1 htblne
+        obtain ⟨w, hcache, -⟩ := progGameRunImplCombinedTrapCount_table_support psf M Salt pk sk
+          (adv.main pk) ((((∅, ∅), false), fun _ => none), (fun _ => none), 0)
+          (fun k x hx => by simp at hx) z hzrun (z.1.2.1, z.1.1) xv htbleq
+        rw [hcache, Option.getD_some]; ring
+      · simp only [if_neg hfi, zero_mul, mul_zero]
+    · rw [probOutput_eq_zero_of_not_mem_support hz]; ring
+  -- **Combine.**  `LHS = (hLHSdecomp) ∑∑ indicator = (hbridge) ∑∑ deferred = (hRHSdecomp) RHS`.
+  rw [hLHSdecomp]
+  rw [show (∑' p : (Salt × M) × Domain, ∑' z, Pr[= z | run] *
+        (Gp p z.1 (proj2 z.2) * (if z.2.1.2 p.1 = some p.2 then 1 else 0)))
+      = ∑' p : (Salt × M) × Domain, ∑' z, Pr[= z | run] *
+        (Gp p z.1 (proj2 z.2) *
+          (match (proj2 z.2).1.1.1 p.1 with
+            | some w => Pr[= p.2 | psf.trapdoorSample pk sk w]
+            | none => 0)) from tsum_congr fun p => hbridge p]
+  rw [← hRHSdecomp]
 
 open Classical in
 omit [Fintype Salt] in
