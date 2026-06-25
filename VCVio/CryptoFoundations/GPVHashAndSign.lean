@@ -9468,48 +9468,36 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- the front target `y` enters only through run-only predicates (`idx(forged) = some j`) — exactly
   -- the form the trap-count run's `idx(forged) = some j` event couples to.
   refine le_trans ?_ (reservoir_embed_winnerIdx_le psf hr M Salt pk sk j adv)
-  -- **Step 4 (sorry-free): drop the freshness / verification / shortness conjuncts from the trap
-  -- event.**  The full trap event carries, beyond the index-tagged exact-match core
-  -- `table(forged) = output ∧ idx(forged) = some j`, the freshness `forged.msg ∉ signedSet`, the
-  -- verification `eval(output) = cache(forged).getD …`, and the shortness `isShort output`
-  -- conjuncts.  These only *restrict* the event, so the trap mass is bounded above by the mass of
-  -- its index-tagged exact-match core (`probEvent_mono`).  The core is exactly the run-only
-  -- `(table, idx)` coupling the embed-side index-tagged exact-match mass couples to, so this
-  -- isolates the genuine deferred-sampling residual at its smallest form.
-  refine le_trans (probEvent_mono (q := fun w => w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2 ∧
-      w.2.2.1 (w.1.2.1, w.1.1) = some j) (fun w _ hw => ⟨hw.1.2, hw.2⟩)) ?_
-  -- **The single remaining residual (strictly smaller than the original): the index-tagged
-  -- exact-match run coupling.**  Both sides now carry only the run-only winner-slot witness
-  -- `idx(forged) = some j` together with the bare exact-match coincidence: on the left the
-  -- write-only-table record `table(forged) = output`, on the right the embedded preimage equality
-  -- `output = trapdoorSample (cache(forged))`.  The banked
-  -- `progGameRunImplCombinedTrapCount_table_support` rewrites `table(forged) = output` to
-  -- `output ∈ support (trapdoorSample (cache(forged)))`, and the banked
-  -- `embedTrapIdxImpl_idx_iff_cache` pins `idx(forged) = some j ⟹ cache(forged) ≠ none` so the
-  -- embed trapdoor draw reads the cached
-  -- image.  The genuine deferred-sampling content that remains is the N4-style same-randomness
-  -- coupling of the two all-fresh-uniform lazy random oracles: averaging the embed-idx run over the
-  -- front draw `y ← $ᵗ Range` equals the inline-fresh run `embedTrapFreshIdxImpl` (the banked
-  -- augmented lift `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx`), and the trap-count
-  -- run `progGameRunImplCombinedTrapCount` is its trapdoor-table augmentation drawing the *same*
-  -- fresh image `v` at each miss and recording `table(forged) = trapdoorSample pk sk v` with
-  -- `idx(forged) = some j`.  Projecting the trap-count run onto the shared `embedTrapFreshIdxImpl`
-  -- cache/counter/index state (`evalDist_simulateQ_run_eq_of_impl_evalDist_eq`) and using the
-  -- write-only-table support invariant matches the trap event `table(forged) = output` to the embed
-  -- event `output = trapdoorSample (cache(forged))`, closing the bound.
+  -- **The single isolated residual: the freshness-confined winner-slot coupling (TRUE-as-stated).**
   --
-  -- The free target `y` remains only in the win literal `decide (r.2.1.1 (forged) = some y)`, which
-  -- correlates `y` with the run output (`cache(forged) = some y`); this diagonal is precisely what
-  -- blocks the marginal lift from firing directly and is the genuine joint coupling.
-  --
-  -- Unsolved goal (verbatim):
-  --   ⊢ Pr[fun w => w.2.1.2 (forged) = some w.1.2.2 ∧ w.2.2.1 (forged) = some j
-  --        | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run (∅…, ∅idx, 0)]
+  -- Goal here (after the winner-idx monotone step `reservoir_embed_winnerIdx_le`):
+  --   ⊢ Pr[fun w => ((fresh w.1.1 ∧ verify ∧ isShort) ∧ table(forged) = some w.1.2.2)
+  --        ∧ idx(forged) = some j | (simulateQ progGameRunImplCombinedTrapCount (adv.main pk)).run]
   --     ≤ ∑'y Pr[= y | $ᵗ Range] ·
   --         Pr[= true | r ← (simulateQ (embedTrapIdxImpl … j y) (adv.main pk)).run ((∅, 0), ∅idx);
   --                     x ← trapdoorSample pk sk ((r.2.1.1 (forged)).getD y);
-  --                     pure (decide (r.1.2.2 = x) &&
-  --                       decide (r.2.1.1 (forged) = some y) && decide (r.2.2 (forged) = some j))]
+  --                     pure (decide (r.1.2.2 = x) && decide (r.2.1.1 (forged) = some y)
+  --                            && decide (r.2.2 (forged) = some j))]
+  --
+  -- ⚠ The FRESHNESS conjunct `w.1.1 ∉ w.2.1.1.1.2` (`forged.msg ∉ signedSet`) is LOAD-BEARING and
+  -- must NOT be dropped.  Dropping it makes the bound FALSE: both the trap run's signing branch
+  -- (`progGameRunImplCombinedTrapCount_run_inr`) and the embed run's signing branch
+  -- (`embedTrapIdxImpl_run_inr`) increment the counter and write the insertion-index table, but the
+  -- embed's signing branch caches a *fresh* `c` (it never tests `j`), not the embedded `y`.  So a
+  -- replay adversary making one signing query on `m` at counter `j`, receiving `(r, x =
+  -- trapdoorSample c)` and outputting the forgery `(r, m, x)`, gives trap mass
+  -- `table(forged) = some x ∧ idx(forged) = some j` with probability `1`, while the embed side
+  -- needs the fresh `c = y` — a `1/|Range|` coincidence (witness: the bijective PSF, `j = 0`).
+  --
+  -- Route (freshness collapses the joint coupling to marginal + deterministic recovery): freshness
+  -- ⟹ `forged.msg` was never signed ⟹ `forged` can only have been inserted by a random-oracle miss,
+  -- at counter `j` (since `idx(forged) = some j`), where the embed caches exactly `y` — so on that
+  -- slot the diagonal `cache(forged) = some y` is recovered from the run state, eliminating the
+  -- free `y` from the embed win literal.  The banked marginal lift
+  -- `evalDist_frontDraw_embedTrapIdxImpl_eq_embedTrapFreshIdx` then fires; the trap-count run is
+  -- matched to `embedTrapFreshIdxImpl` by the write-only-table support invariant
+  -- `progGameRunImplCombinedTrapCount_table_support`.  The omitted embed-side signing-slot mass on
+  -- the right is nonnegative, so the bound is an inequality (trap ≤ embed), not an equality.
   sorry
 
 open Classical in
