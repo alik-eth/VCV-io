@@ -10083,6 +10083,49 @@ lemma freshSig_winnerSlot_deferred_le_embed [DecidableEq Domain] [Inhabited Rang
 
 open Classical in
 omit [Fintype Salt] in
+/-- **Step-2 trap-side table-defer to the common freshness-confined deferred functional.**  The
+freshness-confined index-tagged trap-exact-match mass — the trap event
+`forged.msg ∉ signedSet ∧ table(forged) = some forged.dom ∧ idx(forged) = some j` on the
+counter-augmented trapdoor-recording run `progGameRunImplCombinedTrapCount` — is bounded by the
+inline-fresh-run expectation of the freshness-confined winner-slot deferred-trapdoor functional
+
+  `Wf w := if forged.msg ∉ signedSet_w ∧ idx_w(forged) = some j then
+              Pr[= forged.dom | trapdoorSample (cache_w forged)] else 0`.
+
+This is the genuinely-new (answer-irrelevant) content of GPV Step-2: at the freshness-confined
+forged key the write-only trapdoor preimage `x ← trapdoorSample (cache forged)` recorded inline into
+the
+table is *never read* (an unsigned forged key is a random-oracle miss whose preimage enters only the
+write-only table, never the adversary view), so it commutes to the end of the adaptive fold and
+becomes a post-run independent trapdoor draw against the cached image.  Freshness is exactly what
+makes this draw deferrable; a *signed* key returns `(r, x)` to the adversary, so its table draw is
+not deferrable, which is why dropping freshness falsifies the bound. -/
+lemma trap_freshSig_le_winnerSlot_deferred [DecidableEq Domain] [Inhabited Range]
+    (pk : PK) (sk : SK) (j : ℕ)
+    (adv : SignatureAlg.unforgeableAdv
+      (GPVHashAndSign (m := OracleComp (unifSpec + (Salt × M →ₒ Range))) psf hr M Salt))
+    (hNF : ∀ (c : Range), NeverFail (psf.trapdoorSample pk sk c)) :
+    Pr[fun w : (M × (Salt × Domain)) ×
+          (((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+            (((Salt × M) → Option ℕ) × ℕ)) =>
+          (w.1.1 ∉ w.2.1.1.1.2 ∧ w.2.1.2 (w.1.2.1, w.1.1) = some w.1.2.2) ∧
+            w.2.2.1 (w.1.2.1, w.1.1) = some j |
+        (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+          (adv.main pk)).run
+          (((((∅ : (Salt × M →ₒ Range).QueryCache), (∅ : Finset M)), false), fun _ => none),
+            (fun _ => none), 0)]
+      ≤ ∑' w : (M × (Salt × Domain)) ×
+          ((((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M),
+        Pr[= w | (simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk) (adv.main pk)).run
+            ((((∅, 0), fun _ => none), ∅))] *
+          (if w.1.1 ∉ w.2.2 ∧ w.2.1.2 (w.1.2.1, w.1.1) = some j then
+              Pr[= w.1.2.2 | psf.trapdoorSample pk sk
+                ((w.2.1.1.1 (w.1.2.1, w.1.1)).getD default)]
+            else 0) := by
+  sorry
+
+open Classical in
+omit [Fintype Salt] in
 /-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
 
 The *index-tagged* trap-exact-match mass at slot `j` — the trap event on the counter-augmented run
@@ -10319,9 +10362,23 @@ lemma reservoir_embed_commute_winner_floorFree [DecidableEq Domain] [Inhabited R
   -- PMF×PMF coupling: a per-final-state induction (à la
   -- `tsum_probOutput_simulateQ_run_mul_of_rel`) showing the table at
   -- an unsigned key is an independent fresh `trapdoorSample (cache key)` conditioned on the final
-  -- cache/idx/signedSet state.  The goal below STILL CARRIES the FRESH conjunct
-  -- `w.1.1 ∉ w.2.1.1.1.2`; it must remain.
-  sorry
+  -- cache/idx/signedSet state, banked as `trap_freshSig_le_winnerSlot_deferred`.
+  --
+  -- **Assembly.** Drop the verify/isShort conjuncts (they only restrict; FRESH stays) by
+  -- `probEvent_mono`, then chain the trap-side table-defer
+  -- `trap_freshSig_le_winnerSlot_deferred` (`G_trap ≤` the freshness-confined deferred functional
+  -- expectation over the inline-fresh run) with the embed-side reduction
+  -- `freshSig_winnerSlot_deferred_le_embed` (that expectation `≤` the winner-slot-restricted
+  -- per-target embedding win).
+  refine le_trans (probEvent_mono ?_)
+    (le_trans (trap_freshSig_le_winnerSlot_deferred psf hr M Salt pk sk j adv hNF)
+      (freshSig_winnerSlot_deferred_le_embed psf hr M Salt pk sk j adv))
+  rintro w - ⟨⟨hflag, htbl⟩, hidx⟩
+  refine ⟨⟨?_, htbl⟩, hidx⟩
+  -- The flag conjunct `(decide fresh && (decide verify && isShort)) = true` carries the FRESH
+  -- literal `forged.msg ∉ signedSet`, which is preserved verbatim.
+  simp only [Bool.and_eq_true, decide_eq_true_eq] at hflag
+  exact hflag.1
 
 open Classical in
 omit [Fintype Salt] in
