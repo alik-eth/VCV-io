@@ -9852,6 +9852,122 @@ lemma progGameRunImplCombinedTrapCount_table_support (pk : PK) (sk : SK) :
           obtain ⟨w, hw1, hw2⟩ := hs k x' hkx'
           exact ⟨w, by rw [QueryCache.cacheQuery_of_ne _ _ hk]; exact hw1, hw2⟩
 
+/-! ### Trap-count → fresh-sig cache/counter/idx/signedSet projection
+
+The counter-augmented trapdoor-recording run `progGameRunImplCombinedTrapCount` and the
+signed-set-augmented inline-fresh embed run `embedTrapFreshIdxSigImpl` draw their cached
+random-oracle images identically: both cache a *fresh* uniform draw at every programming event (the
+trap handler embeds nothing, and the fresh-sig handler has no winner branch).  They differ only in
+the *extra* book-keeping the trap run carries — the freshness Bool flag and the write-only trapdoor
+preimage table — both of which are distributionally passive.  Dropping them and reshaping the tuple
+recovers the fresh-sig run's `(((cache × counter) × idx) × signedSet)` state exactly
+(`map_run_progGameRunImplCombinedTrapCount_freshSig_proj`), at the *distribution* level: the trap
+run's per-programming-event trapdoor draw `x ← trapdoorSample pk sk v` is never read by either run,
+so under `NeverFail` it contributes only its (unit) mass. -/
+
+/-- **`evalDist`-level state-projection transport (differing state types).** If every oracle step of
+`impl₁ : QueryImpl spec (StateT σ₁ (OracleComp spec'))` becomes the corresponding `impl₂` step after
+mapping the state with `proj : σ₁ → σ₂` *at the distribution level*, then the full simulated runs
+agree under the same projection at the distribution level.  This is the `evalDist`-level relaxation
+of `OracleComp.map_run_simulateQ_eq_of_query_map_eq`: the per-query hypothesis may discard a
+never-failing answer-irrelevant draw (e.g. a write-only trapdoor sample) that breaks the *monadic*
+equality but preserves the distribution. -/
+theorem evalDist_map_run_simulateQ_eq_of_query_evalDist_map_eq
+    {ι : Type} {spec : OracleSpec ι}
+    {σ₁ σ₂ : Type} {α : Type}
+    (impl₁ : QueryImpl spec (StateT σ₁ ProbComp))
+    (impl₂ : QueryImpl spec (StateT σ₂ ProbComp))
+    (proj : σ₁ → σ₂)
+    (hproj : ∀ t s,
+      𝒟[Prod.map id proj <$> (impl₁ t).run s] = 𝒟[(impl₂ t).run (proj s)])
+    (oa : OracleComp spec α) (s : σ₁) :
+    𝒟[Prod.map id proj <$> (simulateQ impl₁ oa).run s] =
+      𝒟[(simulateQ impl₂ oa).run (proj s)] := by
+  induction oa using OracleComp.inductionOn generalizing s with
+  | pure x => simp
+  | query_bind t oa ih =>
+      simp only [simulateQ_bind, simulateQ_query, OracleQuery.input_query,
+        OracleQuery.cont_query, id_map, StateT.run_bind, map_bind]
+      rw [evalDist_bind_congr' ((impl₁ t).run s)
+        (ob₂ := fun x => (simulateQ impl₂ (oa x.1)).run (proj x.2))
+        (fun x => ih x.1 x.2)]
+      rw [show ((impl₁ t).run s >>= fun x => (simulateQ impl₂ (oa x.1)).run (proj x.2))
+            = ((Prod.map id proj <$> (impl₁ t).run s) >>= fun x =>
+                (simulateQ impl₂ (oa x.1)).run x.2) from by
+        rw [bind_map_left]; rfl]
+      rw [evalDist_bind, hproj t s, ← evalDist_bind]
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Per-query trap-count → fresh-sig distribution projection.** Dropping the freshness Bool flag
+and the write-only trapdoor table from one `progGameRunImplCombinedTrapCount` query step — and
+reshaping the remaining `(cache, signedSet, idx, counter)` components into the fresh-sig
+`(((cache × counter) × idx) × signedSet)` layout — recovers the corresponding
+`embedTrapFreshIdxSigImpl` step at the distribution level.  Both handlers cache a fresh uniform draw
+at every programming event; the trap run's extra trapdoor sample `x ← trapdoorSample pk sk v` is
+never read, so under `hNF` it is a never-failing value-irrelevant prefix that drops out. -/
+lemma progGameRunImplCombinedTrapCount_freshSig_proj (pk : PK) (sk : SK)
+    (hNF : ∀ c : Range, NeverFail (psf.trapdoorSample pk sk c))
+    (t : ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))).Domain)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    𝒟[Prod.map id
+        (fun s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+              ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) =>
+          ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2) :
+            (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M)) <$>
+        (progGameRunImplCombinedTrapCount psf M Salt pk sk t).run s] =
+      𝒟[(embedTrapFreshIdxSigImpl psf M Salt pk sk t).run
+        ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2))] := by
+  cases t with
+  | inl q =>
+      cases q with
+      | inl q =>
+          rw [progGameRunImplCombinedTrapCount_run_inl_inl, embedTrapFreshIdxSigImpl_run_inl_inl]
+          simp [map_eq_bind_pure_comp, Prod.map]
+      | inr q =>
+          rw [progGameRunImplCombinedTrapCount_run_inl_inr, embedTrapFreshIdxSigImpl_run_inl_inr]
+          cases hq : s.1.1.1.1 q with
+          | none =>
+              -- RO miss: the trapdoor sample `x` is recorded write-only in the table (which the
+              -- projection drops), so the projected output is `x`-independent and `x` drops out.
+              simp only [map_bind, map_pure, Prod.map, id_eq]
+              refine evalDist_bind_congr' _ (fun v => ?_)
+              rw [OracleComp.DeferredSampling.evalDist_bind_const_neverFails
+                (psf.trapdoorSample pk sk v) (hNF v).probFailure_eq_zero _]
+              rfl
+          | some v => simp [Prod.map]
+  | inr msg =>
+      -- Signing: the trapdoor sample `x` *is* part of the output `(r, x)` on both sides, so the two
+      -- signing steps draw `x ← trapdoorSample pk sk c` and output `(r, x)` identically.
+      rw [progGameRunImplCombinedTrapCount_run_inr, embedTrapFreshIdxSigImpl_run_inr]
+      simp only [map_eq_bind_pure_comp, bind_assoc, Function.comp_apply, Prod.map, id_eq, pure_bind]
+      rfl
+
+omit [DecidableEq Range] [Fintype Salt] in
+/-- **Run-level trap-count → fresh-sig distribution projection.** Transports the per-query step
+`progGameRunImplCombinedTrapCount_freshSig_proj` through the whole adaptive fold via
+`evalDist_map_run_simulateQ_eq_of_query_evalDist_map_eq`: dropping the freshness Bool flag and the
+write-only trapdoor table from the full simulated trap-count run, and reshaping to the fresh-sig
+state layout, recovers the `embedTrapFreshIdxSigImpl` run distribution. -/
+lemma map_run_progGameRunImplCombinedTrapCount_freshSig_proj (pk : PK) (sk : SK)
+    (hNF : ∀ c : Range, NeverFail (psf.trapdoorSample pk sk c))
+    {β : Type} (oa : OracleComp ((unifSpec + (Salt × M →ₒ Range)) + (M →ₒ (Salt × Domain))) β)
+    (s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) × ((Salt × M) → Option Domain)) ×
+      (((Salt × M) → Option ℕ) × ℕ)) :
+    𝒟[Prod.map id
+        (fun s : ((((Salt × M →ₒ Range).QueryCache × Finset M) × Bool) ×
+              ((Salt × M) → Option Domain)) × (((Salt × M) → Option ℕ) × ℕ) =>
+          ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2) :
+            (((Salt × M →ₒ Range).QueryCache × ℕ) × ((Salt × M) → Option ℕ)) × Finset M)) <$>
+        (simulateQ (progGameRunImplCombinedTrapCount psf M Salt pk sk) oa).run s] =
+      𝒟[(simulateQ (embedTrapFreshIdxSigImpl psf M Salt pk sk) oa).run
+        ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2))] := by
+  exact evalDist_map_run_simulateQ_eq_of_query_evalDist_map_eq
+    (progGameRunImplCombinedTrapCount psf M Salt pk sk)
+    (embedTrapFreshIdxSigImpl psf M Salt pk sk)
+    (fun s => ((((s.1.1.1.1, s.2.2), s.2.1), s.1.1.1.2)))
+    (progGameRunImplCombinedTrapCount_freshSig_proj psf M Salt pk sk hNF) oa s
+
 open Classical in
 omit [Fintype Salt] in
 /-- **The per-slot front-loading deferred-sampling coupling (floor-free form).**
