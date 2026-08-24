@@ -590,6 +590,7 @@ lemma progGameRunImplCombined_proj_table (domainSample : PK → ProbComp Domain)
   | inr msg =>
       rw [progGameRunImplCombined_run_inr, progGameRunImplNoRecFlagFresh_run_inr]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
 /-- **Run-level table projection of the combined handler.** Dropping the hidden preimage table from
@@ -834,6 +835,7 @@ lemma progGameRunImplCombined_proj_reduction (domainSample : PK → ProbComp Dom
   | inr msg =>
       rw [progGameRunImplCombined_run_inr, reductionImpl_run_inr]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
 /-- **Run-level reduction projection of the combined handler.** Dropping the signed-set and the flag

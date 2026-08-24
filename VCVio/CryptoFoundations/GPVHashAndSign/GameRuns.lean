@@ -1116,7 +1116,13 @@ lemma gpvRealImpl_run_read (pk : PK) (sk : SK) (mc : Salt × M)
     (cache : (Salt × M →ₒ Range).QueryCache) :
     (gpvRealImpl psf hr M Salt pk sk (.inl (.inr mc))).run cache =
       (randomOracle (spec := (Salt × M →ₒ Range)) mc).run cache := by
-  simp [gpvRealImpl, QueryImpl.compose, realGameRunImplNoLog, HAdd.hAdd, QueryImpl.add]
+  change (simulateQ ((QueryImpl.ofLift unifSpec ProbComp).liftTarget
+      (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp) +
+      (randomOracle : QueryImpl (Salt × M →ₒ Range)
+        (StateT ((Salt × M →ₒ Range).QueryCache) ProbComp)))
+      (liftM ((Salt × M →ₒ Range).query mc) :
+        OracleComp (unifSpec + (Salt × M →ₒ Range)) _)).run cache = _
+  simp only [QueryImpl.simulateQ_add_liftM_query_right]
 
 omit [Fintype Salt] in
 /-- **One-step unfolding of `gpvRealImpl` on a signing query (the `∘ₛ`/`liftM` unfold).** The

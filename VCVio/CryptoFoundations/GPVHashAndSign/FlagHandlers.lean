@@ -148,6 +148,7 @@ lemma gpvRealImplFlag_proj_fst (pk : PK) (sk : SK)
   | inr msg =>
       rw [gpvRealImplFlag_run_inr, gpvRealImpl_run_sign]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
 /-- **Per-query flag-projection of the programmed flag handler.** The programmed dual of
@@ -164,6 +165,7 @@ lemma progGameRunImplNoRecFlag_proj_fst (domainSample : PK → ProbComp Domain) 
   | inr msg =>
       rw [progGameRunImplNoRecFlag_run_inr, progGameRunImplNoRec_run_sign]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [Fintype Salt] in
 /-- **Run-level flag-projection of the real flag handler.** Dropping the flag from the full
@@ -401,12 +403,14 @@ theorem gpvImplFlag_h_agree_good (pk : PK) (sk : SK) (domainSample : PK → Prob
           intro hmem
           simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
             Prod.mk.injEq] at hmem
-          tauto
+          obtain ⟨i, hi, h⟩ := hmem
+          exact absurd (congrArg (fun z => z.2.2) h) (by simp)
         · -- Programmed side support: every output carries flag `true`.
           intro hmem
           simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
             Prod.mk.injEq] at hmem
-          tauto
+          obtain ⟨i, hi, i2, hi2, h⟩ := hmem
+          exact absurd (congrArg (fun z => z.2.2) h) (by simp)
 
 omit [Fintype Salt] in
 open Classical in
@@ -574,9 +578,11 @@ theorem gpv_orig_flag_le_collisionBound_aux [Inhabited Range] [Nonempty Salt]
           gpvRealImplFlag_run_inl, gpvRealImpl_run_unif, map_eq_bind_pure_comp, bind_assoc,
           Function.comp_apply, pure_bind]
         refine probEvent_bind_le_of_forall_le (fun x hx => ?_)
-        obtain ⟨u, -, hx⟩ := (mem_support_bind_iff _ _ _).1 hx
-        simp only [Function.comp_apply] at hx
-        subst hx
+        obtain ⟨y, hy, hxy⟩ := mem_support_map_peel _ _ hx
+        obtain ⟨u, -, hy⟩ := (mem_support_bind_iff _ _ _).1 hy
+        simp only [Function.comp_apply] at hy
+        subst hy
+        subst hxy
         have hbS := hQS2 u
         have hbH := hQH2 u
         simp only [Bool.false_eq_true, if_false] at hbS hbH
@@ -584,9 +590,9 @@ theorem gpv_orig_flag_le_collisionBound_aux [Inhabited Range] [Nonempty Salt]
       · -- random-oracle read: flag untouched, cache slice grows ≤ 1
         have hqH : 0 < qH := by
           simpa using hQH1
-        simp only [OracleQuery.input_query, monadLift_self,
-          gpvRealImplFlag_run_inl, gpvRealImpl_run_read]
+        simp only [OracleQuery.input_query, monadLift_self, gpvRealImplFlag_run_inl]
         rw [map_eq_bind_pure_comp, bind_assoc]
+        simp only [gpvRealImpl_run_read]
         refine probEvent_bind_le_of_forall_le (fun p hp => ?_)
         simp only [Function.comp_apply, pure_bind]
         have hbS := hQS2 p.1
@@ -1023,6 +1029,7 @@ lemma gpvRealImplFlagFresh_proj (pk : PK) (sk : SK)
   | inr msg =>
       rw [gpvRealImplFlagFresh_run_inr, gpvRealImplFlag_run_inr]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [DecidableEq Range] [SampleableType Range] [Fintype Salt] in
 /-- **Per-query signed-set projection of the programmed fresh flag handler.** The programmed dual of
@@ -1040,6 +1047,7 @@ lemma progGameRunImplNoRecFlagFresh_proj (domainSample : PK → ProbComp Domain)
   | inr msg =>
       rw [progGameRunImplNoRecFlagFresh_run_inr, progGameRunImplNoRecFlag_run_inr]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [Fintype Salt] in
 /-- **Run-level signed-set projection of the real fresh flag handler.** Dropping the signed-set from
@@ -1214,11 +1222,13 @@ theorem gpvImplFlagFresh_h_agree_good (pk : PK) (sk : SK) (domainSample : PK →
         · intro hmem
           simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
             Prod.mk.injEq] at hmem
-          tauto
+          obtain ⟨i, hi, h⟩ := hmem
+          exact absurd (congrArg (fun z => z.2.2) h) (by simp)
         · intro hmem
           simp only [support_bind, support_pure, Set.mem_iUnion, Set.mem_singleton_iff,
             Prod.mk.injEq] at hmem
-          tauto
+          obtain ⟨i, hi, i2, hi2, h⟩ := hmem
+          exact absurd (congrArg (fun z => z.2.2) h) (by simp)
 
 omit [Fintype Salt] in
 /-- **Flag-probability projection of the fresh vehicle.** The run-level collision-flag probability
@@ -1377,6 +1387,7 @@ lemma gpvRealImplFlagFresh_proj_flag (pk : PK) (sk : SK)
   | inr msg =>
       rw [gpvRealImplFlagFresh_run_inr, gpvRealImplFresh_run_inr]
       simp only [map_bind, map_pure, Prod.map, id_eq]
+      rfl
 
 omit [Fintype Salt] in
 /-- **Run-level flag projection of the fresh flag handler.** Dropping the collision flag from the
