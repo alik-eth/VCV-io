@@ -322,8 +322,8 @@ lemma ghostHybridImpl_bad_mono (progSide : Bool) (pk : Stmt) (sk : Wit)
       z.2.2 = true := by
   intro z hz
   rcases t with (n | mc) | msg
-  · simp only [ghostHybridImpl, StateT.run_mk, support_map] at hz
-    obtain ⟨_, _, rfl⟩ := hz
+  · simp [ghostHybridImpl, StateT.run_mk, support_map] at hz
+    obtain ⟨_, rfl⟩ := hz
     exact hp
   · simp only [ghostHybridImpl, StateT.run_mk] at hz
     rcases hgh : p.1.1.2 mc with _ | v

@@ -82,7 +82,7 @@ lemma hybridBaseImpl_run_ro (mc : M × Commit)
         (StateT ((M × Commit →ₒ Chal).QueryCache) ProbComp))) (.inr mc))).run (c, l) =
         (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
           (cu.1, (cu.2, l))) <$> roStep M c mc := by
-    rw [QueryImpl.add_apply_inr, onCache_run]
+    rw [QueryImpl.add_apply_inr]
     exact congrArg (fun x => (fun cu : Chal × (M × Commit →ₒ Chal).QueryCache =>
       (cu.1, (cu.2, l))) <$> x) (randomOracle_run_eq_roStep M c mc)
   exact h
@@ -182,7 +182,7 @@ lemma blindStepProj_map_ghostBlindImpl_indep (pk : Stmt) (sk : Wit)
   rw [ghostBlindImpl_eq_ghostHybridImpl_false]
   rcases t with (n | mc) | msg
   · -- Uniform query: the ghost layer is neither read nor written.
-    simp only [ghostHybridImpl, StateT.run_mk, blindStepProj, Functor.map_map]
+    rfl
   · -- Random-oracle read: answer is `roStep` on the real layer in both branches; the only
     -- ghost-derived datum is the membership bad flag, fixed by the shared domain.
     change (fun z : Chal × GhostState M Commit Chal => (z.1, z.2.1.1.1, z.2.1.2, z.2.2)) <$>
@@ -370,8 +370,8 @@ lemma ghostHybridImpl_preserves_signed_inv (progSide : Bool) (pk : Stmt) (sk : W
       ∀ q : M × Commit, z.2.1.1.2 q ≠ none → q.1 ∈ z.2.1.2 := by
   intro z hz
   rcases t with (n | mc) | msg
-  · simp only [ghostHybridImpl, StateT.run_mk, support_map] at hz
-    obtain ⟨u, -, rfl⟩ := hz
+  · simp [ghostHybridImpl, StateT.run_mk, support_map] at hz
+    obtain ⟨u, rfl⟩ := hz
     exact hs
   · simp only [ghostHybridImpl, StateT.run_mk] at hz
     rcases hgh : s.1.1.2 mc with - | v
